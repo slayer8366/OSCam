@@ -92,6 +92,14 @@ except ImportError:
         _pixel_hash = None
 
 try:
+    from . import stacks as _stacks
+except ImportError:
+    try:
+        import stacks as _stacks
+    except ImportError:
+        _stacks = None
+
+try:
     from .camera_backend import FULL_RES
 except ImportError:
     try:
@@ -343,6 +351,64 @@ if _HAVE_QT:
     PENDING_PEN.setStyle(Qt.DashLine)
     POINT_RADIUS = 4
 
+    # ---------------------------------------------------------------------------
+    # Z-stack support: filmstrip + onion-skin (build checklist section 8)
+    # ---------------------------------------------------------------------------
+
+    class FilmstripWidget(QWidget):
+        """Filmstrip for z-stacks: thumbnails down the side, inactive dimmed,
+        active lit. Tracks plane count and allows clicking to switch active
+        plane. Per checklist §8, this is the home for per-plane sharpness
+        score and exclude toggle (future section 13 work)."""
+
+        active_plane_changed = pyqtSignal(int)  # emitted when user clicks a plane
+
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self.planes = []  # list of {"plane_idx": int, "pixmap": QPixmap, "active": bool}
+            self.scroll_area = None
+            self.layout_ = None
+            self._init_ui()
+
+        def _init_ui(self):
+            from PyQt5.QtWidgets import QScrollArea
+            self.scroll_area = QScrollArea()
+            self.scroll_area.setWidgetResizable(True)
+            container = QWidget()
+            self.layout_ = QVBoxLayout(container)
+            self.layout_.setSpacing(2)
+            self.layout_.setContentsMargins(0, 0, 0, 0)
+            self.scroll_area.setWidget(container)
+            lay = QVBoxLayout(self)
+            lay.setContentsMargins(0, 0, 0, 0)
+            lay.addWidget(QLabel("Stack:"))
+            lay.addWidget(self.scroll_area, 1)
+
+        def set_planes(self, planes_list, active_idx=0):
+            """planes_list: list of {"idx": int, "pixmap": QPixmap, "active": bool}."""
+            # Clear old buttons
+            while self.layout_.count() > 0:
+                item = self.layout_.takeAt(0)
+                if item.widget():
+                    item.widget().deleteLater()
+
+            self.planes = planes_list
+            for info in planes_list:
+                btn = QPushButton()
+                btn.setIconSize(info["pixmap"].size())
+                btn.setIcon(info["pixmap"])
+                btn.setMaximumSize(120, 90)
+                btn.setFlat(False)
+                idx = info["idx"]
+                btn.clicked.connect(lambda checked=False, i=idx: self.active_plane_changed.emit(i))
+                # active plane: normal, inactive: dimmed
+                if info.get("active"):
+                    btn.setStyleSheet("border: 2px solid yellow")
+                else:
+                    btn.setStyleSheet("opacity: 0.5")
+                self.layout_.addWidget(btn)
+            self.layout_.addStretch()
+
     class MeasureView(QGraphicsView):
         """QGraphicsView supplies the pan/zoom/hit-testing the checklist calls
         for; this class only decides what a click sequence MEANS for the
@@ -357,17 +423,35 @@ if _HAVE_QT:
             self.setRenderHint(QPainter.Antialiasing)
             self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
             self._pixmap_item = None
+            self._onionskin_items = []  # faint neighbor planes
             self._pending_points = []   # native green-plane (x, y) floats
             self._pending_items = []    # scene items for the in-progress mark
+            self.onionskin_enabled = False
 
-        def set_image(self, pixmap):
+        def set_image(self, pixmap, onionskin_pixmaps=None):
+            """Set the active image. onionskin_pixmaps: list of QPixmap for
+            neighbor planes (one for each neighbor, in order, for onion-skin
+            overlay). If onionskin_enabled is true, render them faintly
+            behind the active image."""
             self.scene_.clear()
+            self._onionskin_items = []
+            # Render onion-skin neighbors behind (drawn first, so they appear behind)
+            if self.onionskin_enabled and onionskin_pixmaps:
+                for pix in onionskin_pixmaps:
+                    item = self.scene_.addPixmap(pix)
+                    item.setOpacity(0.3)
+                    self._onionskin_items.append(item)
+            # Render active image on top
             self._pixmap_item = self.scene_.addPixmap(pixmap)
             self.scene_.setSceneRect(self._pixmap_item.boundingRect())
             self._pending_points = []
             self._pending_items = []
             self.resetTransform()
             self.fitInView(self._pixmap_item, Qt.KeepAspectRatio)
+
+        def set_onionskin_enabled(self, enabled):
+            """Toggle onion-skin display. Requires re-rendering the image."""
+            self.onionskin_enabled = enabled
 
         def wheelEvent(self, ev):
             factor = 1.15 if ev.angleDelta().y() > 0 else 1 / 1.15
@@ -459,8 +543,14 @@ if _HAVE_QT:
             self.active_tool = None
             self._plane = None
             self._pixel_sha256 = None
+            # Z-stack support (checklist section 8)
+            self._stack = []  # list of {"path": Path, "idx": int, "plane": ndarray, "pixmap": QPixmap}
+            self._active_plane_idx = 0
+            self._session_dir = None
 
             self.view = MeasureView(self)
+            self.filmstrip = FilmstripWidget()
+            self.filmstrip.active_plane_changed.connect(self._on_filmstrip_plane_selected)
 
             self.objective_combo = QComboBox()
             self.objective_combo.setEditable(True)
@@ -507,12 +597,18 @@ if _HAVE_QT:
                 restart_btn.setToolTip("wizard_pages.py not alongside this file")
             restart_btn.clicked.connect(self._on_restart_wizard)
 
+            self.onionskin_btn = QPushButton("Onion-skin")
+            self.onionskin_btn.setCheckable(True)
+            self.onionskin_btn.setChecked(False)
+            self.onionskin_btn.clicked.connect(self._on_onionskin_toggled)
+
             top = QHBoxLayout()
             top.addWidget(open_btn)
             top.addWidget(restart_btn)
             top.addWidget(QLabel("Objective:"))
             top.addWidget(self.objective_combo)
             top.addStretch(1)
+            top.addWidget(self.onionskin_btn)
             top.addWidget(self.distance_btn)
             top.addWidget(self.angle_btn)
             top.addWidget(self.polygon_btn)
@@ -525,10 +621,13 @@ if _HAVE_QT:
             bottom.addWidget(self.mark_count_label)
 
             central = QWidget()
-            lay = QVBoxLayout(central)
-            lay.addLayout(top)
-            lay.addWidget(self.view, 1)
-            lay.addLayout(bottom)
+            lay = QHBoxLayout(central)
+            canvas_layout = QVBoxLayout()
+            canvas_layout.addLayout(top)
+            canvas_layout.addWidget(self.view, 1)
+            canvas_layout.addLayout(bottom)
+            lay.addLayout(canvas_layout, 1)
+            lay.addWidget(self.filmstrip, 0)  # filmstrip on the right, narrow
             self.setCentralWidget(central)
 
             self._refresh_gating()
@@ -636,6 +735,97 @@ if _HAVE_QT:
                      "ellipse": self.view.draw_ellipse}.get(mark.get("type"))
             if drawer:
                 drawer(mark)
+
+        # --- z-stack support (checklist section 8) --------------------------
+        def _on_filmstrip_plane_selected(self, plane_idx):
+            """User clicked a plane in the filmstrip; switch to it."""
+            if 0 <= plane_idx < len(self._stack):
+                self._active_plane_idx = plane_idx
+                self._render_stack_plane()
+
+        def _on_onionskin_toggled(self, checked):
+            """Toggle onion-skin display and re-render."""
+            self.view.set_onionskin_enabled(checked)
+            self._render_stack_plane()
+
+        def _render_stack_plane(self):
+            """Render the active plane with optional onion-skin neighbors."""
+            if not self._stack:
+                return
+            active = self._stack[self._active_plane_idx]
+            self._plane = active["plane"]
+            self._pixel_sha256 = (_pixel_hash.pixel_sha256(self._plane)
+                                  if _pixel_hash is not None else None)
+            pixmap = _calibrate.array_to_qimage(_calibrate.stretch_to_uint8(self._plane))
+
+            onionskin_pixmaps = []
+            if self.view.onionskin_enabled:
+                # Render neighbors (previous + next planes) faintly behind
+                for idx in [self._active_plane_idx - 1, self._active_plane_idx + 1]:
+                    if 0 <= idx < len(self._stack):
+                        neighbor = self._stack[idx]
+                        neighbor_pixmap = _calibrate.array_to_qimage(
+                            _calibrate.stretch_to_uint8(neighbor["plane"]))
+                        onionskin_pixmaps.append(neighbor_pixmap)
+
+            self.view.set_image(pixmap, onionskin_pixmaps=onionskin_pixmaps)
+            self.result_label.setText("")
+            self._render_existing_marks()
+
+        def _load_stack(self, session_dir):
+            """Load a z-stack from a session directory (via stacks.py).
+            Populates self._stack and updates the filmstrip."""
+            if _stacks is None:
+                QMessageBox.warning(self, "Z-stack not available",
+                                   "stacks.py is not importable; z-stack view disabled.")
+                return
+            session_dir = Path(session_dir)
+            session_json = _stacks.load_session(session_dir)
+            if not session_json:
+                return
+            # Collect all planes from the session
+            planes_by_stack_plane = {}  # (stack_id, plane_idx) -> capture_entry
+            for cap in session_json.get("captures", []):
+                if _stacks.is_active(cap):
+                    stack_id = cap.get(_stacks.STACK)
+                    plane_idx = _stacks.plane_of(cap)
+                    if stack_id and plane_idx is not None:
+                        key = (stack_id, plane_idx)
+                        planes_by_stack_plane[key] = cap
+            if not planes_by_stack_plane:
+                return
+            # Load the first stack's planes (the most recent/most common case)
+            first_stack = min(planes_by_stack_plane.keys())[0]
+            stack_captures = sorted(
+                [(p, c) for (s, p), c in planes_by_stack_plane.items() if s == first_stack])
+            self._stack = []
+            self._session_dir = session_dir
+            for plane_idx, cap in stack_captures:
+                # Locate the raw file for this capture
+                base = cap.get("base")
+                if not base:
+                    continue
+                raw_path = session_dir / base / f"{base}.dng"
+                if not raw_path.exists():
+                    continue
+                try:
+                    plane = load_measurement_plane(raw_path)
+                except Exception:
+                    continue
+                pixmap = _calibrate.array_to_qimage(_calibrate.stretch_to_uint8(plane))
+                self._stack.append({
+                    "path": raw_path,
+                    "idx": plane_idx,
+                    "plane": plane,
+                    "pixmap": pixmap,
+                })
+            # Update filmstrip
+            if self._stack:
+                filmstrip_info = [{"idx": i, "pixmap": p["pixmap"], "active": (i == 0)}
+                                  for i, p in enumerate(self._stack)]
+                self.filmstrip.set_planes(filmstrip_info, active_idx=0)
+                self._active_plane_idx = 0
+                self._render_stack_plane()
 
         # --- committing a mark --------------------------------------------------
         def commit_mark(self, points):
