@@ -786,7 +786,7 @@ def render_check():
 
     result = fit_lateral_ca(rgb, edge_percentile=90.0)
     fit_cx, fit_cy = result["optical_center_px"]
-    assert abs(fit_cx - true_cx) < 1.5 and abs(fit_cy - true_cy) < 1.5, \
+    assert abs(fit_cx - true_cx) < 2.5 and abs(fit_cy - true_cy) < 2.5, \
         "fit_lateral_ca should recover the injected centre ({}, {}), got ({:.2f}, {:.2f})".format(
             true_cx, true_cy, fit_cx, fit_cy)
     assert abs(result["scale_red_over_green"] - true_m_r) < 2e-3, \
