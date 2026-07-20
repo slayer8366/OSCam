@@ -30,14 +30,6 @@ except ImportError:
     from focus import FocusMeter, FocusBox
 
 try:
-    from . import capture as _capture
-except ImportError:
-    try:
-        import capture as _capture
-    except ImportError:
-        _capture = None
-
-try:
     from picamera2 import Picamera2  # noqa: F401  (only to probe availability)
     _HAVE_PICAMERA2 = True
 except ImportError:
@@ -46,40 +38,53 @@ except ImportError:
 ADHOC_OUT_ROOT = Path.home() / "captures" / "adhoc"
 
 
-def new_adhoc_dir(root=None):
-    """A fresh timestamped folder for one ad hoc wizard capture, via
-    capture.py's own new_session_dir (reused, not reimplemented) so naming
-    matches every other capture folder in the project. Raises RuntimeError if
-    capture.py is not importable -- its collision-avoiding timestamp logic is
-    not worth re-deriving here."""
-    if _capture is None:
-        raise RuntimeError("capture.py could not be imported; needed for new_session_dir")
-    root = Path(root) if root is not None else ADHOC_OUT_ROOT
-    root.mkdir(parents=True, exist_ok=True)
-    _ts, d = _capture.new_session_dir(root)
-    return d
-
-
-def next_snap_stem(counter):
-    """Same <prefix>frame_<idx> convention every capture kind in the project
-    uses, so a wizard-shot .dng/.jpg pair looks exactly like one capture.py
-    itself could have written."""
-    return "snap_frame_{:04d}".format(int(counter))
-
-
-def _overlay_helpers():
-    """qt_shell.py's own Qt-free render_overlay_into/state_color, imported
+def _lazy_qt_shell():
+    """qt_shell.py's session/profile helpers (formerly capture.py, now baked
+    into qt_shell.py -- see qt_shell.py's own module docstring), imported
     lazily rather than at module load time: qt_shell.py itself imports
     calibrate.py, and calibrate.py imports this module for ImageSourcePage,
     so importing qt_shell.py here at load time would be a circular import
     partway through calibrate.py's own load. Deferred to first real use (well
     after every module involved has finished loading), the cycle never
-    actually closes."""
+    actually closes. Same reasoning, same pattern as _overlay_helpers()
+    below -- kept as two functions rather than one shared one so each stays
+    a one-line change if either's import set ever diverges."""
     try:
         from . import qt_shell as _qt_shell
     except ImportError:
         import qt_shell as _qt_shell
-    return _qt_shell.render_overlay_into, _qt_shell.state_color
+    return _qt_shell
+
+
+def new_adhoc_dir(root=None):
+    """A fresh timestamped folder for one ad hoc wizard capture, via
+    qt_shell.py's own new_session_dir (reused, not reimplemented) so naming
+    matches every other capture folder in the project. Raises RuntimeError if
+    qt_shell.py is not importable -- its collision-avoiding timestamp logic is
+    not worth re-deriving here."""
+    try:
+        qt_shell = _lazy_qt_shell()
+    except ImportError:
+        raise RuntimeError("qt_shell.py could not be imported; needed for new_session_dir")
+    root = Path(root) if root is not None else ADHOC_OUT_ROOT
+    root.mkdir(parents=True, exist_ok=True)
+    _ts, d = qt_shell.new_session_dir(root)
+    return d
+
+
+def next_snap_stem(counter):
+    """Same <prefix>frame_<idx> convention every capture kind in the project
+    uses, so a wizard-shot .dng/.jpg pair looks exactly like one qt_shell.py
+    session capture could have written."""
+    return "snap_frame_{:04d}".format(int(counter))
+
+
+def _overlay_helpers():
+    """qt_shell.py's own Qt-free render_overlay_into/state_color, via the
+    same lazy import as new_adhoc_dir (see _lazy_qt_shell's docstring for
+    why this cannot be a top-level import)."""
+    qt_shell = _lazy_qt_shell()
+    return qt_shell.render_overlay_into, qt_shell.state_color
 
 
 try:

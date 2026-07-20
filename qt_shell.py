@@ -2,6 +2,14 @@
 together: exposure panel, capture-enforces-lock, burst/HDR walkthroughs with
 a real worker thread, the ruler, and calibration integration all built).
 
+Session/profile management (Session, load_profile/save_profile, new_session_dir,
+_dump_meta) is baked directly into this file rather than a separate capture.py:
+it is generic workflow code (session folders, metadata, profile persistence),
+not sensor-specific, so it lives with the GUI that is its only remaining
+caller rather than as its own module. camera_backend.py stays the place for
+anything that IS sensor-specific (IMX477 resolutions, lores format, ON-RIG
+lines).
+
 The tick is the whole loop: pull the most recent lores frame from the seam, run
 the meter on it, render the box and bar into an RGBA overlay, hand that overlay
 to set_overlay. The overlay is a separate display layer and never touches a
@@ -44,7 +52,7 @@ import subprocess
 import sys
 import tarfile
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -75,27 +83,145 @@ except ImportError:
 # a green-plane number.
 GREEN_PLANE_RES = (FULL_RES[0] // 2, FULL_RES[1] // 2)
 
-try:
-    from .capture import (Session, OUT_ROOT, load_profile, save_profile, _dump_meta,
-                          DEFAULT_STOPS, DEFAULT_BURST, MAX_BURST, PROCESSOR,
-                          build_display_flags)
-except ImportError:
-    try:
-        from capture import (Session, OUT_ROOT, load_profile, save_profile, _dump_meta,
-                             DEFAULT_STOPS, DEFAULT_BURST, MAX_BURST, PROCESSOR,
-                             build_display_flags)
-    except ImportError as _cap_exc:      # capture.py not alongside this file
-        Session = None
-        OUT_ROOT = Path.home() / "captures"
-        load_profile = save_profile = _dump_meta = None
-        # Fallbacks match capture.py's own defaults, so the walkthroughs still make
-        # sense (frame cap, HDR levels) even in this degraded mode.
-        DEFAULT_STOPS = [-2.0, -1.0, 0.0, 1.0, 2.0]
-        DEFAULT_BURST = 8
-        MAX_BURST = 10
-        PROCESSOR = None
-        build_display_flags = None
-        CAPTURE_DEP_ERROR = str(_cap_exc)
+# --- Session and profile management (from capture.py, now baked in) --------
+# Generic capture workflow: session folders, profile persistence, metadata
+# recording. Not IMX477-specific; reusable with any camera sensor.
+
+OUT_ROOT = Path.home() / "captures"
+PROFILE_PATH = Path.home() / "imx" / "profile.json"
+DEFAULT_BURST = 8
+MAX_BURST = 10
+DEFAULT_STOPS = [-2.0, -1.0, 0.0, 1.0, 2.0]
+PROCESSOR = Path(__file__).resolve().parent / "hdr_from_session.py"
+FULL_MODE_LBL = "4056:3040:12:U"
+DENOISE = "off"
+SHARPNESS = "0"
+
+
+def load_profile():
+    """Load camera profile (exposure, gains, WB) from disk if it exists."""
+    if PROFILE_PATH.exists():
+        return json.loads(PROFILE_PATH.read_text())
+    return None
+
+
+def save_profile(locked):
+    """Persist camera profile (exposure, gains, WB) to disk."""
+    PROFILE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    PROFILE_PATH.write_text(json.dumps(locked, indent=2))
+
+
+def _dump_meta(path, md):
+    """Write capture metadata to a JSON sidecar file."""
+    def _j(o):
+        try:
+            json.dumps(o)
+            return o
+        except TypeError:
+            return str(o)
+    path.write_text(json.dumps({k: _j(v) for k, v in md.items()}, indent=2))
+
+
+def new_session_dir(root=None):
+    """Create a new timestamped session directory for captures."""
+    root = Path(root) if root else OUT_ROOT
+    ts = datetime.strftime(datetime.now(), "%Y-%m-%d_%H%M%S")
+    d = root / ts
+    n = 1
+    while d.exists():
+        d = root / "{}_{}".format(ts, n)
+        n += 1
+    d.mkdir(parents=True, exist_ok=True)
+    return ts, d
+
+
+class Session:
+    """Session state: captures directory, locked settings, and session.json log."""
+
+    def __init__(self, root, locked, display_flags):
+        self.root = Path(root)
+        self.locked = dict(locked)
+        self.display_flags = list(display_flags)
+        self.ts, self.dir = new_session_dir(root)
+        self.captures = []
+        self.write()
+
+    def write(self):
+        """Write session.json with current state."""
+        payload = {
+            "session_timestamp": self.ts,
+            "tool": "qt_shell.py",
+            "mode": FULL_MODE_LBL,
+            "denoise": DENOISE,
+            "sharpness": SHARPNESS,
+            "display_flags": self.display_flags,
+            "captures": self.captures,
+        }
+        (self.dir / "session.json").write_text(json.dumps(payload, indent=2))
+
+    def existing(self, prefixes):
+        """Files already present for any of these prefixes."""
+        hits = []
+        for p in prefixes:
+            hits += list(self.dir.glob("{}frame_*".format(p)))
+        return hits
+
+    def clear(self, prefixes, kinds):
+        """Remove files for these prefixes and capture entries of these kinds."""
+        removed = 0
+        for f in self.existing(prefixes):
+            f.unlink()
+            removed += 1
+        self.captures = [c for c in self.captures if c.get("kind") not in kinds]
+        self._reindex()
+        self.write()
+        return removed
+
+    def _reindex(self):
+        for i, c in enumerate(self.captures):
+            c["index"] = i
+
+    def record(self, entry):
+        """Record a new capture entry to the session."""
+        entry["timestamp"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        entry["locked_settings"] = dict(self.locked)
+        self.captures.append(entry)
+        self._reindex()
+        self.write()
+        return entry["index"]
+
+    def has_captures(self):
+        return len(self.captures) > 0
+
+    def close(self):
+        """Remove the folder iff nothing was captured (only session.json on disk)."""
+        if self.has_captures():
+            return False
+        others = [p for p in self.dir.iterdir() if p.name != "session.json"]
+        if others:
+            return False
+        (self.dir / "session.json").unlink()
+        self.dir.rmdir()
+        return True
+
+
+# Fallback: if build_display_flags is not available, provide a stub
+def build_display_flags(args):
+    """Build display flags for hdr_from_session.py from launch arguments."""
+    flags = []
+    if hasattr(args, 'wl') and args.wl:
+        flags.extend(["--wl", str(args.wl)])
+    if hasattr(args, 'lw') and args.lw:
+        flags.extend(["--lw", str(args.lw)])
+    if hasattr(args, 'gains') and args.gains:
+        flags.extend(["--gains"] + args.gains)
+    if hasattr(args, 'ca') and args.ca:
+        flags.extend(["--ca", args.ca])
+    if hasattr(args, 'sharpen') and args.sharpen:
+        flags.extend(["--sharpen", str(args.sharpen)])
+    if hasattr(args, 'shadow_deepen') and args.shadow_deepen:
+        flags.append("--shadow-deepen")
+    return flags
 
 # --- RECORD BUTTON (separable): video's own output folder, deliberately NOT
 # a Session -- no sidecar, no pixel hash, no session record, documentation/
@@ -495,10 +621,10 @@ def save_pref(key, value):
 # ---------------------------------------------------------------------------
 def record_capture(session, result):
     """Persist a CaptureResult into a Session: write the metadata sidecar next to
-    the raw (capture.py's format) and append a 'snap' record. The real exposure and
-    gain of the auto-exposed shot come off the metadata, since the GUI is not
-    locking them. Returns the capture index. Qt-free on purpose, so the whole
-    record-a-shot flow runs under --render-check with the FakeCamera."""
+    the raw and append a 'snap' record. The real exposure and gain of the
+    auto-exposed shot come off the metadata, since the GUI is not locking them.
+    Returns the capture index. Qt-free on purpose, so the whole record-a-shot
+    flow runs under --render-check with the FakeCamera."""
     sidecar = result.raw.parent / (result.raw.stem + ".meta.json")
     _dump_meta(sidecar, result.metadata or {})
     md = result.metadata or {}
@@ -517,8 +643,7 @@ def record_capture(session, result):
 
 def record_burst(session, kind, file_prefix, result, note=""):
     """Persist a capture_burst() result into a Session: write every frame's
-    .meta.json sidecar (capture.py's format), then ONE session-level record for
-    the whole burst, mirroring do_flat/do_science/do_dark exactly (one
+    .meta.json sidecar, then ONE session-level record for the whole burst (one
     session.record call per burst, not per frame). `result` is capture_burst's
     return value: {"actual_us": ..., "frames": [CaptureResult, ...]}. Returns the
     capture index. Qt-free, so this runs under --render-check with FakeCamera."""
@@ -998,7 +1123,7 @@ if _HAVE_QT:
             self._tick_ms = tick_ms
             # Passed straight to hdr_from_session.py on a process offer, e.g.
             # ["--wl", "65520", "--lw", "2.2", ...], built by build_display_flags
-            # from the same launch flags capture.py itself accepts. Empty by
+            # from this file's own launch flags (see main() below). Empty by
             # default: every display stage is then skipped except the base
             # average + debayer, same as passing none of those flags to the CLI.
             self._display_flags = list(display_flags) if display_flags else []
@@ -1684,12 +1809,12 @@ if _HAVE_QT:
 
         def _enforce_exposure_lock(self):
             # A capture must never be taken mid-hunt. If either channel is on auto,
-            # freeze it at its current metered value via apply_exposure_lock, the
-            # same probe/apply_lock model capture.py's CLI uses, rather than just
-            # flipping AeEnable off and trusting wherever the driver happened to
-            # settle. A no-op when already locked or manual, so a deliberate manual
-            # exposure is left alone. Reused as-is by burst kinds later: a burst
-            # needs one stable exposure across the whole set, not a per-frame one.
+            # freeze it at its current metered value via apply_exposure_lock,
+            # rather than just flipping AeEnable off and trusting wherever the
+            # driver happened to settle. A no-op when already locked or manual,
+            # so a deliberate manual exposure is left alone. Reused as-is by
+            # burst kinds later: a burst needs one stable exposure across the
+            # whole set, not a per-frame one.
             e = self.camera.read_exposure()
             if not (e["auto_exposure"] or e["auto_white_balance"]):
                 return
@@ -1740,16 +1865,10 @@ if _HAVE_QT:
                 # the sequence.
                 self._fire_armed_burst()
                 return
-            if Session is None:
-                # capture.py is not importable next to this file; keep the preview
-                # and aid usable and just say why recording is off.
-                full = ("recording unavailable: capture.py not alongside this file "
-                        "({})".format(CAPTURE_DEP_ERROR))
-                self._set_capture_status("recording unavailable", full)
-                return
             if self._session is None:
-                # Open a session on the first shot: a timestamped folder under the
-                # same ~/captures root capture.py uses, via Session unchanged.
+                # Open a session on the first shot: a timestamped folder under
+                # OUT_ROOT via Session (both baked into this file; see the
+                # "Session and profile management" section above).
                 # locked_settings snapshots profile.json (or {} if none); the actual
                 # per-shot exposure enforced below is recorded per-capture instead,
                 # via record_capture's metadata, not here.
@@ -2013,9 +2132,9 @@ if _HAVE_QT:
             return dlg.intValue(), ok
 
         def _reshoot_guard(self, prefixes, kinds_set, label):
-            # Mirrors capture.py's _guard_reshoot: if frames already exist for
-            # these prefixes, confirm before clearing them (default No, same as
-            # the CLI's yes_no). Declining cancels the walkthrough outright.
+            # If frames already exist for these prefixes, confirm before
+            # clearing them (default No). Declining cancels the walkthrough
+            # outright.
             hits = self._session.existing(prefixes)
             if not hits:
                 return True
@@ -2030,8 +2149,8 @@ if _HAVE_QT:
             return True
 
         def _ask_frames(self, prompt_label, cap=MAX_BURST):
-            # Mirrors capture.py's ask_frames: capped at MAX_BURST. A dialog Cancel
-            # (ok=False) aborts the whole walkthrough, same as declining the guard.
+            # Capped at MAX_BURST. A dialog Cancel (ok=False) aborts the whole
+            # walkthrough, same as declining the guard.
             default = DEFAULT_BURST if DEFAULT_BURST <= cap else cap
             n, ok = self._flat_ask_int(
                 "Frame count", "{} (1-{}):".format(prompt_label, cap), default, 1, cap, 1)
@@ -2363,14 +2482,12 @@ if _HAVE_QT:
             threading.Thread(target=_worker, daemon=True).start()
 
         def _offer_process(self, kind, index):
-            # Same hdr_from_session.py invocation shape capture.py's CLI uses
-            # (--index/display flags), but only called for science and hdr
-            # here (see _on_burst_finished), not snap: a single capture is
-            # one frame, and frame averaging only makes sense across a burst,
-            # so this deliberately does not follow do_snap's own
-            # offer_process call. A GUI Yes/No instead of a blocking terminal
-            # prompt; the actual run is shared with the manual processing
-            # wizard (see _run_process_cmd).
+            # Invokes hdr_from_session.py (--index/display flags), but only
+            # called for science and hdr here (see _on_burst_finished), not
+            # snap: a single capture is one frame, and frame averaging only
+            # makes sense across a burst. A GUI Yes/No instead of a blocking
+            # terminal prompt; the actual run is shared with the manual
+            # processing wizard (see _run_process_cmd).
             resp = self._flat_question(
                 "Process capture?",
                 "Process capture #{} to a display image now?\n"
@@ -2558,9 +2675,9 @@ if _HAVE_QT:
                 # manual step this sequence exists to remove).
                 self._advance_batch()
                 return
-            # Offer to process, same two burst-produced kinds capture.py's CLI
-            # offers it for (flat and dark are calibration-only, never offered).
-            # This also fires when HDR's dark phase was cancelled mid-sequence
+            # Offer to process for the two burst-produced kinds that can be
+            # (flat and dark are calibration-only, never offered). This also
+            # fires when HDR's dark phase was cancelled mid-sequence
             # (science-only, dark_levels empty): hdr_from_session.py's own
             # process() already handles an empty dark_levels dict gracefully,
             # just skipping that correction stage.
@@ -2668,10 +2785,8 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description="Zynergy capture GUI (fake or Pi camera).")
     ap.add_argument("--camera", action="store_true",
                     help="use the Pi camera (Picamera2Camera); default is the fake")
-    # Same display-processing flags capture.py accepts, forwarded to
-    # hdr_from_session.py on a process offer via build_display_flags -- kept
-    # identical (same names, same defaults) so the two front ends produce the
-    # exact same processing command line.
+    # Display-processing flags, forwarded to hdr_from_session.py on a
+    # process offer via build_display_flags.
     ap.add_argument("--wl", default=65520, help="sensor white level for processing")
     ap.add_argument("--lw", default=2.2, help="Reinhard white point for the HDR path")
     ap.add_argument("--gains", nargs=2, metavar=("RED", "BLUE"), default=None,
@@ -2851,135 +2966,135 @@ def render_check():
 
     # record_capture: Qt-free, exercised against a FakeCamera capture straight off
     # the async seam, into a throwaway Session.
-    if Session is not None:
-        import shutil
-        from camera_backend import CaptureResult
-        tmp_root = Path("/tmp/zynergy_render_check_captures")
-        if tmp_root.exists():
-            shutil.rmtree(tmp_root)
-        session = Session(tmp_root, {}, [])
-        cam = FakeCamera(async_delay_s=0.0)
-        done = threading.Event()
-        got = {}
+    # record_capture: Qt-free, exercised against a FakeCamera capture straight off
+    # the async seam, into a throwaway Session (Session is baked into this file;
+    # see the "Session and profile management" section above).
+    import shutil
+    from camera_backend import CaptureResult
+    tmp_root = Path("/tmp/zynergy_render_check_captures")
+    if tmp_root.exists():
+        shutil.rmtree(tmp_root)
+    session = Session(tmp_root, {}, [])
+    cam = FakeCamera(async_delay_s=0.0)
+    done = threading.Event()
+    got = {}
 
-        def _on_done(result):
-            got["result"] = result
-            done.set()
+    def _on_done(result):
+        got["result"] = result
+        done.set()
 
-        cam.capture_still_async(session.dir, "snap_frame_0000", _on_done)
-        done.wait(timeout=2.0)
-        idx = record_capture(session, got["result"])
-        assert idx == 0, "first recorded capture should be index 0"
-        assert session.captures[0]["kind"] == "snap", "record_capture did not record a snap"
-        sidecar = got["result"].raw.parent / (got["result"].raw.stem + ".meta.json")
-        assert sidecar.exists(), "record_capture did not write a .meta.json sidecar"
-        print("record_capture check PASS: sidecar written, session record appended")
+    cam.capture_still_async(session.dir, "snap_frame_0000", _on_done)
+    done.wait(timeout=2.0)
+    idx = record_capture(session, got["result"])
+    assert idx == 0, "first recorded capture should be index 0"
+    assert session.captures[0]["kind"] == "snap", "record_capture did not record a snap"
+    sidecar = got["result"].raw.parent / (got["result"].raw.stem + ".meta.json")
+    assert sidecar.exists(), "record_capture did not write a .meta.json sidecar"
+    print("record_capture check PASS: sidecar written, session record appended")
 
-        # record_burst / record_hdr: the two new burst-wiring helpers, exercised
-        # against FakeCamera.capture_burst / capture_bracket_phase directly (no
-        # Qt), so the whole record path for all four burst kinds is covered
-        # off-rig before ever touching a PyQt5 widget.
-        from camera_backend import CaptureResult as _CR   # noqa: F401 (already imported above)
-        burst_root = Path("/tmp/zynergy_render_check_burst")
-        if burst_root.exists():
-            shutil.rmtree(burst_root)
-        bsession = Session(burst_root, {}, [])
-        bcam = FakeCamera()
+    # record_burst / record_hdr: the two new burst-wiring helpers, exercised
+    # against FakeCamera.capture_burst / capture_bracket_phase directly (no
+    # Qt), so the whole record path for all four burst kinds is covered
+    # off-rig before ever touching a PyQt5 widget.
+    from camera_backend import CaptureResult as _CR   # noqa: F401 (already imported above)
+    burst_root = Path("/tmp/zynergy_render_check_burst")
+    if burst_root.exists():
+        shutil.rmtree(burst_root)
+    bsession = Session(burst_root, {}, [])
+    bcam = FakeCamera()
 
-        flat_result = bcam.capture_burst(bsession.dir, "flat_", 3, shutter_us=5000)
-        flat_idx = record_burst(bsession, "flat", "flat_", flat_result)
-        assert flat_idx == 0, "first burst record should be index 0"
-        rec = bsession.captures[0]
-        assert rec["kind"] == "flat" and rec["frame_count"] == 3, \
-            "record_burst did not record a 3-frame flat"
-        for i in range(3):
-            sidecar = bsession.dir / "flat_frame_{:04d}.meta.json".format(i)
-            assert sidecar.exists(), "record_burst missing sidecar for frame {}".format(i)
+    flat_result = bcam.capture_burst(bsession.dir, "flat_", 3, shutter_us=5000)
+    flat_idx = record_burst(bsession, "flat", "flat_", flat_result)
+    assert flat_idx == 0, "first burst record should be index 0"
+    rec = bsession.captures[0]
+    assert rec["kind"] == "flat" and rec["frame_count"] == 3, \
+        "record_burst did not record a 3-frame flat"
+    for i in range(3):
+        sidecar = bsession.dir / "flat_frame_{:04d}.meta.json".format(i)
+        assert sidecar.exists(), "record_burst missing sidecar for frame {}".format(i)
 
-        bcam.enter_still_mode()
-        sci = bcam.capture_bracket_phase(bsession.dir, "", 2, 10_000, [-1.0, 0.0, 1.0])
-        dark = bcam.capture_bracket_phase(bsession.dir, "dark_", 2, 10_000, [-1.0, 0.0, 1.0])
-        bcam.exit_still_mode(8000)
-        hdr_idx = record_hdr(bsession, sci, dark)
-        assert hdr_idx == 1, "HDR should be the second record in this session"
-        hdr_rec = bsession.captures[1]
-        assert hdr_rec["kind"] == "hdr", "record_hdr did not record kind=hdr"
-        assert len(hdr_rec["levels"]) == 3 and len(hdr_rec["dark_levels"]) == 3, \
-            "record_hdr level counts off"
-        assert "frames" not in hdr_rec["levels"][0], \
-            "record_hdr must strip CaptureResult objects before writing session.json"
-        for lv in sci:
-            for i in range(2):
-                sidecar = bsession.dir / "{}frame_{:04d}.meta.json".format(lv["file_prefix"], i)
-                assert sidecar.exists(), "record_hdr missing a science sidecar"
-        json.loads((bsession.dir / "session.json").read_text())   # must be JSON-serializable
-        print("record_burst / record_hdr check PASS: sidecars written, session records "
-              "appended, HDR level dicts JSON-clean")
+    bcam.enter_still_mode()
+    sci = bcam.capture_bracket_phase(bsession.dir, "", 2, 10_000, [-1.0, 0.0, 1.0])
+    dark = bcam.capture_bracket_phase(bsession.dir, "dark_", 2, 10_000, [-1.0, 0.0, 1.0])
+    bcam.exit_still_mode(8000)
+    hdr_idx = record_hdr(bsession, sci, dark)
+    assert hdr_idx == 1, "HDR should be the second record in this session"
+    hdr_rec = bsession.captures[1]
+    assert hdr_rec["kind"] == "hdr", "record_hdr did not record kind=hdr"
+    assert len(hdr_rec["levels"]) == 3 and len(hdr_rec["dark_levels"]) == 3, \
+        "record_hdr level counts off"
+    assert "frames" not in hdr_rec["levels"][0], \
+        "record_hdr must strip CaptureResult objects before writing session.json"
+    for lv in sci:
+        for i in range(2):
+            sidecar = bsession.dir / "{}frame_{:04d}.meta.json".format(lv["file_prefix"], i)
+            assert sidecar.exists(), "record_hdr missing a science sidecar"
+    json.loads((bsession.dir / "session.json").read_text())   # must be JSON-serializable
+    print("record_burst / record_hdr check PASS: sidecars written, session records "
+          "appended, HDR level dicts JSON-clean")
 
-        # Processing wizard pure helpers: list_sessions/load_session_json/
-        # processable_captures/capture_correction_status, exercised against
-        # the same flat+hdr session just built above, plus a second session
-        # to confirm list_sessions finds multiple and sorts most-recent-first.
-        wiz_root = Path("/tmp/zynergy_render_check_wizard")
-        if wiz_root.exists():
-            shutil.rmtree(wiz_root)
-        s_old = Session(wiz_root, {}, [])
-        wcam = FakeCamera()
-        old_flat = wcam.capture_burst(s_old.dir, "flat_", 2, shutter_us=5000)
-        record_burst(s_old, "flat", "flat_", old_flat)
-        old_sci = wcam.capture_burst(s_old.dir, "science_", 2)
-        record_burst(s_old, "science", "science_", old_sci)
-        import time as _time
-        _time.sleep(1.05)   # session dirs are timestamp-named; force a distinct, later name
-        s_new = Session(wiz_root, {}, [])
-        new_sci = wcam.capture_burst(s_new.dir, "science_", 2)
-        record_burst(s_new, "science", "science_", new_sci)
+    # Processing wizard pure helpers: list_sessions/load_session_json/
+    # processable_captures/capture_correction_status, exercised against
+    # the same flat+hdr session just built above, plus a second session
+    # to confirm list_sessions finds multiple and sorts most-recent-first.
+    wiz_root = Path("/tmp/zynergy_render_check_wizard")
+    if wiz_root.exists():
+        shutil.rmtree(wiz_root)
+    s_old = Session(wiz_root, {}, [])
+    wcam = FakeCamera()
+    old_flat = wcam.capture_burst(s_old.dir, "flat_", 2, shutter_us=5000)
+    record_burst(s_old, "flat", "flat_", old_flat)
+    old_sci = wcam.capture_burst(s_old.dir, "science_", 2)
+    record_burst(s_old, "science", "science_", old_sci)
+    import time as _time
+    _time.sleep(1.05)   # session dirs are timestamp-named; force a distinct, later name
+    s_new = Session(wiz_root, {}, [])
+    new_sci = wcam.capture_burst(s_new.dir, "science_", 2)
+    record_burst(s_new, "science", "science_", new_sci)
 
-        found = list_sessions(wiz_root)
-        assert len(found) == 2, "list_sessions should find both session dirs"
-        assert found[0] == s_new.dir, "list_sessions should list most-recent-first"
+    found = list_sessions(wiz_root)
+    assert len(found) == 2, "list_sessions should find both session dirs"
+    assert found[0] == s_new.dir, "list_sessions should list most-recent-first"
 
-        sj_old = load_session_json(s_old.dir)
-        proc_old = processable_captures(sj_old)
-        assert len(proc_old) == 1 and proc_old[0]["kind"] == "science", \
-            "processable_captures should list science but exclude flat"
+    sj_old = load_session_json(s_old.dir)
+    proc_old = processable_captures(sj_old)
+    assert len(proc_old) == 1 and proc_old[0]["kind"] == "science", \
+        "processable_captures should list science but exclude flat"
 
-        status_with_flat = capture_correction_status(s_old.dir, sj_old, proc_old[0])
-        assert status_with_flat["flat_frames"] == 2, "expected 2 flat frames found"
-        assert status_with_flat["dark_frames"] == 0, "no standalone dark shot yet"
-        assert status_with_flat["own_frames"] == 2, "expected 2 own science frames"
+    status_with_flat = capture_correction_status(s_old.dir, sj_old, proc_old[0])
+    assert status_with_flat["flat_frames"] == 2, "expected 2 flat frames found"
+    assert status_with_flat["dark_frames"] == 0, "no standalone dark shot yet"
+    assert status_with_flat["own_frames"] == 2, "expected 2 own science frames"
 
-        sj_new = load_session_json(s_new.dir)
-        proc_new = processable_captures(sj_new)
-        status_no_flat = capture_correction_status(s_new.dir, sj_new, proc_new[0])
-        assert status_no_flat["flat_frames"] == 0, \
-            "a different session's flat must not leak into this one's status"
-        print("processing wizard helpers check PASS: sessions listed most-recent-first, "
-              "processable captures filtered correctly, flat/dark status accurate and "
-              "session-scoped")
+    sj_new = load_session_json(s_new.dir)
+    proc_new = processable_captures(sj_new)
+    status_no_flat = capture_correction_status(s_new.dir, sj_new, proc_new[0])
+    assert status_no_flat["flat_frames"] == 0, \
+        "a different session's flat must not leak into this one's status"
+    print("processing wizard helpers check PASS: sessions listed most-recent-first, "
+          "processable captures filtered correctly, flat/dark status accurate and "
+          "session-scoped")
 
-        # archive_session_raws: no-op with nothing to archive, then a real
-        # bundle-and-remove against the flat+science files already on disk
-        # in s_old (built above), verified against the exact same tar
-        # safety order hdr_from_session.py's own archive_raws uses.
-        empty_result = archive_session_raws(Path("/tmp/zynergy_render_check_no_such_dir"))
-        assert empty_result == {"archived": 0, "tar_path": None, "mb": 0.0}, \
-            "archiving an empty/missing dir should be a clean no-op"
+    # archive_session_raws: no-op with nothing to archive, then a real
+    # bundle-and-remove against the flat+science files already on disk
+    # in s_old (built above), verified against the exact same tar
+    # safety order hdr_from_session.py's own archive_raws uses.
+    empty_result = archive_session_raws(Path("/tmp/zynergy_render_check_no_such_dir"))
+    assert empty_result == {"archived": 0, "tar_path": None, "mb": 0.0}, \
+        "archiving an empty/missing dir should be a clean no-op"
 
-        raws_before = sorted(s_old.dir.glob("*.tif"))
-        assert len(raws_before) == 4, "expected 2 flat + 2 science raw files before archiving"
-        arch_result = archive_session_raws(s_old.dir)
-        assert arch_result["archived"] == 4, "expected all 4 raws archived"
-        assert arch_result["tar_path"].exists(), "tar file should exist on disk"
-        assert not list(s_old.dir.glob("*.tif")), "loose raws should be removed after archiving"
-        with tarfile.open(str(arch_result["tar_path"])) as tf:
-            names = set(tf.getnames())
-        assert names == {p.name for p in raws_before}, \
-            "tar contents should exactly match the original raw filenames"
-        print("archive_session_raws check PASS: no-op on empty/missing dir, real bundle+verify+"
-              "remove matches hdr_from_session.py's own tar safety order")
-    else:
-        print("record_capture check SKIPPED: capture.py not importable here")
+    raws_before = sorted(s_old.dir.glob("*.tif"))
+    assert len(raws_before) == 4, "expected 2 flat + 2 science raw files before archiving"
+    arch_result = archive_session_raws(s_old.dir)
+    assert arch_result["archived"] == 4, "expected all 4 raws archived"
+    assert arch_result["tar_path"].exists(), "tar file should exist on disk"
+    assert not list(s_old.dir.glob("*.tif")), "loose raws should be removed after archiving"
+    with tarfile.open(str(arch_result["tar_path"])) as tf:
+        names = set(tf.getnames())
+    assert names == {p.name for p in raws_before}, \
+        "tar contents should exactly match the original raw filenames"
+    print("archive_session_raws check PASS: no-op on empty/missing dir, real bundle+verify+"
+          "remove matches hdr_from_session.py's own tar safety order")
 
 
 if __name__ == "__main__":
