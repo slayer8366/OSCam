@@ -100,6 +100,14 @@ except ImportError:
         _stacks = None
 
 try:
+    from . import export as _export
+except ImportError:
+    try:
+        import export as _export
+    except ImportError:
+        _export = None
+
+try:
     from .camera_backend import FULL_RES
 except ImportError:
     try:
@@ -597,6 +605,12 @@ if _HAVE_QT:
                 restart_btn.setToolTip("wizard_pages.py not alongside this file")
             restart_btn.clicked.connect(self._on_restart_wizard)
 
+            export_btn = QPushButton("Export results...")
+            export_btn.setEnabled(_export is not None)
+            if _export is None:
+                export_btn.setToolTip("export.py not alongside this file")
+            export_btn.clicked.connect(self._on_export_results)
+
             self.onionskin_btn = QPushButton("Onion-skin")
             self.onionskin_btn.setCheckable(True)
             self.onionskin_btn.setChecked(False)
@@ -605,6 +619,7 @@ if _HAVE_QT:
             top = QHBoxLayout()
             top.addWidget(open_btn)
             top.addWidget(restart_btn)
+            top.addWidget(export_btn)
             top.addWidget(QLabel("Objective:"))
             top.addWidget(self.objective_combo)
             top.addStretch(1)
@@ -698,6 +713,28 @@ if _HAVE_QT:
             # calibrate.py's CalibrationWindow._on_restart_wizard exactly.
             self.restart_requested.emit()
             self.close()
+
+        def _on_export_results(self):
+            """Export all measurements to a JSON results file (checklist §11)."""
+            if _export is None or _annotations is None:
+                QMessageBox.warning(self, "Export not available",
+                                   "export.py or annotations.py not importable")
+                return
+            path, _ = QFileDialog.getSaveFileName(
+                self, "Export measurement results", "measurements.json",
+                "JSON (*.json);;All files (*)")
+            if not path:
+                return
+            try:
+                store = _annotations.load_annotations()
+                _export.export_measurements(store=store, out_path=path)
+                QMessageBox.information(
+                    self, "Exported",
+                    "Exported {} measurements to {}".format(
+                        sum(len(r.get("marks", [])) for r in store.values()),
+                        Path(path).name))
+            except Exception as exc:
+                QMessageBox.warning(self, "Export failed", str(exc))
 
         def _load_image(self, path):
             try:
