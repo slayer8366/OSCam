@@ -1,0 +1,135 @@
+{
+  "software": "ca_measure.py",
+  "version": "1.0",
+  "ca_lib_version": "1.0",
+  "created_utc": "2026-07-01T19:06:25+00:00",
+  "kind": "lateral chromatic aberration registration (per optical configuration)",
+  "model": "constant_radial_scale",
+  "reference_channel": "green",
+  "image_shape": [
+    3040,
+    4056
+  ],
+  "optical_center_px": [
+    2374.95850159856,
+    2067.1997791855465
+  ],
+  "scale_red_over_green": 1.0008068001343235,
+  "scale_blue_over_green": 1.0022081991100618,
+  "residual_rms": {
+    "R_vs_G_before": 4851.376948570375,
+    "R_vs_G_after": 4850.468938904924,
+    "B_vs_G_before": 3145.851215146705,
+    "B_vs_G_after": 3139.9065228487425
+  },
+  "edge_pixels_used": 200000,
+  "edge_percentile": 90.0,
+  "offset_vs_radius": [
+    {
+      "radius_px": 176.24950432756415,
+      "n": 3941,
+      "dR_measured": -0.7657756493886797,
+      "dR_predicted": 0.14219812376593763,
+      "dB_measured": -3.5113071681701165,
+      "dB_predicted": 0.38919399860495335
+    },
+    {
+      "radius_px": 403.7208647845926,
+      "n": 11576,
+      "dR_measured": -3.9995721467585588,
+      "dR_predicted": 0.32572204793742854,
+      "dB_measured": -3.9928513407888166,
+      "dB_predicted": 0.8914960543307012
+    },
+    {
+      "radius_px": 663.3648386026684,
+      "n": 18337,
+      "dR_measured": -3.9995721467585588,
+      "dR_predicted": 0.5352028408901521,
+      "dB_measured": 0.7581991369360548,
+      "dB_predicted": 1.464841646248675
+    },
+    {
+      "radius_px": 919.5673678224306,
+      "n": 24441,
+      "dR_measured": -0.5200951725247268,
+      "dR_predicted": 0.7419070758786891,
+      "dB_measured": 1.7807941835249308,
+      "dB_predicted": 2.030587843267326
+    },
+    {
+      "radius_px": 1178.1724035999637,
+      "n": 26155,
+      "dR_measured": -3.3887937805302077,
+      "dR_predicted": 0.9505496534807489,
+      "dB_measured": -3.6191192275901636,
+      "dB_predicted": 2.6016392531287638
+    },
+    {
+      "radius_px": 1443.6784377075676,
+      "n": 27182,
+      "dR_measured": 3.0730589606160117,
+      "dR_predicted": 1.1647599574624765,
+      "dB_measured": 2.507163126524701,
+      "dB_predicted": 3.187929441361202
+    },
+    {
+      "radius_px": 1696.1167980585005,
+      "n": 28938,
+      "dR_measured": 2.4122638233533227,
+      "dR_predicted": 1.3684272605020256,
+      "dB_measured": 1.807552561510579,
+      "dB_predicted": 3.7453636040335816
+    },
+    {
+      "radius_px": 1960.4542628920674,
+      "n": 26536,
+      "dR_measured": -0.8439353605823627,
+      "dR_predicted": 1.5816947626364937,
+      "dB_measured": 0.5670159684196008,
+      "dB_predicted": 4.329073358635045
+    },
+    {
+      "radius_px": 2210.592690513586,
+      "n": 18674,
+      "dR_measured": -3.9995721467585588,
+      "dR_predicted": 1.7835064796410163,
+      "dB_measured": 3.7388634908826766,
+      "dB_predicted": 4.881428811901131
+    },
+    {
+      "radius_px": 2463.1609856585474,
+      "n": 8916,
+      "dR_measured": -3.3717273377604453,
+      "dR_predicted": 1.9872786140898406,
+      "dB_measured": 3.9995721467585588,
+      "dB_predicted": 5.43914989647005
+    },
+    {
+      "radius_px": 2730.2634720415813,
+      "n": 3980,
+      "dR_measured": -2.014744461415165,
+      "dR_predicted": 2.2027769359818263,
+      "dB_measured": -0.7247199529806648,
+      "dB_predicted": 6.0289653691963485
+    },
+    {
+      "radius_px": 2965.1317779997707,
+      "n": 1323,
+      "dR_measured": 2.999052935943422,
+      "dR_predicted": 2.3922687167772376,
+      "dB_measured": -0.7987259776532546,
+      "dB_predicted": 6.547601353394936
+    }
+  ],
+  "source_target": {
+    "path": "target_rgb.tif",
+    "sha256": "532f25ada1f47f7bbf41c9fd2d836865a3d28ce3d326b4fd7ac8e6f7cabb77e6",
+    "shape": [
+      3040,
+      4056
+    ]
+  },
+  "optical_config_note": "valid only for the objective + reducer + tube this was shot with; re-measure if any optic changes",
+  "supersedes": null
+}

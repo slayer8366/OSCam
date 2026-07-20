@@ -1,0 +1,10 @@
+venv/
+__pycache__/
+*.pyc
+.claude/
+
+# large binary captures/derivatives, not source
+*.tif
+*.tiff
+*.dng
+*.zip

@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "zynergy-imaging"
+version = "0.1.0"
+description = "Microscopy capture and photon-faithful image pipeline (Zynergy, LLC)"
+authors = [{ name = "Brandon Lee Wann" }]
+requires-python = ">=3.9"
+
+# Core runtime deps. These are the only imports that are NOT guarded by a
+# try/except in the source, so they are genuinely required for the package to
+# function at all.
+dependencies = [
+    "numpy",
+    "tifffile",
+]
+
+# Everything below is optional. Each is imported behind a try/except in the
+# source with a working fallback, so the base install stays lean and installs
+# cleanly on a Raspberry Pi that only has numpy + tifffile.
+[project.optional-dependencies]
+# debayer.py display-only effects: CLAHE (skimage) and gaussian blur (scipy),
+# plus PIL for certain image writes.
+effects = ["scipy", "scikit-image", "pillow"]
+# ca_measure.py --plot output.
+plot = ["matplotlib"]
+# Convenience: everything except the Pi camera stack.
+all = ["scipy", "scikit-image", "pillow", "matplotlib"]
+
+# NOTE ON THE CAMERA STACK: capture.py imports picamera2 + libcamera behind a
+# try/except (_HAVE_CAMERA). These are NOT pip packages in the normal sense —
+# on Raspberry Pi OS they come from the system via:
+#     sudo apt install python3-picamera2
+# They are deliberately omitted from dependencies so that (a) the pipeline
+# tools install on any machine for offline processing, and (b) pip never tries
+# to build them. Only capture.py needs them, and only at capture time.
+
+# Six command-line tools, one per module main(). Command names are hyphenated;
+# the module paths use the installed package. The subprocess orchestration in
+# hdr-from-session still calls the sibling .py files by path (Path(__file__).
+# parent / "frame_average.py"), which resolves inside the installed package
+# directory, so that mechanism is unaffected by these entry points.
+[project.scripts]
+capture           = "zynergy_imaging.capture:main"
+hdr-from-session  = "zynergy_imaging.hdr_from_session:main"
+frame-average     = "zynergy_imaging.frame_average:main"
+hdr-merge         = "zynergy_imaging.hdr_merge:main"
+debayer           = "zynergy_imaging.debayer:main"
+ca-measure        = "zynergy_imaging.ca_measure:main"
+zstack-process    = "zynergy_imaging.zstack_process:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
