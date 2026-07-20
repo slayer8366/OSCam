@@ -87,6 +87,19 @@ except ImportError:
     except ImportError:
         _focus = None
 
+# The shared image-source wizard page (build checklist section 4): pick an
+# image already shot, or shoot a new one live. Optional the same way debayer/
+# focus are -- the wizard is simply unavailable (CalibrationWindow itself
+# still opens fine via the CLI [image] argument) if wizard_pages.py is not
+# alongside this file.
+try:
+    from . import wizard_pages as _wizard_pages
+except ImportError:
+    try:
+        import wizard_pages as _wizard_pages
+    except ImportError:
+        _wizard_pages = None
+
 CALIBRATION_PATH = Path.home() / ".zynergy" / "calibration.json"
 DEFAULT_OBJECTIVES = ["4x", "10x", "40x", "100x"]
 DEFAULT_TARGET_TYPES = ["stage micrometer"]
@@ -294,9 +307,10 @@ def widget_to_native(widget_point, zoom):
 try:
     from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QLabel,
                                  QVBoxLayout, QHBoxLayout, QPushButton, QComboBox,
-                                 QLineEdit, QScrollArea, QFileDialog, QMessageBox)
+                                 QLineEdit, QScrollArea, QFileDialog, QMessageBox,
+                                 QWizard, QWizardPage)
     from PyQt5.QtGui import QPixmap, QPainter, QPen, QColor, QImage
-    from PyQt5.QtCore import Qt
+    from PyQt5.QtCore import Qt, pyqtSignal
     _HAVE_QT = True
 except ImportError:
     _HAVE_QT = False
@@ -399,6 +413,12 @@ if _HAVE_QT:
         a known-distance entry, and Compute & Save.
         """
 
+        # Emitted by "Restart wizard...", right before this window closes, so
+        # main()'s event loop knows to run CalibrationWizard again rather than
+        # exit -- the "manually restart to set new data points" path onto an
+        # otherwise-unchanged window.
+        restart_requested = pyqtSignal()
+
         def __init__(self, image_path=None, objective=None):
             super().__init__()
             self.setWindowTitle("Zynergy spatial calibration")
@@ -459,8 +479,15 @@ if _HAVE_QT:
             open_btn = QPushButton("Open image...")
             open_btn.clicked.connect(self._on_open)
 
+            restart_btn = QPushButton("Restart wizard...")
+            restart_btn.setEnabled(_wizard_pages is not None)
+            if _wizard_pages is None:
+                restart_btn.setToolTip("wizard_pages.py not alongside this file")
+            restart_btn.clicked.connect(self._on_restart_wizard)
+
             top_row = QHBoxLayout()
             top_row.addWidget(open_btn)
+            top_row.addWidget(restart_btn)
             top_row.addWidget(QLabel("Objective:"))
             top_row.addWidget(self.objective_combo)
             top_row.addWidget(QLabel("Target:"))
@@ -538,6 +565,14 @@ if _HAVE_QT:
                 "All files (*)")
             if path:
                 self._load_image(path)
+
+        def _on_restart_wizard(self):
+            # Just signals + closes; main()'s loop is what actually reruns
+            # CalibrationWizard and opens the next window. Keeping that in
+            # main() (rather than doing it here) means this window never
+            # needs to construct or outlive its own replacement.
+            self.restart_requested.emit()
+            self.close()
 
         # --- points ------------------------------------------------------
         def _on_canvas_click(self, native_point):
@@ -660,6 +695,112 @@ if _HAVE_QT:
                 .format(obj, entry["um_per_px"]))
 
 
+    class _SetupPage(QWizardPage):
+        """Wizard page 1: objective + target type. Next enabled once an
+        objective string is chosen. Shows the existing calibration for it via
+        current_calibration -- reused, not reimplemented -- the same lookup
+        CalibrationWindow's own _refresh_existing_label already calls."""
+
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self.setTitle("Objective")
+            self.setSubTitle("Pick the objective and target this calibration is for.")
+
+            self.objective_combo = QComboBox()
+            self.objective_combo.setEditable(True)
+            for obj in DEFAULT_OBJECTIVES:
+                self.objective_combo.addItem(obj)
+            self.objective_combo.currentTextChanged.connect(self._on_changed)
+
+            self.target_combo = QComboBox()
+            self.target_combo.setEditable(True)
+            for t in DEFAULT_TARGET_TYPES:
+                self.target_combo.addItem(t)
+
+            self.existing_label = QLabel("")
+            self.existing_label.setWordWrap(True)
+
+            lay = QVBoxLayout(self)
+            lay.addWidget(QLabel("Objective:"))
+            lay.addWidget(self.objective_combo)
+            lay.addWidget(QLabel("Target type:"))
+            lay.addWidget(self.target_combo)
+            lay.addWidget(self.existing_label)
+            self._refresh_existing()
+
+        def _on_changed(self, _text):
+            self._refresh_existing()
+            self.completeChanged.emit()
+
+        def _refresh_existing(self):
+            obj = self.objective_combo.currentText().strip()
+            entry = current_calibration(obj) if obj else None
+            if entry:
+                n = len(load_calibrations().get(obj, []))
+                self.existing_label.setText(
+                    "Current calibration for {}: {:.4f} \u00b5m/px (set {}, "
+                    "#{} in history)".format(
+                        obj, entry["um_per_px"], entry.get("calibrated_at", "unknown date"), n))
+            else:
+                self.existing_label.setText(
+                    "No calibration saved yet for {}.".format(obj or "(no objective set)"))
+
+        def isComplete(self):
+            return bool(self.objective_combo.currentText().strip())
+
+        def objective(self):
+            return self.objective_combo.currentText().strip()
+
+        def target_type(self):
+            return self.target_combo.currentText().strip() or "unspecified"
+
+
+    class CalibrationWizard(QWizard):
+        """The paged wizard (build checklist section 4): page 1 picks the
+        objective/target, page 2 gets an image -- an existing file or a fresh
+        live capture, via wizard_pages.ImageSourcePage. Finishing hands
+        (objective, image_path) to main(), which opens the unchanged
+        CalibrationWindow with them; this only replaces how that window gets
+        its two startup arguments, never its own load/measure/save logic."""
+
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self.setWindowTitle("Zynergy spatial calibration - setup")
+            if _wizard_pages is None:
+                raise RuntimeError(
+                    "wizard_pages.py could not be imported; needed for the "
+                    "image-source page")
+            self.setup_page = _SetupPage()
+            self.image_page = _wizard_pages.ImageSourcePage(self._validate_image)
+            self.addPage(self.setup_page)
+            self.addPage(self.image_page)
+            self.finished.connect(lambda _res: self.image_page.capture_pane.stop())
+
+        def _validate_image(self, path):
+            try:
+                raw_path = resolve_raw_path(path)
+                green = load_green_plane(raw_path)
+            except (ValueError, RuntimeError) as exc:
+                return False, str(exc)
+            except Exception as exc:
+                return False, "Failed to read {}: {}".format(Path(path).name, exc)
+            msg = "Loaded {} ({} x {} green plane)".format(
+                Path(raw_path).name, green.shape[1], green.shape[0])
+            if _focus is not None:
+                score = _focus.variance_of_laplacian(green, blur_radius=1)
+                msg += "\nFocus score: {:.2f} (evidence only, not a gate)".format(score)
+            return True, msg
+
+        def objective(self):
+            return self.setup_page.objective()
+
+        def target_type(self):
+            return self.setup_page.target_type()
+
+        def image_path(self):
+            return self.image_page.resolved_path
+
+
 def main(argv=None):
     import argparse
     ap = argparse.ArgumentParser(description="Zynergy spatial (\u00b5m/px) calibration tool.")
@@ -673,10 +814,32 @@ def main(argv=None):
         sys.exit("PyQt5 not available. Use --render-check for the headless self-check, "
                  "or install python3-pyqt5 for the GUI.")
     app = QApplication(sys.argv)
-    win = CalibrationWindow(image_path=a.image, objective=a.objective)
-    win.resize(1200, 800)
-    win.show()
-    app.exec_()
+
+    if a.image or a.objective:
+        # CLI shortcut, unchanged: skip the wizard, open the window directly.
+        win = CalibrationWindow(image_path=a.image, objective=a.objective)
+        win.resize(1200, 800)
+        win.show()
+        app.exec_()
+        return
+
+    # No args: the wizard is the new default interactive entry point. Looping
+    # on app.exec_() is what makes "Restart wizard..." work -- closing the
+    # window ends that inner event loop (quitOnLastWindowClosed), and the
+    # restarted flag (set only by CalibrationWindow.restart_requested) decides
+    # whether to run the wizard again or return.
+    while True:
+        wizard = CalibrationWizard()
+        if wizard.exec_() != QWizard.Accepted:
+            return
+        win = CalibrationWindow(image_path=wizard.image_path(), objective=wizard.objective())
+        win.resize(1200, 800)
+        restarted = []
+        win.restart_requested.connect(lambda: restarted.append(True))
+        win.show()
+        app.exec_()
+        if not restarted:
+            return
 
 
 def render_check():

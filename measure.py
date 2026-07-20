@@ -101,6 +101,19 @@ except ImportError:
 
 GREEN_PLANE_RES = (FULL_RES[0] // 2, FULL_RES[1] // 2)
 
+# The shared image-source wizard page (build checklist section 4): pick an
+# image already shot, or shoot a new one live. Optional the same way every
+# other integration above is -- the wizard is simply unavailable
+# (MeasureWindow itself still opens fine via the CLI [image] argument) if
+# wizard_pages.py is not alongside this file.
+try:
+    from . import wizard_pages as _wizard_pages
+except ImportError:
+    try:
+        import wizard_pages as _wizard_pages
+    except ImportError:
+        _wizard_pages = None
+
 
 # ---------------------------------------------------------------------------
 # Pure loading + provenance guard (no Qt, no camera)
@@ -315,9 +328,9 @@ try:
     from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QLabel,
                                  QVBoxLayout, QHBoxLayout, QPushButton, QComboBox,
                                  QGraphicsView, QGraphicsScene, QFileDialog,
-                                 QMessageBox, QButtonGroup)
+                                 QMessageBox, QButtonGroup, QWizard, QWizardPage)
     from PyQt5.QtGui import QPen, QColor, QPolygonF, QPainter
-    from PyQt5.QtCore import Qt, QPointF
+    from PyQt5.QtCore import Qt, QPointF, pyqtSignal
     _HAVE_QT = True
 except ImportError:
     _HAVE_QT = False
@@ -434,6 +447,12 @@ if _HAVE_QT:
         same way qt_shell.py's ruler checks it, via calibrate.py's own
         current_calibration."""
 
+        # Emitted by "Restart wizard...", right before this window closes, so
+        # main()'s event loop knows to run MeasureWizard again rather than
+        # exit -- the "manually restart to set new data points" path onto an
+        # otherwise-unchanged window.
+        restart_requested = pyqtSignal()
+
         def __init__(self, image_path=None, objective=None):
             super().__init__()
             self.setWindowTitle("Zynergy measurement")
@@ -482,8 +501,15 @@ if _HAVE_QT:
             open_btn = QPushButton("Open image...")
             open_btn.clicked.connect(self._on_open)
 
+            restart_btn = QPushButton("Restart wizard...")
+            restart_btn.setEnabled(_wizard_pages is not None)
+            if _wizard_pages is None:
+                restart_btn.setToolTip("wizard_pages.py not alongside this file")
+            restart_btn.clicked.connect(self._on_restart_wizard)
+
             top = QHBoxLayout()
             top.addWidget(open_btn)
+            top.addWidget(restart_btn)
             top.addWidget(QLabel("Objective:"))
             top.addWidget(self.objective_combo)
             top.addStretch(1)
@@ -567,6 +593,13 @@ if _HAVE_QT:
             if path:
                 self._load_image(path)
 
+        def _on_restart_wizard(self):
+            # Just signals + closes; main()'s loop is what actually reruns
+            # MeasureWizard and opens the next window, mirroring
+            # calibrate.py's CalibrationWindow._on_restart_wizard exactly.
+            self.restart_requested.emit()
+            self.close()
+
         def _load_image(self, path):
             try:
                 plane = load_measurement_plane(path)
@@ -638,6 +671,94 @@ if _HAVE_QT:
             record = _annotations.image_record_for(self._pixel_sha256)
             self.mark_count_label.setText(
                 "{} mark(s) on record for this image".format(len(record["marks"])))
+
+
+    class _SetupPage(QWizardPage):
+        """Wizard page 1: pick a calibrated objective. Next disabled until the
+        chosen objective has a calibration on record -- reuses
+        current_um_per_px, the exact gate MeasureWindow's own
+        _refresh_gating already checks, never a second copy of that rule."""
+
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self.setTitle("Objective")
+            self.setSubTitle("Pick a calibrated objective to measure with.")
+
+            self.objective_combo = QComboBox()
+            self.objective_combo.setEditable(True)
+            for obj in (getattr(_calibrate, "DEFAULT_OBJECTIVES", None)
+                       or ["4x", "10x", "40x", "100x"]):
+                self.objective_combo.addItem(obj)
+            self.objective_combo.currentTextChanged.connect(self._on_changed)
+
+            self.status_label = QLabel("")
+            self.status_label.setWordWrap(True)
+
+            lay = QVBoxLayout(self)
+            lay.addWidget(QLabel("Objective:"))
+            lay.addWidget(self.objective_combo)
+            lay.addWidget(self.status_label)
+            self._refresh()
+
+        def _on_changed(self, _text):
+            self._refresh()
+            self.completeChanged.emit()
+
+        def _refresh(self):
+            obj = self.objective_combo.currentText().strip()
+            um_per_px = current_um_per_px(obj)
+            if um_per_px is not None:
+                self.status_label.setText(
+                    "Calibration: {} at {:.4f} µm/px".format(obj, um_per_px))
+            else:
+                self.status_label.setText(
+                    "No calibration on record for {} -- calibrate it first "
+                    "(calibrate.py) before it can be used here.".format(
+                        obj or "(no objective set)"))
+
+        def isComplete(self):
+            return current_um_per_px(self.objective_combo.currentText().strip()) is not None
+
+        def objective(self):
+            return self.objective_combo.currentText().strip()
+
+
+    class MeasureWizard(QWizard):
+        """The paged wizard (build checklist section 4): page 1 picks a
+        calibrated objective, page 2 gets an image -- an existing file or a
+        fresh live capture, via wizard_pages.ImageSourcePage. Finishing hands
+        (objective, image_path) to main(), which opens the unchanged
+        MeasureWindow with them; this only replaces how that window gets its
+        two startup arguments, never its own canvas/tool logic."""
+
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self.setWindowTitle("Zynergy measurement - setup")
+            if _wizard_pages is None:
+                raise RuntimeError(
+                    "wizard_pages.py could not be imported; needed for the "
+                    "image-source page")
+            self.setup_page = _SetupPage()
+            self.image_page = _wizard_pages.ImageSourcePage(self._validate_image)
+            self.addPage(self.setup_page)
+            self.addPage(self.image_page)
+            self.finished.connect(lambda _res: self.image_page.capture_pane.stop())
+
+        def _validate_image(self, path):
+            try:
+                plane = load_measurement_plane(path)
+            except (ValueError, RuntimeError) as exc:
+                return False, str(exc)
+            except Exception as exc:
+                return False, "Failed to read {}: {}".format(Path(path).name, exc)
+            return True, "Loaded {} ({} x {} plane)".format(
+                Path(path).name, plane.shape[1], plane.shape[0])
+
+        def objective(self):
+            return self.setup_page.objective()
+
+        def image_path(self):
+            return self.image_page.resolved_path
 
 
 def render_check():
@@ -821,10 +942,29 @@ def main():
         sys.exit(1)
 
     app = QApplication(sys.argv)
-    win = MeasureWindow(image_path=args.image, objective=args.objective)
-    win.resize(1200, 800)
-    win.show()
-    sys.exit(app.exec_())
+
+    if args.image or args.objective:
+        # CLI shortcut, unchanged: skip the wizard, open the window directly.
+        win = MeasureWindow(image_path=args.image, objective=args.objective)
+        win.resize(1200, 800)
+        win.show()
+        sys.exit(app.exec_())
+
+    # No args: the wizard is the new default interactive entry point. Looping
+    # on app.exec_() is what makes "Restart wizard..." work -- see
+    # calibrate.py's main() for the identical pattern.
+    while True:
+        wizard = MeasureWizard()
+        if wizard.exec_() != QWizard.Accepted:
+            return
+        win = MeasureWindow(image_path=wizard.image_path(), objective=wizard.objective())
+        win.resize(1200, 800)
+        restarted = []
+        win.restart_requested.connect(lambda: restarted.append(True))
+        win.show()
+        app.exec_()
+        if not restarted:
+            return
 
 
 if __name__ == "__main__":
