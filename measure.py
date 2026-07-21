@@ -841,13 +841,21 @@ if _HAVE_QT:
 
         def _refresh_gating(self):
             obj = self.objective_combo.currentText().strip()
-            um_per_px = current_um_per_px(obj)
+            entry = (_calibrate.current_calibration(obj)
+                    if _calibrate is not None and obj else None)
+            um_per_px = entry["um_per_px"] if entry else None
             ok = um_per_px is not None
             for btn in (self.distance_btn, self.angle_btn, self.polygon_btn, self.ellipse_btn):
                 btn.setEnabled(ok)
             if ok:
+                # Section 13: config drift (reduction lens / CFA / green-which)
+                # is evidence, never a gate -- the tool stays enabled even on
+                # a stale calibration, same as poly2_flag never blocking a CA
+                # save. A human decides whether to re-measure.
+                staleness = _calibrate.format_staleness_suffix(
+                    _calibrate.calibration_staleness(entry))
                 self.calib_status.setText(
-                    "Calibration: {} at {:.4f} \u00b5m/px".format(obj, um_per_px))
+                    "Calibration: {} at {:.4f} \u00b5m/px{}".format(obj, um_per_px, staleness))
             else:
                 self.calib_status.setText(
                     "No calibration on record for {} -- measurement tools "
@@ -1361,6 +1369,34 @@ def render_check():
             assert defaults["calibration_ref"]["objective"] == "40x"
             print("calibration gating check PASS: closed with no calibration, "
                   "open once calibrated, record_defaults carry the right ref")
+
+            # section 13: _refresh_gating's status label surfaces staleness
+            # (config drift), but never re-closes the gate over it -- evidence,
+            # not a block, same as every other flag this project raises.
+            if not _HAVE_QT:
+                print("_refresh_gating staleness check SKIPPED: PyQt5 not available")
+            else:
+                qtapp = QApplication.instance() or QApplication([])
+                win = MeasureWindow(objective="40x")
+                win._refresh_gating()
+                assert "STALE" not in win.calib_status.text(), \
+                    "a fresh calibration should not show a staleness warning"
+                assert win.distance_btn.isEnabled(), \
+                    "tools should stay enabled on a fresh (non-stale) calibration"
+
+                drifted_entry = dict(entry, reduction_lens=entry["reduction_lens"] + 1.0)
+                _calibrate.save_calibration("40x", drifted_entry)
+                win._refresh_gating()
+                assert "STALE" in win.calib_status.text() and \
+                    "reduction lens" in win.calib_status.text(), \
+                    "a drifted reduction lens should surface in the status text: " \
+                    "{!r}".format(win.calib_status.text())
+                assert win.distance_btn.isEnabled(), \
+                    "a stale calibration must still gate tools OPEN -- evidence, " \
+                    "never a block"
+                print("_refresh_gating staleness check PASS: a fresh calibration "
+                      "is quiet, a drifted one shows the staleness reason in the "
+                      "status text without disabling any measurement tool")
         finally:
             _calibrate.CALIBRATION_PATH = orig_path
     else:

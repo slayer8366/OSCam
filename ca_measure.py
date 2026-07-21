@@ -352,7 +352,14 @@ def build_ca_calibration_entry(fit_result, objective, source_path, now=None):
     result plus enough provenance to audit it later (objective, source target
     image + hash) and the poly2 flag computed from the fit's own
     offset-vs-radius table -- the checklist's own "poly2-flag step", recorded
-    honestly rather than only ever shown once and forgotten."""
+    honestly rather than only ever shown once and forgotten.
+
+    reduction_lens and cfa_pattern (top-level, no measurement_plane nesting
+    and no green_which -- CA operates on demosaiced RGB, not a green
+    sub-plane extraction, so green_which never applies here) are the same
+    two fields calibrate.py's own spatial entries carry, so
+    calibrate.calibration_staleness (section 13's config-drift check) works
+    identically on a CA entry as on a spatial one."""
     flagged, detail = poly2_flag(fit_result["offset_vs_radius"])
     source_path = Path(source_path)
     return {
@@ -364,6 +371,8 @@ def build_ca_calibration_entry(fit_result, objective, source_path, now=None):
         "model": "constant_radial_scale",
         "reference_channel": "green",
         "objective": objective,
+        "reduction_lens": _calibrate.REDUCTION_LENS if _calibrate is not None else None,
+        "cfa_pattern": _calibrate.DEFAULT_CFA_PATTERN if _calibrate is not None else None,
         "image_shape": fit_result["image_shape"],
         "optical_center_px": fit_result["optical_center_px"],
         "scale_red_over_green": fit_result["scale_red_over_green"],
@@ -481,12 +490,14 @@ if _HAVE_QT:
             if entry:
                 n = len(load_ca_calibrations().get(obj, []))
                 flag_note = " (poly2-flagged)" if entry.get("poly2_flagged") else ""
+                staleness = (_calibrate.format_staleness_suffix(
+                    _calibrate.calibration_staleness(entry)) if _calibrate is not None else "")
                 self.existing_label.setText(
                     "Current CA calibration for {}: R/G={:.6f} B/G={:.6f} "
-                    "(set {}, #{} in history){}".format(
+                    "(set {}, #{} in history){}{}".format(
                         obj, entry["scale_red_over_green"],
                         entry["scale_blue_over_green"],
-                        entry.get("created_utc", "unknown date"), n, flag_note))
+                        entry.get("created_utc", "unknown date"), n, flag_note, staleness))
             else:
                 self.existing_label.setText(
                     "No CA calibration saved yet for {}.".format(obj or "(no objective set)"))
@@ -860,6 +871,23 @@ def render_check():
         assert entry_v1["objective"] == "40x"
         assert entry_v1["model"] == "constant_radial_scale"
         assert "poly2_flagged" in entry_v1 and "poly2_detail" in entry_v1
+        if _calibrate is not None:
+            # section 13: a CA entry carries the same config fields a spatial
+            # entry does (reduction_lens, cfa_pattern -- no green_which, CA
+            # never extracts a green sub-plane), so calibrate.py's own
+            # config-drift check works on it identically, unmodified.
+            assert entry_v1["reduction_lens"] == _calibrate.REDUCTION_LENS
+            assert entry_v1["cfa_pattern"] == _calibrate.DEFAULT_CFA_PATTERN
+            assert _calibrate.calibration_staleness(entry_v1) == [], \
+                "a freshly-built CA entry should read as current, not stale"
+            drifted = dict(entry_v1, reduction_lens=entry_v1["reduction_lens"] + 1.0)
+            reasons = _calibrate.calibration_staleness(drifted)
+            assert len(reasons) == 1 and "reduction lens" in reasons[0], \
+                "calibrate.calibration_staleness should detect a CA entry's " \
+                "own reduction-lens drift, same as it does for a spatial entry"
+            print("CA entry config-drift check PASS: reduction_lens/cfa_pattern "
+                  "carried on the entry, calibrate.calibration_staleness reads "
+                  "a CA entry the same way it reads a spatial one")
         store = save_ca_calibration("40x", entry_v1)
         saved_v1 = store["40x"][-1]
         assert saved_v1["supersedes"] is None, "the first entry supersedes nothing"

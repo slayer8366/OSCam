@@ -304,6 +304,81 @@ def widget_to_native(widget_point, zoom):
     return (widget_point[0] / zoom, widget_point[1] / zoom)
 
 
+# ---------------------------------------------------------------------------
+# Config-drift invalidation (build checklist section 13): "objective change
+# or a resolution/binning change invalidates both calibrations; the recorded
+# objective and .5x let the tool flag a re-measure when [the config] no
+# longer matches." There is currently no variable resolution/binning mode on
+# this rig (camera_backend.py's FULL_RES/GREEN_PLANE_RES are fixed IMX477
+# constants), so reduction lens and the CFA/green-which convention are the
+# two things that can actually drift if the physical rig, or its assumed
+# hardware convention, ever changes.
+# ---------------------------------------------------------------------------
+def current_rig_config():
+    """This rig's live, code-level optical config -- the three numbers every
+    calibration entry's own recorded config gets compared against."""
+    return {"reduction_lens": REDUCTION_LENS, "cfa_pattern": DEFAULT_CFA_PATTERN,
+            "green_which": DEFAULT_GREEN_WHICH}
+
+
+def calibration_staleness(entry, rig_config=None):
+    """Whether a calibration entry's own recorded config still matches the
+    CURRENT rig config -- evidence only, same "recorded honestly, never a
+    gate" rule this project already follows for poly2_flag and
+    sharpness_relative_flag. Returns a list of human-readable mismatch
+    reasons, empty if nothing has drifted.
+
+    Only compares fields the entry ACTUALLY carries: an entry saved before
+    a given field existed (an older spatial entry predating reduction_lens,
+    or any CA entry from before this check existed) is silently trusted on
+    that field rather than flagged for something it never recorded --
+    absence is not evidence of a mismatch, the same discipline
+    sharpness_relative_flag already applies to a missing score.
+
+    Works on either shape of entry: a spatial calibration entry (a
+    top-level reduction_lens, plus measurement_plane.cfa_pattern/
+    green_which) or a CA calibration entry (reduction_lens and cfa_pattern
+    directly at the top level, no measurement_plane and no green_which --
+    CA operates on demosaiced RGB, not a green sub-plane extraction, so
+    green_which never applies to it; see ca_measure.py's
+    build_ca_calibration_entry).
+    """
+    rig_config = rig_config if rig_config is not None else current_rig_config()
+    reasons = []
+
+    recorded_lens = entry.get("reduction_lens")
+    if recorded_lens is not None and recorded_lens != rig_config["reduction_lens"]:
+        reasons.append(
+            "reduction lens changed (calibrated at {}x, rig is now {}x)"
+            .format(recorded_lens, rig_config["reduction_lens"]))
+
+    measurement_plane = entry.get("measurement_plane") or {}
+    recorded_cfa = measurement_plane.get("cfa_pattern", entry.get("cfa_pattern"))
+    if recorded_cfa is not None and recorded_cfa != rig_config["cfa_pattern"]:
+        reasons.append(
+            "CFA pattern changed (calibrated with {}, rig is now {})"
+            .format(recorded_cfa, rig_config["cfa_pattern"]))
+
+    recorded_which = measurement_plane.get("green_which")
+    if recorded_which is not None and recorded_which != rig_config["green_which"]:
+        reasons.append(
+            "green-which changed (calibrated with green_which={}, rig is now {})"
+            .format(recorded_which, rig_config["green_which"]))
+
+    return reasons
+
+
+def format_staleness_suffix(reasons):
+    """The one shared phrasing every status display appends when
+    calibration_staleness finds a mismatch, so calibrate.py's own window,
+    both calibration wizards, and measure.py's gating status all say the
+    same thing rather than each inventing its own wording. "" if reasons
+    is empty (nothing to append, not even a trailing space)."""
+    if not reasons:
+        return ""
+    return "  ⚠ STALE ({}) -- re-measure recommended".format("; ".join(reasons))
+
+
 try:
     from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QLabel,
                                  QVBoxLayout, QHBoxLayout, QPushButton, QComboBox,
@@ -644,9 +719,10 @@ if _HAVE_QT:
                 n = len(store.get(obj, []))
                 self.existing_label.setText(
                     "Current calibration for {}: {:.4f} \u00b5m/px (set {}, "
-                    "#{} in history)".format(
+                    "#{} in history){}".format(
                         obj, entry["um_per_px"],
-                        entry.get("calibrated_at", "unknown date"), n))
+                        entry.get("calibrated_at", "unknown date"), n,
+                        format_staleness_suffix(calibration_staleness(entry))))
             else:
                 self.existing_label.setText(
                     "No calibration saved yet for {}.".format(obj or "(no objective set)"))
@@ -739,8 +815,9 @@ if _HAVE_QT:
                 n = len(load_calibrations().get(obj, []))
                 self.existing_label.setText(
                     "Current calibration for {}: {:.4f} \u00b5m/px (set {}, "
-                    "#{} in history)".format(
-                        obj, entry["um_per_px"], entry.get("calibrated_at", "unknown date"), n))
+                    "#{} in history){}".format(
+                        obj, entry["um_per_px"], entry.get("calibrated_at", "unknown date"), n,
+                        format_staleness_suffix(calibration_staleness(entry))))
             else:
                 self.existing_label.setText(
                     "No calibration saved yet for {}.".format(obj or "(no objective set)"))
@@ -1002,6 +1079,68 @@ def render_check():
               "clean {}")
     finally:
         CALIBRATION_PATH = orig_path
+
+    # --- config-drift invalidation (section 13) -----------------------------
+    rig = current_rig_config()
+    assert rig == {"reduction_lens": REDUCTION_LENS, "cfa_pattern": DEFAULT_CFA_PATTERN,
+                  "green_which": DEFAULT_GREEN_WHICH}
+
+    # a spatial entry matching the current rig exactly: no staleness
+    fresh_spatial = {
+        "reduction_lens": REDUCTION_LENS,
+        "measurement_plane": {"cfa_pattern": DEFAULT_CFA_PATTERN,
+                              "green_which": DEFAULT_GREEN_WHICH},
+    }
+    assert calibration_staleness(fresh_spatial) == []
+    assert format_staleness_suffix(calibration_staleness(fresh_spatial)) == ""
+
+    # a reduction-lens drift is flagged, worded via the shared formatter
+    stale_lens = dict(fresh_spatial, reduction_lens=1.0)
+    reasons = calibration_staleness(stale_lens)
+    assert len(reasons) == 1 and "reduction lens" in reasons[0], reasons
+    suffix = format_staleness_suffix(reasons)
+    assert suffix.startswith("  ⚠ STALE") and "reduction lens" in suffix
+
+    # a CFA/green-which drift, checked independently and together
+    stale_cfa = dict(fresh_spatial, measurement_plane={
+        "cfa_pattern": "RGGB", "green_which": DEFAULT_GREEN_WHICH})
+    assert len(calibration_staleness(stale_cfa)) == 1 and \
+        "CFA pattern" in calibration_staleness(stale_cfa)[0]
+
+    stale_which = dict(fresh_spatial, measurement_plane={
+        "cfa_pattern": DEFAULT_CFA_PATTERN, "green_which": 2})
+    assert len(calibration_staleness(stale_which)) == 1 and \
+        "green-which" in calibration_staleness(stale_which)[0]
+
+    stale_both = dict(reduction_lens=1.0, measurement_plane={
+        "cfa_pattern": "RGGB", "green_which": 2})
+    assert len(calibration_staleness(stale_both)) == 3, \
+        "all three drifted fields should each contribute their own reason"
+
+    # a CA-shaped entry: top-level reduction_lens + cfa_pattern, no
+    # measurement_plane, no green_which -- must work the same way, and must
+    # never invent a green_which mismatch for a field CA entries don't have
+    fresh_ca = {"reduction_lens": REDUCTION_LENS, "cfa_pattern": DEFAULT_CFA_PATTERN}
+    assert calibration_staleness(fresh_ca) == []
+    stale_ca = {"reduction_lens": 1.0, "cfa_pattern": DEFAULT_CFA_PATTERN}
+    ca_reasons = calibration_staleness(stale_ca)
+    assert len(ca_reasons) == 1 and "reduction lens" in ca_reasons[0]
+
+    # an entry predating a field entirely (no reduction_lens at all) must be
+    # trusted on that field, not flagged -- absence is not evidence
+    no_lens_recorded = {"measurement_plane": {"cfa_pattern": DEFAULT_CFA_PATTERN,
+                                              "green_which": DEFAULT_GREEN_WHICH}}
+    assert calibration_staleness(no_lens_recorded) == [], \
+        "a field the entry never recorded must not be flagged as stale"
+    assert calibration_staleness({}) == [], \
+        "an entry with none of these fields at all should read as fresh, " \
+        "not raise or falsely flag"
+
+    print("calibration_staleness check PASS: fresh entry is quiet, each of "
+          "reduction lens/CFA pattern/green-which drift is independently "
+          "detected (and all three together), CA-shaped entries (no "
+          "measurement_plane, no green_which) work identically, fields an "
+          "entry never recorded are trusted rather than flagged")
 
 
 if __name__ == "__main__":
