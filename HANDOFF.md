@@ -4,6 +4,13 @@ For whichever agent picks this project up next. Read this before touching
 anything — several things here are non-obvious and have already cost real
 debugging time once.
 
+**This file and `CHANGELOG.md` are kept current after every action, not
+just at the end of a session** — so if you're resuming mid-session rather
+than between sessions, both should still be accurate as of the last thing
+that happened. If you add, fix, or change something meaningful, update the
+relevant section here and add a `CHANGELOG.md` entry as part of that same
+piece of work, not as an afterthought at the end.
+
 ## What this project is
 
 A microscopy capture + calibration + measurement suite for a Raspberry Pi 5
@@ -135,12 +142,12 @@ repeat trigger. If you add a fifth tool that needs its own window, copy
 this shape exactly — it's proven and tested (see `_launch_calibrate` /
 `_launch_measure`).
 
-**`README.md` is stale in two small ways**: it still describes
-`zstack_process.py` in the architecture section, but that file (along with
-the old standalone `capture.py`) was deleted this session — z-stack
-processing/validation now lives in `stacks.py` alone, and
-`capture.py`'s logic was folded into `qt_shell.py`. Worth a quick README
-pass if you're touching that area anyway; not urgent on its own.
+**`README.md` was refreshed** (`cd6e566`) to match current state — the
+stale `zstack_process.py`/standalone-`capture.py` references are gone, and
+it now documents `ca_measure.py`, the Calibrate/Measure menus, z-stack
+review, and post-capture QC. If you make an architecturally-visible change
+(new tool, new menu, a file removed or renamed), update `README.md` in the
+same commit rather than letting it drift again.
 
 ## Design conventions worth knowing before you add anything
 

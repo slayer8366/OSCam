@@ -7,6 +7,28 @@ this file is the historical record of what happened and why.
 
 ## 2026-07-21
 
+### Refreshed README.md
+`cd6e566`
+
+Brought the README in line with everything that had shipped but was never
+reflected in it: removed references to `zstack_process.py` and the
+standalone `capture.py` (both deleted earlier — see below), added
+`ca_measure.py`'s CA calibration and its own supersedes-chained store, the
+`qt_shell.py` Calibrate/Measure menu integration, z-stack review and
+post-capture QC in `measure.py`, export/publish, the "evidence never a
+gate" design rule, and a new data-locations table. Known limitations now
+note the CA wizard isn't yet reachable from `qt_shell.py`'s own menu
+(separate-camera-instance conflict, unresolved) and the deferred poly2 CA
+model.
+
+### Added `HANDOFF.md` and this changelog
+`d5e44cd`
+
+First versions of both docs, covering everything through the Measure-menu
+entry below. **Going forward, both are updated after every action in a
+session, not just at a session's end** — so picking this project up
+mid-session, not just between sessions, should still find both current.
+
 ### Added `qt_shell.py`'s Measure menu
 `ab21eb1`
 
