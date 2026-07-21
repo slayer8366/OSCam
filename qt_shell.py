@@ -64,6 +64,18 @@ except ImportError:                 # run directly as a script, not as a package
     from camera_backend import FakeCamera, LORES_RES, FULL_RES
     from focus import FocusMeter, FocusBox, FocusState, BarState
 
+# stacks.py's tagging (apply_tag/output_name): the pure, camera-free half of
+# z-stack support (section 1's own seam rule -- this is exactly the kind of
+# logic that belongs off the camera side). None (the Tag action just stays
+# disabled) if stacks.py is not alongside this file.
+try:
+    from . import stacks as _stacks
+except ImportError:
+    try:
+        import stacks as _stacks
+    except ImportError:
+        _stacks = None
+
 # calibrate.py's own append-only calibration store, reused so the ruler reads
 # EXACTLY the same current-calibration logic calibrate.py itself uses, never a
 # second copy of that lookup. None (ruler quietly unavailable, not a crash) if
@@ -1432,6 +1444,11 @@ if _HAVE_QT:
             # a duplicate menu entry for the same action was dead weight.
             capmenu = self.menuBar().addMenu("Capture")
             capmenu.addAction("Cancel armed capture", self._cancel_armed)
+            self._tag_action = capmenu.addAction(
+                "Tag as stack plane...", self._on_tag_stack)
+            self._tag_action.setEnabled(_stacks is not None)
+            if _stacks is None:
+                self._tag_action.setToolTip("stacks.py not alongside this file")
 
             # --- CALIBRATION INTEGRATION (separable, see the banner comment
             # near should_show_onboarding_gate above): one menu, one action.
@@ -2135,6 +2152,14 @@ if _HAVE_QT:
             ok = dlg.exec_() == QDialog.Accepted
             return dlg.intValue(), ok
 
+        def _flat_ask_text(self, title, label, value=""):
+            dlg = QInputDialog(self)
+            dlg.setWindowTitle(title)
+            dlg.setLabelText(label)
+            dlg.setTextValue(value)
+            ok = dlg.exec_() == QDialog.Accepted
+            return dlg.textValue().strip(), ok
+
         def _reshoot_guard(self, prefixes, kinds_set, label):
             # If frames already exist for these prefixes, confirm before
             # clearing them (default No). Declining cancels the walkthrough
@@ -2185,6 +2210,61 @@ if _HAVE_QT:
             kind = armed["kind"]
             self._set_capture_controls(enabled=True, label="Capture")
             self._set_capture_status("armed capture cancelled", "cancelled: {}".format(kind))
+
+        # --- z-stack tagging (section 8's own capture-side half; see stacks.py) ---
+        def _on_tag_stack(self):
+            # Mirrors capture.py's original do_tag exactly: tags THIS session's
+            # most recent science capture (one science capture per session is
+            # the project's own one-session-one-plane convention -- flat/dark
+            # are calibration frames, never stack planes, and an untagged snap
+            # is a throwaway single frame, not a measurement plane). Cross-
+            # session duplicate/gap checking is stacks.validate_all's job, not
+            # this dialog's -- it can only see the current session.
+            if self._session is None or not self._session.captures:
+                self._flat_information(
+                    "Nothing to tag", "No capture in this session yet -- "
+                    "shoot a science frame first, then tag it.")
+                return
+            sci_positions = [i for i, c in enumerate(self._session.captures)
+                             if c.get("kind") == "science"]
+            if not sci_positions:
+                self._flat_information(
+                    "Nothing to tag", "No science capture in this session yet -- "
+                    "shoot one first, then tag it.")
+                return
+            position = sci_positions[-1]
+
+            stack_id, ok = self._flat_ask_text(
+                "Tag as stack plane", "Stack ID (e.g. T4):",
+                getattr(self, "_last_stack_id", ""))
+            if not ok:
+                return
+            if not stack_id:
+                self._flat_information("Tag cancelled", "Stack ID cannot be blank.")
+                return
+
+            plane, ok = self._flat_ask_int(
+                "Tag as stack plane", "Plane (depth position, integer):",
+                getattr(self, "_last_stack_plane", 1) + 1, 0, 999, 1)
+            if not ok:
+                return
+
+            try:
+                _stacks.apply_tag(self._session.captures, position, stack_id, plane)
+            except ValueError as exc:
+                self._flat_information("Slot already taken", str(exc))
+                return
+            self._session.write()
+            self._last_stack_id = stack_id
+            self._last_stack_plane = plane
+            output = _stacks.output_name(stack_id, plane)
+            self._set_capture_status(
+                "tagged: {} plane {}".format(stack_id, plane),
+                "science capture -> stack {!r}, plane {} (output will be {})"
+                .format(stack_id, plane, output))
+            self._flat_information(
+                "Tagged", "Science capture tagged as stack {!r}, plane {}.\n"
+                "Output will be named {}.".format(stack_id, plane, output))
 
         def _walkthrough_burst(self, kind, prefix, kinds_set, instruction, auto_fire=False):
             # Shared by flat/science/dark: reshoot guard, an optional instructional
@@ -3099,6 +3179,84 @@ def render_check():
         "tar contents should exactly match the original raw filenames"
     print("archive_session_raws check PASS: no-op on empty/missing dir, real bundle+verify+"
           "remove matches hdr_from_session.py's own tar safety order")
+
+    # _on_tag_stack: needs a real FocusPreviewWindow (a QMainWindow subclass),
+    # so this one check -- unlike everything above it in render_check -- does
+    # need PyQt5. Gated so `--render-check` keeps working without PyQt5
+    # installed, same SKIPPED convention used elsewhere in this project.
+    if not _HAVE_QT:
+        print("_on_tag_stack check SKIPPED: PyQt5 not available here")
+    else:
+        qtapp = QApplication.instance() or QApplication([])
+        tag_root = Path("/tmp/zynergy_render_check_tag")
+        if tag_root.exists():
+            shutil.rmtree(tag_root)
+        tcam = FakeCamera(async_delay_s=0.0)
+        win = FocusPreviewWindow(tcam, FocusMeter())
+        win._session = Session(tag_root, {}, [])
+        infos = []
+        win._flat_information = lambda title, text: infos.append((title, text))
+
+        # empty session: refused, not a crash
+        win._on_tag_stack()
+        assert "No capture in this session" in infos[-1][1]
+
+        def _shoot(stem):
+            d = threading.Event()
+            g = {}
+            tcam.capture_still_async(win._session.dir, stem,
+                                     lambda r: (g.__setitem__("r", r), d.set()))
+            d.wait(timeout=5.0)
+            idx = record_capture(win._session, g["r"])
+            win._session.captures[idx]["kind"] = "science"
+            win._session.write()
+            return idx
+
+        _shoot("science_frame_0000")
+        win._flat_ask_text = lambda title, label, value="": ("T9", True)
+        win._flat_ask_int = lambda title, label, value, minv, maxv, step=1: (5, True)
+        win._on_tag_stack()
+        cap = win._session.captures[0]
+        assert cap.get("stack") == "T9" and cap.get("plane") == 5, \
+            "the tag should be written onto the session's own capture record"
+        assert "Tagged" in infos[-1][0]
+        on_disk = json.loads((win._session.dir / "session.json").read_text())
+        assert on_disk["captures"][0]["stack"] == "T9", \
+            "the tag must be persisted to session.json, not just held in memory"
+
+        # collision: a second capture claiming the SAME (stack, plane) refuses
+        # and must not tag the second capture either
+        _shoot("science_frame_0001")
+        win._flat_ask_text = lambda title, label, value="": ("T9", True)
+        win._flat_ask_int = lambda title, label, value, minv, maxv, step=1: (5, True)
+        win._on_tag_stack()
+        assert "already held" in infos[-1][1]
+        assert win._session.captures[1].get("stack") is None, \
+            "a refused collision must leave the second capture untagged"
+
+        # blank stack id refuses before ever calling stacks.apply_tag
+        win._flat_ask_text = lambda title, label, value="": ("", True)
+        win._on_tag_stack()
+        assert "blank" in infos[-1][1]
+
+        # the plane offered as next default increments from the last tag made
+        offered = {}
+
+        def _capture_offered_plane(title, label, value, minv, maxv, step=1):
+            offered["value"] = value
+            return 6, True
+
+        win._flat_ask_int = _capture_offered_plane
+        win._flat_ask_text = lambda title, label, value="": ("T9", True)
+        win._on_tag_stack()
+        assert offered["value"] == 6, "the next plane offered should be last tag's plane + 1"
+
+        tcam.stop()
+        shutil.rmtree(tag_root, ignore_errors=True)
+        print("_on_tag_stack check PASS: empty-session guard, tag applied and "
+              "persisted to session.json, (stack, plane) collision refuses "
+              "without tagging the contender, blank stack ID refused, next "
+              "plane default auto-increments")
 
 
 if __name__ == "__main__":
