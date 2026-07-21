@@ -7,23 +7,47 @@ this file is the historical record of what happened and why.
 
 ## 2026-07-21
 
-### Planned: z-stack one-click aid (BUILD_LIST Tier 3, item 6)
+### Added the z-stack one-click aid (BUILD_LIST Tier 3, item 6)
 
-Plan approved, not yet built (see `HANDOFF.md`'s "In progress" note for the
-full design and the file/line references it's grounded in). This is the
-feature the user actually asked for; `gallery.py` and `process_wizard.py`
+The feature the user actually asked for; `gallery.py` and `process_wizard.py`
 (below) were built first because the build list gates this one on both.
+Full design and file/line grounding in `HANDOFF.md`.
 
-Shape: a new toggle button in `qt_shell.py`'s `FocusPreviewWindow`, mirroring
-`_toggle_recording`'s own two-state pattern (press to start — captures plane
-0 immediately — press again to end); the existing Capture button/action is
-repurposed while a stack is active to capture each subsequent plane, rather
-than a second new button. Nested per-plane sessions under
-`~/captures/zstack_<timestamp>/plane_N/`, tagged via `stacks.apply_tag`
-exactly as `_on_tag_stack` already does manually. Ending the stack offers
-(never forces) to hand off to `process_wizard.ProcessWizard`, scoped to the
-stack's own root folder so its embedded Gallery naturally shows only this
-stack's planes, pre-selected.
+A new `zstack_btn` in `qt_shell.py`'s `FocusPreviewWindow`, mirroring
+`_toggle_recording`'s own two-state pattern exactly: press "Start Z-Stack"
+to begin (captures plane 0 immediately as part of starting), press "End
+Z-Stack" to finish. The existing Capture button/menu action is repurposed
+while a stack is active — each press captures and auto-tags the next plane
+— rather than a second new button; this is the only reading of the build
+list's own wording ("one button... each subsequent press... a distinct
+action, same button again, mirroring Record") that makes "mirroring
+Record" literally true, since Record itself is a pure two-state toggle.
+
+Nested per-plane sessions under `~/captures/zstack_<timestamp>/plane_N/`
+(a small, backward-compatible `Session.__init__(..., session_dir=None)`
+extension), each tagged via `stacks.apply_tag` — the same two calls
+`_on_tag_stack` already makes manually, just automatic. `capture_kind_
+combo`/`record_btn` are disabled while a stack is active (mirrors Record's
+own mutual exclusion). Ending the stack runs `stacks.validate_all` over the
+plane folders, shows the result, then offers (never forces, matching
+`_offer_process`'s own precedent) to hand off to `process_wizard.
+ProcessWizard`, scoped to the stack's own root folder so its embedded
+Gallery naturally shows — and pre-selects — only this stack's own planes,
+with no changes needed in either `gallery.py` or `process_wizard.py`.
+
+New `qt_shell.py --render-check` coverage drives the real button handlers
+end to end (`_start_zstack`, two repurposed `_start_capture` presses,
+`_end_zstack`) through the real worker thread and real queued cross-thread
+signal — pumping `QApplication.processEvents()` rather than bypassing the
+async path the way `_on_tag_stack`'s own test does, since this is exactly
+the mechanism worth proving actually works. Covers: start/end guards
+refusing mid-capture, plane 0 auto-captured on start, folder layout and
+per-plane tagging, the process-offer's Yes/No gate (including that Yes
+scopes the wizard to the stack's own root, never the global `OUT_ROOT`,
+with every plane pre-selected), and a regression check that a plain
+Capture press with no active stack is completely unaffected. Also manually
+smoke-tested end to end under `QT_QPA_PLATFORM=offscreen`, clicking the
+real buttons.
 
 ### Added `process_wizard.py`: choose-your-operations processing wizard
 

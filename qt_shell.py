@@ -185,14 +185,43 @@ def new_session_dir(root=None):
     return ts, d
 
 
+def new_zstack_root_dir(root=None):
+    """Create a new timestamped z-stack root directory (the parent folder for
+    one stack run's plane_0/plane_1/... sessions) -- same collision-avoiding
+    timestamp loop as new_session_dir, just named zstack_<timestamp> instead
+    of <timestamp>, so it never collides with an ordinary session dir either.
+    The returned ts doubles as the stack's own stack_id (stacks.apply_tag's
+    tag value): the on-disk folder name and the tag it holds visibly match,
+    rather than inventing a second ID scheme."""
+    root = Path(root) if root else OUT_ROOT
+    ts = datetime.strftime(datetime.now(), "%Y-%m-%d_%H%M%S")
+    ts_n = ts
+    d = root / "zstack_{}".format(ts_n)
+    n = 1
+    while d.exists():
+        ts_n = "{}_{}".format(ts, n)
+        d = root / "zstack_{}".format(ts_n)
+        n += 1
+    d.mkdir(parents=True, exist_ok=True)
+    return ts_n, d
+
+
 class Session:
     """Session state: captures directory, locked settings, and session.json log."""
 
-    def __init__(self, root, locked, display_flags):
+    def __init__(self, root, locked, display_flags, session_dir=None):
         self.root = Path(root)
         self.locked = dict(locked)
         self.display_flags = list(display_flags)
-        self.ts, self.dir = new_session_dir(root)
+        if session_dir is not None:
+            # Explicit directory (e.g. a z-stack's own plane_N naming)
+            # instead of the usual auto-timestamped one -- ts is just
+            # whatever that directory is actually called.
+            self.dir = Path(session_dir)
+            self.dir.mkdir(parents=True, exist_ok=True)
+            self.ts = self.dir.name
+        else:
+            self.ts, self.dir = new_session_dir(root)
         self.captures = []
         self.write()
 
@@ -1168,6 +1197,13 @@ if _HAVE_QT:
         record_stop_done_signal = pyqtSignal(object)
         # --- end record button (signals) ------------------------------------
 
+        # Z-STACK AID (BUILD_LIST Tier 3 item 6): one plane's capture+tag runs
+        # on a worker thread same as every other burst above; kept as its own
+        # signal rather than reusing burst_done_signal, which is hardwired to
+        # self._session/self._batch_active -- both wrong for a z-stack plane,
+        # which has its own per-plane Session and no batch queue.
+        zstack_plane_done_signal = pyqtSignal(object)
+
         def __init__(self, camera, meter, tick_ms=33, display_flags=None):
             super().__init__()
             self.camera = camera
@@ -1214,6 +1250,12 @@ if _HAVE_QT:
             # The worker itself, held so closeEvent can join it on quit.
             self._record_thread = None
 
+            # Z-STACK AID (BUILD_LIST Tier 3 item 6): None means no stack is
+            # active and the Capture button/action behaves normally. While
+            # active: {"root": Path, "stack_id": str, "next_plane": int} --
+            # see _toggle_zstack/_start_zstack/_capture_zstack_plane/_end_zstack.
+            self._zstack = None
+
             self.preview = camera.widget if hasattr(camera, "widget") \
                 else _FakePreview(camera)
 
@@ -1231,6 +1273,15 @@ if _HAVE_QT:
             self.record_btn = QPushButton("Record")
             self.record_btn.clicked.connect(self._toggle_recording)
             # --- end record button (widget) -------------------------------
+
+            # Z-STACK AID (BUILD_LIST Tier 3 item 6): a two-state toggle,
+            # mirroring record_btn's own shape exactly -- press to start
+            # (captures plane 0 immediately), press again to end. While
+            # active, capture_btn/_capture_action are REPURPOSED (see
+            # _start_capture) to capture each subsequent plane instead of a
+            # second new button.
+            self.zstack_btn = QPushButton("Start Z-Stack")
+            self.zstack_btn.clicked.connect(self._toggle_zstack)
 
             # Capture-kind picker, sitting directly beneath the Capture button
             # (see the panel layout below): choosing an entry runs that kind's
@@ -1380,6 +1431,7 @@ if _HAVE_QT:
             capture_row = QHBoxLayout()
             capture_row.addWidget(self.capture_btn)
             capture_row.addWidget(self.record_btn)
+            capture_row.addWidget(self.zstack_btn)
             col.addLayout(capture_row)
             col.addWidget(self.capture_kind_combo)
             col.addSpacing(8)
@@ -1526,6 +1578,7 @@ if _HAVE_QT:
             self.archive_done_signal.connect(self._on_archive_finished)
             self.record_start_done_signal.connect(self._on_record_start_finished)
             self.record_stop_done_signal.connect(self._on_record_stop_finished)
+            self.zstack_plane_done_signal.connect(self._on_zstack_plane_finished)
 
             self.camera.start()
             startup_on = bool(load_pref("focus_aid_at_startup", False))
@@ -1949,6 +2002,14 @@ if _HAVE_QT:
             # second trigger while one is in flight is ignored. A running focus tick
             # keeps going: it writes only self.readout, while capture state writes
             # only self.capture_status, so the two labels never fight.
+            if self._zstack is not None:
+                # Z-STACK AID: while a stack is active, Capture (button, menu
+                # action, or any keyboard shortcut routed here) means "capture
+                # the next plane," full stop -- not the plain untagged-snap
+                # path below. _capture_zstack_plane does its own self._capturing
+                # guard, same contract as every other kind here.
+                self._capture_zstack_plane()
+                return
             if self._capturing:
                 return
             # --- RECORD BUTTON (separable): defensive re-check -- the button is
@@ -2024,6 +2085,11 @@ if _HAVE_QT:
             self.capture_btn.setEnabled(enabled)
             self.capture_btn.setText(label)
             self._capture_action.setEnabled(enabled)
+            # Z-STACK AID: busy is busy, same reasoning as record_btn just
+            # below -- the Start/End TEXT is managed separately by
+            # _start_zstack/_on_zstack_plane_finished/_end_zstack, this only
+            # ever touches whether the button can be clicked at all.
+            self.zstack_btn.setEnabled(enabled)
             # --- RECORD BUTTON (separable): a capture/burst busy disables Record
             # too, since the two have not been verified safe to run concurrently
             # on real hardware. Re-enabling here only when nothing is currently
@@ -2345,6 +2411,140 @@ if _HAVE_QT:
             self._flat_information(
                 "Tagged", "Science capture tagged as stack {!r}, plane {}.\n"
                 "Output will be named {}.".format(stack_id, plane, output))
+
+        # --- Z-STACK AID (BUILD_LIST Tier 3 item 6): a one-click alternative
+        # to the manual _on_tag_stack above -- same stacks.apply_tag call,
+        # just automatic, per plane, with its own nested session per plane
+        # instead of the shared self._session flat/science/hdr/dark all
+        # capture into. See the module docstring's own z-stack notes and
+        # HANDOFF.md for the full interaction-model reasoning.
+        def _toggle_zstack(self):
+            if self._zstack is not None:
+                self._end_zstack()
+            else:
+                self._start_zstack()
+
+        def _start_zstack(self):
+            # Same guard shape every other kind-starting action here uses
+            # (_walkthrough_burst, _walkthrough_hdr, _toggle_recording): a
+            # capture already in flight, an armed-but-not-fired burst, or an
+            # active recording all refuse a new stack rather than racing it.
+            if self._capturing or self._armed is not None:
+                return
+            if self.camera.is_recording():
+                return
+            stack_id, root = new_zstack_root_dir(OUT_ROOT)
+            self._zstack = {"root": root, "stack_id": stack_id, "next_plane": 0}
+            # Mutual exclusion, mirroring how Record disables capture_kind_
+            # combo while recording (_on_record_start_finished): nothing else
+            # should start a flat/science/hdr/dark burst or a recording while
+            # a stack is running. capture_btn/_capture_action stay enabled --
+            # see _start_capture's own repurposing branch.
+            self.capture_kind_combo.setEnabled(False)
+            self.record_btn.setEnabled(False)
+            self.zstack_btn.setText("End Z-Stack")
+            self._set_capture_status(
+                "z-stack {} started".format(stack_id),
+                "z-stack {!r} started at {}".format(stack_id, root))
+            self._capture_zstack_plane()   # "first press captures plane 0 immediately"
+
+        def _capture_zstack_plane(self):
+            if self._capturing:
+                return
+            plane = self._zstack["next_plane"]
+            plane_dir = self._zstack["root"] / "plane_{}".format(plane)
+            plane_session = Session(self._zstack["root"], load_profile() or {},
+                                    self._display_flags, session_dir=plane_dir)
+            self._capturing = True
+            self._enforce_exposure_lock()
+            self._set_capture_controls(
+                enabled=False, label="Plane {}".format(plane))
+            self._set_capture_status(
+                "z-stack {}: capturing plane {} ...".format(
+                    self._zstack["stack_id"], plane))
+
+            def _worker():
+                try:
+                    result = self.camera.capture_burst(plane_session.dir, "science_", 1)
+                    idx = record_burst(plane_session, "science", "science_", result)
+                    _stacks.apply_tag(plane_session.captures, idx,
+                                      self._zstack["stack_id"], plane)
+                    plane_session.write()
+                    self._score_capture_sharpness(plane_session, idx, result)
+                    payload = {"plane": plane, "session": plane_session}
+                except Exception as exc:
+                    payload = exc
+                self.zstack_plane_done_signal.emit(payload)
+
+            threading.Thread(target=_worker, daemon=True).start()
+
+        def _on_zstack_plane_finished(self, result):
+            # On the GUI thread (via zstack_plane_done_signal). A failure is
+            # reported, never silently dropped, and does NOT advance
+            # next_plane -- the next Capture press retries the same plane
+            # number rather than leaving a silent gap in the stack.
+            self._capturing = False
+            if isinstance(result, Exception):
+                self._set_capture_controls(enabled=True, label="Capture")
+                self._set_capture_status(
+                    "z-stack plane capture failed",
+                    "z-stack {} plane {} failed: {}".format(
+                        self._zstack["stack_id"] if self._zstack else "?",
+                        self._zstack["next_plane"] if self._zstack else "?", result))
+                return
+            plane = result["plane"]
+            self._zstack["next_plane"] = plane + 1
+            self._set_capture_controls(enabled=True, label="Capture")
+            self.zstack_btn.setText(
+                "End Z-Stack ({} plane{})".format(
+                    plane + 1, "" if plane == 0 else "s"))
+            output = _stacks.output_name(self._zstack["stack_id"], plane)
+            self._set_capture_status(
+                "z-stack {}: plane {} captured".format(self._zstack["stack_id"], plane),
+                "plane {} captured and tagged (output will be {}); Capture "
+                "again for the next plane, or End Z-Stack to finish"
+                .format(plane, output))
+
+        def _end_zstack(self):
+            # Same "ignore a press mid-operation" guard every other toggle
+            # here uses -- ending while a plane capture is still in flight
+            # would race _on_zstack_plane_finished's own state updates.
+            if self._capturing:
+                return
+            zstack = self._zstack
+            self._zstack = None
+            self.capture_kind_combo.setEnabled(True)
+            self.record_btn.setEnabled(not self.camera.is_recording())
+            self.zstack_btn.setText("Start Z-Stack")
+
+            plane_dirs = sorted(zstack["root"].glob("plane_*"))
+            issues = _stacks.validate_all(plane_dirs)
+            if issues:
+                detail = "\n".join(str(i) for i in issues)
+            else:
+                detail = "No issues found."
+            self._set_capture_status(
+                "z-stack {} ended ({} planes)".format(zstack["stack_id"], len(plane_dirs)),
+                "z-stack {!r} ended: {} plane folder(s) at {}\n{}".format(
+                    zstack["stack_id"], len(plane_dirs), zstack["root"], detail))
+
+            if not plane_dirs:
+                return
+            resp = self._flat_question(
+                "Process this stack?",
+                "Z-stack {!r} ended with {} plane(s).\n{}\n\n"
+                "Process it now?".format(zstack["stack_id"], len(plane_dirs), detail))
+            if resp != QMessageBox.Yes:
+                return
+            if _process_wizard is None:
+                self._set_capture_status(
+                    "processing wizard unavailable",
+                    "process_wizard.py not found beside this file, skipped")
+                return
+            wiz = _process_wizard.ProcessWizard(zstack["root"], self)
+            wiz.file_page.gallery.list_widget.selectAll()
+            wiz.exec_()
+        # --- end Z-STACK AID --------------------------------------------
 
         def _walkthrough_burst(self, kind, prefix, kinds_set, instruction, auto_fire=False):
             # Shared by flat/science/dark: reshoot guard, an optional instructional
@@ -3424,6 +3624,164 @@ def render_check():
               "without tagging the contender, blank stack ID refused, next "
               "plane default auto-increments, focus meter resets on a "
               "successful tag only")
+
+        # Z-STACK AID (BUILD_LIST Tier 3 item 6): a full FakeCamera round
+        # trip through the real toggle -- _start_zstack, two more
+        # (repurposed) _start_capture presses, _end_zstack -- exercising the
+        # real worker thread + queued cross-thread signal, not a bypassed
+        # direct call. Since the signal is genuinely queued (the worker runs
+        # on a background thread, the slot lives on this GUI-thread window),
+        # processEvents() is pumped until each capture's own _capturing flag
+        # clears, the same mechanism the real app relies on via its own
+        # event loop -- nothing here is faked or skipped.
+        import time
+
+        def _pump_until_idle(timeout=5.0):
+            deadline = time.time() + timeout
+            while zwin._capturing and time.time() < deadline:
+                qtapp.processEvents()
+                time.sleep(0.005)
+            assert not zwin._capturing, "z-stack plane capture never completed"
+
+        zroot = Path("/tmp/zynergy_render_check_zstack")
+        if zroot.exists():
+            shutil.rmtree(zroot)
+        zroot.mkdir(parents=True)
+        zcam = FakeCamera(async_delay_s=0.0)
+        zwin = FocusPreviewWindow(zcam, FocusMeter())
+        global OUT_ROOT
+        _orig_out_root = OUT_ROOT
+        OUT_ROOT = zroot
+        try:
+            # Guard: starting while a capture is already in flight is a no-op.
+            zwin._capturing = True
+            zwin._start_zstack()
+            assert zwin._zstack is None, \
+                "_start_zstack must refuse to start while a capture is in flight"
+            zwin._capturing = False
+
+            zwin._start_zstack()
+            assert zwin._zstack is not None, "_start_zstack must actually start a stack"
+            stack_id = zwin._zstack["stack_id"]
+            stack_root = zwin._zstack["root"]
+            assert stack_root.name == "zstack_{}".format(stack_id)
+            assert not zwin.capture_kind_combo.isEnabled(), \
+                "other capture kinds must be disabled while a stack is active"
+            assert not zwin.record_btn.isEnabled(), \
+                "Record must be disabled while a stack is active"
+            _pump_until_idle()
+            assert zwin._zstack["next_plane"] == 1, \
+                "plane 0 must be captured as part of starting, no separate press needed"
+
+            # Two more Capture presses -- the REPURPOSED _start_capture path,
+            # not a direct call to _capture_zstack_plane, proving the
+            # repurposing branch at _start_capture's own top actually fires.
+            zwin._start_capture()
+            _pump_until_idle()
+            zwin._start_capture()
+            _pump_until_idle()
+            assert zwin._zstack["next_plane"] == 3, \
+                "each Capture press while active must capture the next plane"
+
+            plane_dirs = sorted(stack_root.glob("plane_*"))
+            assert [p.name for p in plane_dirs] == ["plane_0", "plane_1", "plane_2"], \
+                "folder layout must be zstack_<ts>/plane_0, plane_1, plane_2 -- " \
+                "one real, independent session per plane"
+            for i, pd in enumerate(plane_dirs):
+                sj = json.loads((pd / "session.json").read_text())
+                cap = sj["captures"][0]
+                assert cap["kind"] == "science", \
+                    "a plane capture must be kind=science, the only kind " \
+                    "_on_tag_stack/apply_tag's own convention taggs"
+                assert cap.get("stack") == stack_id and cap.get("plane") == i, \
+                    "each plane must be tagged with the stack's own id and " \
+                    "its own plane number, automatically -- no dialog involved"
+                assert isinstance(cap.get("sharpness_score"), float), \
+                    "a plane capture should get the same post-capture QC " \
+                    "score a normal science capture gets"
+
+            # Guard: ending while a capture is in flight is a no-op.
+            zwin._capturing = True
+            zwin._end_zstack()
+            assert zwin._zstack is not None, \
+                "_end_zstack must refuse to end while a plane capture is in flight"
+            zwin._capturing = False
+
+            # The hand-off's own Yes/No gate: No must NOT open the wizard.
+            zwin._flat_question = lambda title, text, default=None: QMessageBox.No
+            opened = {}
+
+            class _FakeWizard:
+                def __init__(self, out_root, parent=None):
+                    opened["out_root"] = out_root
+                    opened.setdefault("exec_called", False)
+                    select_all_calls = opened.setdefault("select_all_calls", [])
+                    self.file_page = type("FP", (), {
+                        "gallery": type("G", (), {
+                            "list_widget": type("LW", (), {
+                                "selectAll": lambda s: select_all_calls.append(1)})()
+                        })()
+                    })()
+
+                def exec_(self):
+                    opened["exec_called"] = True
+
+            global _process_wizard
+            _orig_process_wizard = _process_wizard
+            _process_wizard = type("FakeModule", (), {"ProcessWizard": _FakeWizard})
+            try:
+                zwin._end_zstack()
+                assert zwin._zstack is None, "_end_zstack must always clear the stack state"
+                assert not opened, \
+                    "declining the 'process now?' offer must never open the wizard"
+                assert zwin.capture_kind_combo.isEnabled(), \
+                    "ending a stack must re-enable the other capture kinds"
+                assert zwin.record_btn.isEnabled(), \
+                    "ending a stack must re-enable Record"
+
+                # Yes must open the wizard, scoped to the stack's OWN root
+                # (never the global OUT_ROOT), with every plane pre-selected.
+                zwin._start_zstack()
+                _pump_until_idle()
+                stack_root_2 = zwin._zstack["root"]
+                zwin._flat_question = lambda title, text, default=None: QMessageBox.Yes
+                zwin._end_zstack()
+                assert opened["out_root"] == stack_root_2, \
+                    "the wizard must be scoped to the stack's own root folder, " \
+                    "not the global OUT_ROOT -- that's what keeps its embedded " \
+                    "Gallery showing only this stack's own planes"
+                assert opened["exec_called"] is True
+                assert opened["select_all_calls"] == [1], \
+                    "every plane must be pre-selected, not left for the user to click"
+            finally:
+                _process_wizard = _orig_process_wizard
+
+            # Regression: with no stack active, Capture must behave exactly
+            # as it always has -- the repurposing branch must not fire.
+            assert zwin._zstack is None
+            called = []
+            zwin._capture_zstack_plane = lambda: called.append(1)
+            zwin._session = Session(zroot / "plain", {}, [])
+            zwin._start_capture()
+            _pump_until_idle()
+            assert not called, \
+                "with no active stack, _start_capture must never repurpose " \
+                "into _capture_zstack_plane"
+        finally:
+            OUT_ROOT = _orig_out_root
+            zcam.stop()
+            shutil.rmtree(zroot, ignore_errors=True)
+        print("z-stack aid check PASS: start guard refuses mid-capture, "
+              "starting captures plane 0 immediately, other capture kinds "
+              "and Record disabled while active, each repurposed Capture "
+              "press captures and auto-tags the next plane (real worker "
+              "thread + real queued signal, not bypassed), folder layout is "
+              "zstack_<ts>/plane_0/plane_1/plane_2 with one independent "
+              "science-kind session each, end guard refuses mid-capture, "
+              "declining the process offer never opens the wizard, accepting "
+              "opens it scoped to the stack's own root with every plane "
+              "pre-selected, and a plain Capture press with no active stack "
+              "is completely unaffected")
 
         # _score_capture_sharpness (section 13's post-capture QC): a real
         # FakeCamera burst, scored against its OWN written frame via

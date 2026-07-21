@@ -44,40 +44,60 @@ That 13-section checklist is a separate, older track from the newer
 working through in dependency order. Progress so far: Tier 1 item 1 (focus
 aid tick rate + auto-reset on stack tag) is done. Tier 3 item 4 (Gallery
 module) is done — see `gallery.py` below. Tier 3 item 5 (processing wizard
-overhaul) is also done — see `process_wizard.py` below. **In progress: the
-z-stack one-click aid (Tier 3 item 6), the thing the user actually asked
-for** — a planned-but-not-yet-built toggle in `qt_shell.py`'s
-`FocusPreviewWindow`. The approved plan (read it before writing any of
-this code, it resolves a real ambiguity in the build list's own wording):
+overhaul) is done — see `process_wizard.py` below. **Tier 3 item 6 (the
+z-stack one-click aid, the thing the user actually asked for) is now also
+done.**
 
-- A new toggle button, mirroring `_toggle_recording`'s own two-state
-  shape exactly: press to start (captures plane 0 immediately as part of
-  starting), press again to end.
-- The **existing** Capture button/menu action (`_start_capture`) is
-  repurposed while a stack is active — each press captures the next
-  plane — rather than a second new button. This is the only reading of
-  the build list's "one button... each subsequent press... a distinct
-  action (same button again, mirroring Record)" that makes "mirroring
-  Record" literally true, since Record itself is a pure two-state toggle
-  with nothing in between.
+It lives entirely in `qt_shell.py`'s `FocusPreviewWindow`:
+
+- `zstack_btn` ("Start Z-Stack" / "End Z-Stack (N planes)") mirrors
+  `_toggle_recording`'s own two-state shape exactly: press to start
+  (captures plane 0 immediately as part of starting, via
+  `_start_zstack` → `_capture_zstack_plane`), press again to end
+  (`_end_zstack`). `self._zstack` is `None` when inactive, else
+  `{"root": Path, "stack_id": str, "next_plane": int}`.
+- The **existing** Capture button/menu action (`_start_capture`) gets a
+  branch at its very top: while `self._zstack is not None`, every press
+  repurposes to `_capture_zstack_plane()` (next plane) instead of its
+  normal untagged-snap behavior — this is the only reading of the build
+  list's "one button... each subsequent press... a distinct action (same
+  button again, mirroring Record)" that makes "mirroring Record" literally
+  true, since Record itself is a pure two-state toggle with nothing in
+  between. No second new button was needed.
 - Folder layout: `~/captures/zstack_<timestamp>/plane_0/`, `plane_1/`,
-  ... — each plane its own real, independent `Session` (needs a small,
+  ... — each plane its own real, independent `Session`, via a small,
   backward-compatible `Session.__init__(..., session_dir=None)` extension
-  so a plane can be named `plane_N` instead of auto-timestamped).
-  `stack_id` is just that same timestamp, reused, not a second ID scheme.
-- Tagging reuses `stacks.apply_tag` verbatim, the same two calls
-  `_on_tag_stack` already makes manually.
-- Ending the stack offers (never forces, matching `_offer_process`'s own
-  precedent) to open `process_wizard.ProcessWizard(out_root=<stack's own
-  root folder>)` with every plane pre-selected — Gallery is naturally
-  scoped to just this stack's planes because `list_gallery_entries`
-  treats `out_root`'s own immediate children as sessions, and the stack
-  root's immediate children ARE exactly this stack's `plane_N/` folders.
-  No changes needed to `gallery.py` or `process_wizard.py` for this.
+  (skips the usual auto-timestamped `new_session_dir` call when an exact
+  directory is given). `new_zstack_root_dir` mints the stack's own root +
+  `stack_id` (the timestamp itself, reused — no second ID scheme).
+- Each plane capture: `camera.capture_burst(dir, "science_", 1)` →
+  `record_burst(..., "science", ...)` → `stacks.apply_tag` + `session.
+  write()` (the same two calls `_on_tag_stack` already makes manually,
+  just automatic) → `_score_capture_sharpness`, on a worker thread with
+  its own `zstack_plane_done_signal` (kept separate from `burst_done_
+  signal`, which is hardwired to `self._session`/`self._batch_active` —
+  both wrong here).
+- While a stack is active, `capture_kind_combo`/`record_btn` are disabled
+  (mirrors Record's own mutual-exclusion of `capture_kind_combo`);
+  `capture_btn`/`_capture_action` stay enabled and repurposed.
+- Ending the stack runs `stacks.validate_all` over the plane folders and
+  shows the result, then offers (never forces, matching `_offer_process`'s
+  own precedent) to open `process_wizard.ProcessWizard(out_root=<stack's
+  own root folder>)` with every plane pre-selected. Gallery is naturally
+  scoped to just this stack's planes because `list_gallery_entries` treats
+  `out_root`'s own immediate children as sessions, and the stack root's
+  immediate children ARE exactly this stack's `plane_N/` folders — no
+  changes were needed in `gallery.py` or `process_wizard.py` for this.
 
-If you're picking this up mid-build: check `git log` and this section
-against what's actually in `qt_shell.py` — this paragraph describes the
-plan, not necessarily what has landed yet.
+**Testing note for anyone extending this**: the render-check's own z-stack
+coverage does NOT bypass the worker-thread/signal machinery the way
+`_on_tag_stack`'s test does for the single-shot async path — it drives the
+real button handlers and pumps `QApplication.processEvents()` in a loop
+until `self._capturing` clears, because `zstack_plane_done_signal` is a
+genuinely cross-thread QUEUED connection (worker thread → GUI-thread slot)
+that a real event loop would drain automatically but a headless script
+must pump itself. If you add another worker-thread-backed z-stack method,
+test it the same way, not by calling its completion handler directly.
 
 Four standalone tools, one shared GUI entry point:
 
