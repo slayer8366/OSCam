@@ -113,6 +113,19 @@ except ImportError:
     except ImportError:
         _gallery = None
 
+# process_wizard.py's choose-your-operations processing wizard (BUILD_LIST
+# Tier 3 item 5), a separate path from "Process session..." below -- see its
+# own module docstring for why the two coexist. None (menu action reports
+# unavailable rather than crashing) if process_wizard.py is not alongside
+# this file.
+try:
+    from . import process_wizard as _process_wizard
+except ImportError:
+    try:
+        import process_wizard as _process_wizard
+    except ImportError:
+        _process_wizard = None
+
 # The green plane calibrate.py measures on: half the sensor's resolution each
 # axis (see debayer.py's extract_green / the build checklist's own invariant).
 # The ruler's field-of-view-in-microns is derived from THIS width/height, not
@@ -1432,6 +1445,7 @@ if _HAVE_QT:
             filemenu = self.menuBar().addMenu("File")
             self._capture_action = filemenu.addAction("Capture", self._start_capture)
             filemenu.addAction("Process session...", self._open_processing_wizard)
+            filemenu.addAction("Process files...", self._open_process_wizard)
             filemenu.addAction("Archive session raws...", self._open_archive_wizard)
             filemenu.addAction("Browse captures...", self._open_gallery_browser)
             filemenu.addAction("Quit", self.close)
@@ -2763,6 +2777,21 @@ if _HAVE_QT:
             if session_dir is None:
                 return
             self._offer_archive_raws(session_dir)
+
+        def _open_process_wizard(self):
+            # The new choose-your-operations wizard (process_wizard.py),
+            # separate from _open_processing_wizard's session/kind-based
+            # ProcessSessionDialog above -- both stay, see process_wizard.py's
+            # own module docstring for why. Independent of self._capturing
+            # for the same reason _open_gallery_browser is: modal (exec_),
+            # so it cannot race a capture in progress.
+            if _process_wizard is None:
+                self._set_capture_status(
+                    "processing wizard unavailable",
+                    "process_wizard.py not found beside this file, skipped")
+                return
+            wiz = _process_wizard.ProcessWizard(OUT_ROOT, self)
+            wiz.exec_()
 
         def _open_gallery_browser(self):
             # Standalone browse mode (gallery.py): just looking, no commit.

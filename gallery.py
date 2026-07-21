@@ -89,7 +89,7 @@ def _lazy_measure():
 GalleryEntry = namedtuple(
     "GalleryEntry",
     ["session_dir", "capture_index", "kind", "timestamp", "frame_count",
-     "preview_path", "raw_path", "stack_tag"])
+     "file_prefix", "preview_path", "raw_path", "stack_id", "stack_plane"])
 
 
 def _capture_file_prefix(cap):
@@ -121,11 +121,10 @@ def _first_frame_paths(session_dir, prefix):
     return None, None
 
 
-def _stack_tag_of(cap):
+def _stack_id_plane_of(cap):
     if not _stacks.is_tagged(cap):
-        return None
-    plane = _stacks.plane_of(cap)
-    return "{} plane {}".format(cap.get(_stacks.STACK), plane if plane is not None else "?")
+        return None, None
+    return cap.get(_stacks.STACK), _stacks.plane_of(cap)
 
 
 def list_gallery_entries(out_root=None):
@@ -142,16 +141,37 @@ def list_gallery_entries(out_root=None):
         for cap in session_json.get("captures", []):
             prefix = _capture_file_prefix(cap)
             raw_path, preview_path = _first_frame_paths(session_dir, prefix)
+            stack_id, stack_plane = _stack_id_plane_of(cap)
             entries.append(GalleryEntry(
                 session_dir=session_dir,
                 capture_index=cap.get("index"),
                 kind=cap.get("kind"),
                 timestamp=cap.get("timestamp"),
                 frame_count=cap.get("frame_count", 1),
+                file_prefix=prefix,
                 preview_path=preview_path,
                 raw_path=raw_path,
-                stack_tag=_stack_tag_of(cap)))
+                stack_id=stack_id,
+                stack_plane=stack_plane))
     return entries
+
+
+def capture_frame_paths(entry):
+    """Every frame of entry's own burst (not just frame 0), sorted -- the
+    substrate a Gallery pick resolves to for the three single-image "Open"
+    callers is deliberately just the first frame, but frame-averaging (the
+    processing wizard) needs the whole burst. Same glob shape
+    capture_correction_status's own _frames_for already uses in qt_shell.py.
+    [] if there is nothing to find; [entry.raw_path] if raw_path exists but
+    file_prefix is somehow missing (never actually happens together, but
+    degrades to the one frame we do know about rather than losing it)."""
+    if entry.raw_path is None:
+        return []
+    if not entry.file_prefix:
+        return [entry.raw_path]
+    session_dir = Path(entry.session_dir)
+    ext = entry.raw_path.suffix.lstrip(".")
+    return sorted(session_dir.glob("{}frame_*.{}".format(entry.file_prefix, ext)))
 
 
 def capture_has_annotation(raw_path):
@@ -305,11 +325,16 @@ if _HAVE_QT:
                     paths.append(raw)
             return paths
 
+        def selected_entries(self):
+            return [self._entries[self.list_widget.row(item)]
+                   for item in self.list_widget.selectedItems()]
+
 
     def _caption(entry, annotated=False):
         parts = [entry.kind or "?", entry.timestamp or ""]
-        if entry.stack_tag:
-            parts.append(entry.stack_tag)
+        if entry.stack_id is not None:
+            parts.append("{} plane {}".format(
+                entry.stack_id, entry.stack_plane if entry.stack_plane is not None else "?"))
         if annotated:
             parts.append("annotated")
         return "\n".join(p for p in parts if p)
@@ -357,6 +382,15 @@ if _HAVE_QT:
             if self._manual_path is not None:
                 return [self._manual_path]
             return self.gallery.selected_paths()
+
+        def selected_entries(self):
+            """None when the manual-file escape hatch was used -- a manually
+            picked file has no session context to return an entry for.
+            Callers that need burst expansion (the processing wizard) treat
+            None as "fall back to selected_paths() as one-frame groups"."""
+            if self._manual_path is not None:
+                return None
+            return self.gallery.selected_entries()
 
         def accept(self):
             self.gallery.stop()
@@ -412,31 +446,51 @@ def render_check():
                       np.zeros((10, 10), dtype=np.uint16))
     (s1 / "snap_frame_0000.jpg").write_bytes(b"\xff\xd8\xff\xd9")
 
-    # Session 2: stack-tagged science capture, no preview written.
+    # Session 2: stack-tagged science capture, a real 3-frame burst, no
+    # preview written for any frame.
     s2 = tmp_root / "2024-01-01_000002"
     s2.mkdir()
     cap2 = {"index": 0, "kind": "science", "file_prefix": "science_",
-            "frame_count": 1, "timestamp": "2024-01-01T00:00:02+00:00",
+            "frame_count": 3, "timestamp": "2024-01-01T00:00:02+00:00",
             "stack": "T4", "plane": 2}
     (s2 / "session.json").write_text(json.dumps({"captures": [cap2]}))
-    tifffile.imwrite(str(s2 / "science_frame_0000.tif"),
-                      np.zeros((10, 10), dtype=np.uint16))
+    for i in range(3):
+        tifffile.imwrite(str(s2 / "science_frame_{:04d}.tif".format(i)),
+                          np.zeros((10, 10), dtype=np.uint16))
 
     entries = list_gallery_entries(tmp_root)
     assert len(entries) == 2, "one entry per capture across both sessions"
     by_kind = {e.kind: e for e in entries}
-    assert by_kind["snap"].stack_tag is None, \
-        "an untagged capture must report no stack tag"
+    assert by_kind["snap"].stack_id is None, \
+        "an untagged capture must report no stack id"
     assert by_kind["snap"].preview_path is not None, \
         "session 1's jpg must resolve as this capture's preview"
     assert by_kind["snap"].raw_path.name == "snap_frame_0000.tif"
-    assert by_kind["science"].stack_tag == "T4 plane 2", \
-        "a tagged capture's stack/plane must be surfaced, no raw decode needed"
+    assert (by_kind["science"].stack_id, by_kind["science"].stack_plane) == ("T4", 2), \
+        "a tagged capture's stack id/plane must be surfaced, no raw decode needed"
     assert by_kind["science"].preview_path is None, \
         "no jpg was written for session 2; must not fabricate one"
-    print("list_gallery_entries check PASS: one entry per capture, stack tag "
-          "and preview resolved from session.json + filesystem alone, no "
-          "raw decode performed")
+    print("list_gallery_entries check PASS: one entry per capture, stack "
+          "id/plane and preview resolved from session.json + filesystem "
+          "alone, no raw decode performed")
+
+    snap_frames = capture_frame_paths(by_kind["snap"])
+    assert [p.name for p in snap_frames] == ["snap_frame_0000.tif"], \
+        "a 1-frame capture's burst is just its own single frame"
+    science_frames = capture_frame_paths(by_kind["science"])
+    assert [p.name for p in science_frames] == [
+        "science_frame_0000.tif", "science_frame_0001.tif", "science_frame_0002.tif"
+    ], "capture_frame_paths must return EVERY frame of a multi-frame burst, not just frame 0"
+
+    no_prefix_entry = by_kind["snap"]._replace(file_prefix=None)
+    assert capture_frame_paths(no_prefix_entry) == [no_prefix_entry.raw_path], \
+        "no file_prefix but a known raw_path should degrade to that one frame"
+    no_raw_entry = by_kind["snap"]._replace(raw_path=None)
+    assert capture_frame_paths(no_raw_entry) == [], \
+        "no raw_path at all means no frames to find"
+    print("capture_frame_paths check PASS: full burst recovered for a "
+          "multi-frame capture, sane degradation with no file_prefix or no "
+          "raw_path")
 
     # capture_has_annotation: real green-plane hashes against a temp
     # annotations store, proving this checks the actual measurement

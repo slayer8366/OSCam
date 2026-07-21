@@ -7,6 +7,63 @@ this file is the historical record of what happened and why.
 
 ## 2026-07-21
 
+### Added `process_wizard.py`: choose-your-operations processing wizard
+
+New module (BUILD_LIST Tier 3, item 5), built on top of `gallery.py`
+(item 4, previous entry below) — the file-selection foundation it needed.
+The next step after this is the z-stack one-click aid the user actually
+wants, which will hand its finished planes off to this wizard.
+
+A separate, additional path from the existing "Process session..."
+(`ProcessSessionDialog` + `hdr_from_session.py`), kept exactly as it was —
+that flow is right for a session's own recorded HDR bracket. This one is
+for the more general case: any set of Gallery captures or loose files, each
+run through the same pipeline shape (`frame_average.py`, always, even a
+1-frame group — one uniform path, one honest provenance record, not a
+special-cased pass-through — then one `debayer.py` call, `--green` for a
+measurement plane or `--rgb --tonemap reinhard` for a display image, with
+optional `--colour-gains`). Reuses `hdr_from_session.py`'s own `run_tool`
+subprocess helper rather than reimplementing it, wrapped so a failed
+`sys.exit` in one group becomes a recorded error instead of aborting the
+rest of a batch. Output is named via `stacks.output_name()` when a group
+came from a stack-tagged capture, `<label>_final.tif` otherwise. New "Process
+files..." File menu action in `qt_shell.py`, distinct from "Process
+session...".
+
+Deliberately not built: HDR-merge grouping from arbitrary picked files —
+the build list names it as a pipeline stage, but building a real grouping
+UI (partition N files into exposure levels, enter each level's exposure
+time) would mean a second, riskier way to do something the existing
+session/kind path already does correctly for real HDR brackets, and
+neither the z-stack aid nor "process some loose files" needs it. Flagged
+as a deliberate cut, not an oversight.
+
+`gallery.py` gained a small, additive extension for this: `GalleryEntry`
+now carries `file_prefix` and `stack_id`/`stack_plane` (previously
+collapsed into a display-only `stack_tag` string) instead of discarding
+them, plus a new `capture_frame_paths(entry)` that resolves a capture's
+**whole** burst — every frame_average.py needs, not just the frame 0 the
+three existing single-image "Open..." callers only ever needed.
+`GalleryWidget.selected_entries()` / `GalleryPickDialog.selected_entries()`
+expose the full entries for callers (this wizard) that need that context;
+the four existing call sites only ever used `selected_paths()`, so this
+carries no risk of breaking them (confirmed, not assumed, before touching
+the struct).
+
+New `process_wizard.py --render-check`, run only after `gallery.py
+--render-check` passed in isolation on the extended fixture first, per the
+plan's own ordering (a foundation change gets proven before anything is
+built on it, not folded into one pass at the end): real
+`frame_average.py`/`debayer.py` subprocess round-trips in both green and
+rgb mode, asserting the intermediate master genuinely carries
+`frame_average.py`'s own provenance (including for the 1-frame case — not
+a special-cased copy that happens to look right), correct output naming
+for both a tagged and an untagged group, and a deliberately-broken group
+reporting an error without aborting the rest of the batch. Manually
+smoke-tested end to end under `QT_QPA_PLATFORM=offscreen`: wizard
+construction, a real Gallery selection turned into groups, and a real
+pipeline run producing the correctly-named output file.
+
 ### Added `gallery.py`: shared capture-browsing grid, pick and browse modes
 
 New module (BUILD_LIST Tier 3, item 4), built as the next unblocked step

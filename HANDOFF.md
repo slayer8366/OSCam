@@ -43,11 +43,11 @@ That 13-section checklist is a separate, older track from the newer
 `BUILD_LIST.md` (planning doc, not checked into the repo) the user is now
 working through in dependency order. Progress so far: Tier 1 item 1 (focus
 aid tick rate + auto-reset on stack tag) is done. Tier 3 item 4 (Gallery
-module) is done — see `gallery.py` below. Next up per that list: Tier 3
-item 5 (processing wizard overhaul, choose-your-operations flow, now
-unblocked since Gallery exists), then the z-stack one-click aid (Tier 3
-item 6) the user actually wants, which hands off to the wizard once it
-exists.
+module) is done — see `gallery.py` below. Tier 3 item 5 (processing wizard
+overhaul) is also done — see `process_wizard.py` below. **Next up: the
+z-stack one-click aid (Tier 3 item 6), the thing the user actually asked
+for** — it hands its finished planes off to `process_wizard.py`, which now
+exists and is ready for that.
 
 Four standalone tools, one shared GUI entry point:
 
@@ -79,13 +79,27 @@ against the real green-plane substrate (`measure.load_measurement_plane`) —
 structurally excluded from `annotations.json` (see `check_measurement_
 provenance`) and would silently under-report if hashed instead.
 
+`process_wizard.py` is a sixth shared module, built on `gallery.py`: the
+"choose your operations" processing wizard (`ProcessWizard`, a 3-page
+`QWizard` — select files via an embedded `GalleryWidget`, pick green/rgb +
+optional color-correct gains, run). Reachable from `qt_shell.py`'s new
+"Process files..." File menu action, deliberately separate from the older
+"Process session..." (`ProcessSessionDialog`/`hdr_from_session.py`), which
+stays untouched — that one is still the right tool for a session's own
+recorded HDR bracket; this one is for an arbitrary set of Gallery captures
+or loose files. It does **not** support HDR-merge grouping from arbitrary
+files (see `process_wizard.py`'s own module docstring for why that's a
+deliberate cut, not a gap) — if that need ever shows up for real, don't
+bolt it onto this wizard's `_OperationsPage` without rereading that
+docstring first.
+
 Every module with real logic has a headless self-check:
 `python3 <module>.py --render-check`. Run the whole set before trusting
 anything:
 
 ```bash
 for m in pixel_hash annotations export publish calibrate measure ca_measure \
-        wizard_pages qt_shell stacks focus gallery; do
+        wizard_pages qt_shell stacks focus gallery process_wizard; do
   DISPLAY=:0 python3 $m.py --render-check || echo "FAILED: $m"
 done
 ```
@@ -124,6 +138,16 @@ top-level import in either direction would close a new cycle. If you touch
 `gallery.py`'s imports, keep `qt_shell`/`measure` lazy inside
 `capture_has_annotation`/`_lazy_qt_shell`/`_lazy_measure`, same shape as
 `wizard_pages.py`'s existing `_lazy_qt_shell`.
+
+`process_wizard.py` sits one level further out and needs no lazy trick of
+its own: it top-level imports `gallery` and `hdr_from_session` (neither
+imports `process_wizard` back, and `hdr_from_session.py` needs no PyQt5 at
+all), and only ever reaches `qt_shell.OUT_ROOT` through `gallery`'s own
+already-lazy `_lazy_qt_shell()` (inside `new_output_dir`, at call time, not
+at import time). `qt_shell.py` imports `process_wizard` at its own top
+level the same safe way it already does `gallery`/`measure`. If
+`process_wizard.py` ever needs something from `qt_shell.py` directly
+(rather than through `gallery`), make that lazy too, same reasoning.
 
 **`QGlPicamera2` (the embedded live-preview widget) needs a real
 GL-capable X session.** It fails with `EGLError: EGL_BAD_ALLOC` when
