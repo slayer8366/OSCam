@@ -154,6 +154,3 @@ checks and on-rig behavior have diverged before, and both matter.
   measurement-grade capture mode is a distinct possible future feature,
   not a replacement for this one.
 
-## License
-
-_[ fill in — not yet specified ]_
