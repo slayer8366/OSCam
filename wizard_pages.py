@@ -89,7 +89,7 @@ def _overlay_helpers():
 
 try:
     from PyQt5.QtWidgets import (QWizardPage, QWidget, QLabel, QVBoxLayout,
-                                 QHBoxLayout, QPushButton, QFileDialog, QMessageBox)
+                                 QHBoxLayout, QPushButton, QDialog, QMessageBox)
     from PyQt5.QtCore import QTimer, pyqtSignal
     _HAVE_QT = True
 except ImportError:
@@ -275,12 +275,16 @@ if _HAVE_QT:
             return self._complete
 
         def _on_open_existing(self):
-            path, _ = QFileDialog.getOpenFileName(
-                self, "Open image", "",
-                "Raw / mosaic (*.dng *.tif *.tiff);;JPEG preview (*.jpg *.jpeg);;"
-                "All files (*)")
-            if path:
-                self._try_validate(Path(path))
+            try:
+                from . import gallery as _gallery
+            except ImportError:
+                import gallery as _gallery
+            dlg = _gallery.GalleryPickDialog(parent=self)
+            if dlg.exec_() != QDialog.Accepted:
+                return
+            paths = dlg.selected_paths()
+            if paths:
+                self._try_validate(paths[0])
 
         def _on_captured(self, path):
             self._try_validate(Path(path))

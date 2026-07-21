@@ -7,6 +7,43 @@ this file is the historical record of what happened and why.
 
 ## 2026-07-21
 
+### Added `gallery.py`: shared capture-browsing grid, pick and browse modes
+
+New module (BUILD_LIST Tier 3, item 4), built as the next unblocked step
+toward a z-stack one-click aid: the wizard it hands off to (item 5) needs
+this first as its file-selection foundation, per the build list.
+
+Thumbnails come from the JPG previews every real capture already writes
+alongside its raw `.dng`/`.tif` — no raw decode to populate the grid, so
+opening the gallery on a large captures tree is instant. One `GalleryWidget`
+drives two Qt wrappers: `GalleryPickDialog` (multi-select-capable, an OK/
+Cancel dialog with a "Choose file manually..." escape hatch back to a plain
+file dialog) and `GalleryBrowseWindow` (no commit button, just looking).
+`GalleryPickDialog` replaces the bare `QFileDialog.getOpenFileName` calls in
+`wizard_pages.py`'s `ImageSourcePage._on_open_existing`, `measure.py`'s
+`_on_open`, and `calibrate.py`'s `_on_open` — three sites, same swap, same
+`_load_image`/`_try_validate` handling afterward. `qt_shell.py` gets a new
+"Browse captures..." File menu action opening `GalleryBrowseWindow`.
+
+Whether a capture already has annotations is intentionally a separate, lazy
+check (`capture_has_annotation`), not part of the cheap listing: annotations
+are keyed by the green-plane hash, never a display-referred one (`debayer.py`
+tags its tonemapped output `"NOT a measurement"`, and `measure.py`'s
+`check_measurement_provenance` refuses to measure on it), so answering this
+honestly means decoding the raw mosaic via `measure.load_measurement_plane`
+— the same substrate `measure.py` itself measures on — not hashing whatever
+small file happens to already sit in the session folder. `GalleryWidget`
+only ever runs this in a background `QThread`, filling in each tile's
+"annotated" marker after the grid already shows the cheap data, so a big
+folder tree is never gated on raw decodes nobody asked to see yet.
+
+New `gallery.py --render-check`: `list_gallery_entries` reports the right
+kind/timestamp/stack-tag with no raw decode performed; `capture_has_
+annotation` correctly distinguishes a green plane whose hash was seeded
+into a temp annotations store from an unannotated sibling. Also manually
+smoke-tested under `QT_QPA_PLATFORM=offscreen`: both dialogs construct and
+populate against a real temp captures tree with PyQt5.
+
 ### Focus aid: restored tick rate to ~30fps, auto-reset on stack-plane tag
 
 Two changes to the live focus aid's state machine (`qt_shell.py`), per

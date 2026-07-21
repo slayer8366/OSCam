@@ -39,6 +39,16 @@ line, but no actual target has shown that curvature yet, and building the
 correction model without real evidence to validate against would be
 speculative. Don't build it until someone hits it.
 
+That 13-section checklist is a separate, older track from the newer
+`BUILD_LIST.md` (planning doc, not checked into the repo) the user is now
+working through in dependency order. Progress so far: Tier 1 item 1 (focus
+aid tick rate + auto-reset on stack tag) is done. Tier 3 item 4 (Gallery
+module) is done — see `gallery.py` below. Next up per that list: Tier 3
+item 5 (processing wizard overhaul, choose-your-operations flow, now
+unblocked since Gallery exists), then the z-stack one-click aid (Tier 3
+item 6) the user actually wants, which hands off to the wizard once it
+exists.
+
 Four standalone tools, one shared GUI entry point:
 
 - `python3 qt_shell.py [--camera]` — live capture GUI. Has **Calibrate** and
@@ -56,13 +66,26 @@ Four standalone tools, one shared GUI entry point:
   4 measurement tools, z-stack filmstrip with onion-skin, export, publish.
   Reachable from `qt_shell.py`'s Measure menu, or run directly.
 
+`gallery.py` is a fifth, shared (not standalone) module: a capture-browsing
+grid widget, thumbnails from the JPG previews already written alongside
+every raw capture. Two modes off one `GalleryWidget` — `GalleryPickDialog`
+(multi-select-capable; replaced the plain `QFileDialog.getOpenFileName` in
+`wizard_pages.py`'s `ImageSourcePage`, `measure.py`'s and `calibrate.py`'s
+own `_on_open`) and `GalleryBrowseWindow` (`qt_shell.py`'s new "Browse
+captures..." File menu action, just looking, no commit). Whether a capture
+already has annotations is checked lazily, in a background `QThread`, only
+against the real green-plane substrate (`measure.load_measurement_plane`) —
+**never** a display-referred derivative like `final_display.tif`, which is
+structurally excluded from `annotations.json` (see `check_measurement_
+provenance`) and would silently under-report if hashed instead.
+
 Every module with real logic has a headless self-check:
 `python3 <module>.py --render-check`. Run the whole set before trusting
 anything:
 
 ```bash
 for m in pixel_hash annotations export publish calibrate measure ca_measure \
-        wizard_pages qt_shell stacks focus; do
+        wizard_pages qt_shell stacks focus gallery; do
   DISPLAY=:0 python3 $m.py --render-check || echo "FAILED: $m"
 done
 ```
@@ -87,6 +110,20 @@ are deferred into a lazy `_lazy_qt_shell()` helper, called only at actual
 use time, never at import time. If you add a new cross-reference between
 any of `{qt_shell, calibrate, measure, ca_measure, wizard_pages}`, check the
 import graph before assuming a top-level import is safe.
+
+**Same rule applies to `gallery.py`, one level further.** `qt_shell.py`,
+`measure.py`, and `calibrate.py` all reach into `gallery.py` (for
+`GalleryBrowseWindow`/`GalleryPickDialog`); `qt_shell.py` does it as a
+top-level guarded import (safe — `gallery.py`'s own top level only pulls in
+`stacks`/`annotations`/`pixel_hash`, none of which import anything back),
+but `wizard_pages.py`, `measure.py`, and `calibrate.py`'s own `_on_open`
+methods import `gallery` *lazily, inside the method*, not at module top
+level — those three are exactly the modules `gallery.py` itself needs
+(`measure.load_measurement_plane`, for the annotation check), so a
+top-level import in either direction would close a new cycle. If you touch
+`gallery.py`'s imports, keep `qt_shell`/`measure` lazy inside
+`capture_has_annotation`/`_lazy_qt_shell`/`_lazy_measure`, same shape as
+`wizard_pages.py`'s existing `_lazy_qt_shell`.
 
 **`QGlPicamera2` (the embedded live-preview widget) needs a real
 GL-capable X session.** It fails with `EGLError: EGL_BAD_ALLOC` when

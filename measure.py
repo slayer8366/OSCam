@@ -426,8 +426,8 @@ try:
     from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QLabel,
                                  QVBoxLayout, QHBoxLayout, QPushButton, QComboBox,
                                  QGraphicsView, QGraphicsScene, QFileDialog,
-                                 QMessageBox, QButtonGroup, QWizard, QWizardPage,
-                                 QInputDialog)
+                                 QDialog, QMessageBox, QButtonGroup, QWizard,
+                                 QWizardPage, QInputDialog)
     from PyQt5.QtGui import QPen, QColor, QPolygonF, QPainter, QPixmap, QIcon
     from PyQt5.QtCore import Qt, QPointF, pyqtSignal
     _HAVE_QT = True
@@ -866,12 +866,16 @@ if _HAVE_QT:
 
         # --- image loading -----------------------------------------------------
         def _on_open(self):
-            path, _ = QFileDialog.getOpenFileName(
-                self, "Open image to measure", "",
-                "Raw / mosaic (*.dng *.tif *.tiff);;JPEG preview (*.jpg *.jpeg);;"
-                "All files (*)")
-            if path:
-                self._load_image(path)
+            try:
+                from . import gallery as _gallery
+            except ImportError:
+                import gallery as _gallery
+            dlg = _gallery.GalleryPickDialog(parent=self)
+            if dlg.exec_() != QDialog.Accepted:
+                return
+            paths = dlg.selected_paths()
+            if paths:
+                self._load_image(str(paths[0]))
 
         def _on_restart_wizard(self):
             # Just signals + closes; main()'s loop is what actually reruns

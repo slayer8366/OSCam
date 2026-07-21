@@ -102,6 +102,17 @@ except ImportError:
     except ImportError:
         _measure = None
 
+# gallery.py's shared capture browser (BUILD_LIST Tier 3 item 4), reused here
+# for the standalone "Browse captures" action. None (the menu action reports
+# unavailable rather than crashing) if gallery.py is not alongside this file.
+try:
+    from . import gallery as _gallery
+except ImportError:
+    try:
+        import gallery as _gallery
+    except ImportError:
+        _gallery = None
+
 # The green plane calibrate.py measures on: half the sensor's resolution each
 # axis (see debayer.py's extract_green / the build checklist's own invariant).
 # The ruler's field-of-view-in-microns is derived from THIS width/height, not
@@ -1422,6 +1433,7 @@ if _HAVE_QT:
             self._capture_action = filemenu.addAction("Capture", self._start_capture)
             filemenu.addAction("Process session...", self._open_processing_wizard)
             filemenu.addAction("Archive session raws...", self._open_archive_wizard)
+            filemenu.addAction("Browse captures...", self._open_gallery_browser)
             filemenu.addAction("Quit", self.close)
             view = self.menuBar().addMenu("View")
             view.addAction("Reset field (R)").triggered.connect(self.meter.reset_field)
@@ -2751,6 +2763,19 @@ if _HAVE_QT:
             if session_dir is None:
                 return
             self._offer_archive_raws(session_dir)
+
+        def _open_gallery_browser(self):
+            # Standalone browse mode (gallery.py): just looking, no commit.
+            # Independent of self._capturing -- it only reads the filesystem,
+            # and it is modal (exec_) like Process/Archive above, so it
+            # cannot race a capture in progress either way.
+            if _gallery is None:
+                self._set_capture_status(
+                    "gallery unavailable",
+                    "gallery.py not found beside this file, skipped")
+                return
+            dlg = _gallery.GalleryBrowseWindow(OUT_ROOT, self)
+            dlg.exec_()
 
         def _offer_archive_raws(self, session_dir):
             # Bundle-only, not a size reduction (the tar is uncompressed,
