@@ -27,9 +27,24 @@ TAG SCHEMA — fields added to a capture entry in session.json:
                               field is exactly where ordering breaks, so
                               unstructured judgement gets a home a human reads
                               and a parser leaves alone.
+    sharpness_score  float  PARSED (optional, section 13's post-capture QC)
+                              variance-of-Laplacian scored on this capture's
+                              own green plane, once, right after the shutter
+                              fires (qt_shell.py, via focus.score_capture_
+                              sharpness) -- distinct from the live focus
+                              aid's own number, which never touches an actual
+                              captured frame. None if scoring failed. Purely
+                              informational: see sharpness_relative_flag
+                              below for how it gets compared against a
+                              plane's stack siblings; nothing here ever sets
+                              `exclude` automatically -- that stays a human
+                              decision, same as every other exclude toggle.
 
-Two of the four are read for filtering/ordering (stack, plane); exclude is the
-third parsed field; note is never parsed. Nothing here is inferred from pixels.
+Three of the five are read for filtering/ordering/QC (stack, plane,
+sharpness_score); exclude is a fourth parsed field; note is never parsed.
+Nothing here is inferred from pixels except sharpness_score itself, which
+IS a pixel-derived number -- everything else in this module reads only the
+tags a capture already carries.
 
 INVARIANT (live session): at most one non-excluded capture per (stack, plane).
 A declared retake enforces this by moving the loser to a hidden discarded
@@ -257,6 +272,50 @@ def apply_tag(captures: list, position: int, stack_id: str, plane: int) -> dict:
     return cap
 
 
+def find_tagged(captures: list, stack_id: str, plane: int):
+    """Return the capture tagged (stack_id, plane), ACTIVE OR EXCLUDED, or
+    None. Unlike find_holder (active-only, used to check a retake collision),
+    this is used to locate a capture for QC review regardless of its current
+    exclude status -- an excluded plane must still be findable, or a human
+    could never toggle it back."""
+    for cap in captures:
+        if is_tagged(cap) and cap.get(STACK) == stack_id and plane_of(cap) == plane:
+            return cap
+    return None
+
+
+# --------------------------------------------------------------------------
+# Post-capture QC (section 13): a recorded sharpness_score is evidence, never
+# a gate -- set_exclude is the one thing that actually changes what a stack
+# builds from, and it is always a deliberate, reversible human action.
+# --------------------------------------------------------------------------
+
+def set_exclude(cap: dict, excluded: bool) -> dict:
+    """Toggle the quality veto on ONE capture, in place. excluded=False
+    clears the field entirely rather than writing `exclude: false` --
+    is_active's own check (`not cap.get(EXCLUDE, False)`) already treats
+    absent and False identically, so this keeps a never-excluded capture's
+    record free of a flag that was never actually set."""
+    if excluded:
+        cap[EXCLUDE] = True
+    else:
+        cap.pop(EXCLUDE, None)
+    return cap
+
+
+def sharpness_relative_flag(score, best_score, rel_drop: float = 0.5):
+    """Whether `score` is soft enough, relative to the best score seen
+    elsewhere in its own stack, to be worth a human's attention -- evidence
+    only, same "recorded honestly, never a gate" rule ca_measure.py's own
+    poly2_flag already follows for CA curvature. Returns None (no verdict,
+    not a crash) if either score is missing or best_score is not positive --
+    a plane that was never scored, or a stack with no scores at all yet,
+    has nothing meaningful to compare against."""
+    if score is None or best_score is None or best_score <= 0:
+        return None
+    return score < rel_drop * best_score
+
+
 def discarded_dir(session_dir) -> Path:
     """Hidden per-session discard folder: <session>/.discarded"""
     return Path(session_dir) / ("." + DISCARDED_DIRNAME)
@@ -284,3 +343,99 @@ def move_frames_to_discarded(session_dir, file_prefix: str,
             f.rename(target)
             moved.append(target)
     return moved
+
+
+def render_check():
+    # find_tagged: locates a capture regardless of active/excluded status,
+    # unlike find_holder (which is deliberately active-only, for retake
+    # collision checks). Built via apply_tag + set_exclude, the same two
+    # functions a real capture would go through.
+    captures = [{"index": 0}, {"index": 1}]
+    apply_tag(captures, 0, "T1", 1)
+    assert find_tagged(captures, "T1", 1) is captures[0]
+    assert find_tagged(captures, "T1", 99) is None, \
+        "a plane that was never tagged should not resolve to anything"
+    assert find_holder(captures, "T1", 1) is captures[0], \
+        "an active tagged capture should still resolve via find_holder too"
+
+    set_exclude(captures[0], True)
+    assert captures[0][EXCLUDE] is True
+    assert not is_active(captures[0]), "an excluded capture must not read as active"
+    assert find_holder(captures, "T1", 1) is None, \
+        "find_holder must NOT resolve an excluded capture (retakes should be " \
+        "able to reclaim its slot)"
+    assert find_tagged(captures, "T1", 1) is captures[0], \
+        "find_tagged MUST still resolve an excluded capture -- otherwise a " \
+        "human could never review or un-exclude it"
+
+    set_exclude(captures[0], False)
+    assert EXCLUDE not in captures[0], \
+        "clearing exclude should remove the key entirely, not just set it False"
+    assert is_active(captures[0])
+    print("find_tagged / set_exclude check PASS: locates a capture regardless "
+          "of exclude status (unlike find_holder, active-only on purpose), "
+          "clearing exclude removes the key rather than leaving a stale False")
+
+    # sharpness_relative_flag: evidence only, never raises, honest about
+    # what it can't judge (missing scores, a degenerate all-zero stack).
+    assert sharpness_relative_flag(50.0, 200.0, rel_drop=0.5) is True, \
+        "well below half the stack's best should flag"
+    assert sharpness_relative_flag(150.0, 200.0, rel_drop=0.5) is False, \
+        "comfortably above half the stack's best should not flag"
+    assert sharpness_relative_flag(None, 200.0) is None, "no score -> no verdict"
+    assert sharpness_relative_flag(50.0, None) is None, "no stack best -> no verdict"
+    assert sharpness_relative_flag(50.0, 0.0) is None, \
+        "a degenerate (zero) best score has nothing meaningful to compare against"
+    print("sharpness_relative_flag check PASS: flags a real relative drop, stays "
+          "quiet on a comfortable score, returns None (never raises) when either "
+          "input can't support a verdict")
+
+    # Integration: group_by_stack's include_excluded=True must surface an
+    # excluded-but-tagged capture alongside active ones, ordered_planes must
+    # still place it correctly by its own plane tag -- this is exactly what
+    # measure.py's collect_stack_planes relies on to show excluded planes in
+    # the filmstrip rather than hiding them outright.
+    import tempfile
+    tmp = Path(tempfile.mkdtemp())
+    sessions = []
+    for i, (plane, excluded) in enumerate([(1, False), (2, True), (3, False)]):
+        sd = tmp / "s{}".format(i)
+        sd.mkdir()
+        cap = {"index": 0, "kind": "science"}
+        apply_tag([cap], 0, "T9", plane)
+        if excluded:
+            set_exclude(cap, True)
+        (sd / "session.json").write_text(json.dumps({"captures": [cap]}))
+        sessions.append(sd)
+
+    groups_active_only = group_by_stack(sessions)
+    assert len(groups_active_only["T9"]) == 2, \
+        "default group_by_stack should surface only the 2 active planes"
+
+    groups_all = group_by_stack(sessions, include_excluded=True)
+    assert len(groups_all["T9"]) == 3, \
+        "include_excluded=True should surface all 3 tagged planes"
+    ordered = ordered_planes(groups_all["T9"])
+    assert [plane_of(cap) for _sd, cap in ordered] == [1, 2, 3], \
+        "ordered_planes must place the excluded plane 2 correctly by its " \
+        "own tag, not drop it or push it to the end"
+    excluded_flags = [is_active(cap) for _sd, cap in ordered]
+    assert excluded_flags == [True, False, True], \
+        "plane 2's excluded status must survive the group_by_stack -> " \
+        "ordered_planes round-trip"
+    print("group_by_stack/ordered_planes + exclude integration check PASS: "
+          "an excluded-but-tagged plane is invisible by default, surfaces "
+          "with include_excluded=True, and orders correctly alongside active "
+          "planes rather than being dropped or misplaced")
+
+    import shutil
+    shutil.rmtree(tmp, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    import sys
+    if "--render-check" in sys.argv:
+        render_check()
+    else:
+        sys.exit("stacks.py is not a standalone tool; import its functions, "
+                 "or run with --render-check for the headless self-check.")

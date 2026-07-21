@@ -59,10 +59,10 @@ import numpy as np
 
 try:
     from .camera_backend import FakeCamera, LORES_RES, FULL_RES
-    from .focus import FocusMeter, FocusBox, FocusState, BarState
+    from .focus import FocusMeter, FocusBox, FocusState, BarState, score_capture_sharpness
 except ImportError:                 # run directly as a script, not as a package module
     from camera_backend import FakeCamera, LORES_RES, FULL_RES
-    from focus import FocusMeter, FocusBox, FocusState, BarState
+    from focus import FocusMeter, FocusBox, FocusState, BarState, score_capture_sharpness
 
 # stacks.py's tagging (apply_tag/output_name): the pure, camera-free half of
 # z-stack support (section 1's own seam rule -- this is exactly the kind of
@@ -2513,7 +2513,36 @@ if _HAVE_QT:
                 prefix = armed["prefix"]
                 result = self.camera.capture_burst(session.dir, prefix, armed["n"])
                 idx = record_burst(session, kind, prefix, result)
+                if kind == "science":
+                    # Post-capture QC (section 13): flat/dark are calibration
+                    # frames, never stack planes (see _on_tag_stack's own
+                    # comment), so only science gets scored. Runs here, off
+                    # the Qt thread already (see this method's own docstring).
+                    self._score_capture_sharpness(session, idx, result)
                 return {"kind": kind, "index": idx, "summary": "{} frames".format(len(result["frames"]))}
+
+        def _score_capture_sharpness(self, session, idx, result):
+            """Post-capture QC (section 13): variance-of-Laplacian on the
+            green plane extracted from frame 0 of this science burst -- the
+            same "frame 0 stands for the burst" convention measure.py's own
+            resolve_capture_raw uses, since every frame of a burst shares the
+            same subject and exposure. A recorded number, distinct from the
+            live focus aid: this runs once, after the shutter, on the
+            capture actually written to disk, not on the ISP preview.
+            Never raises into the capture flow -- a scoring failure (green
+            extraction needs calibrate.py + debayer.py alongside this file;
+            the frame could also just fail to read) is recorded honestly as
+            sharpness_score=None rather than losing an otherwise-good
+            capture over it."""
+            score = None
+            if _calibrate is not None:
+                try:
+                    green = _calibrate.load_green_plane(result["frames"][0].raw)
+                    score = score_capture_sharpness(green)
+                except Exception:
+                    score = None
+            session.captures[idx]["sharpness_score"] = score
+            session.write()
 
         def _continue_hdr_to_dark(self, sci_result):
             # Called the instant the science phase's worker thread reports back
@@ -3257,6 +3286,49 @@ def render_check():
               "persisted to session.json, (stack, plane) collision refuses "
               "without tagging the contender, blank stack ID refused, next "
               "plane default auto-increments")
+
+        # _score_capture_sharpness (section 13's post-capture QC): a real
+        # FakeCamera burst, scored against its OWN written frame via
+        # calibrate.load_green_plane + focus.score_capture_sharpness --
+        # both called for real, nothing mocked here.
+        qc_root = Path("/tmp/zynergy_render_check_qc")
+        if qc_root.exists():
+            shutil.rmtree(qc_root)
+        qcam = FakeCamera(async_delay_s=0.0)
+        qc_session = Session(qc_root, {}, [])
+        qc_result = qcam.capture_burst(qc_session.dir, "science_", 2)
+        qc_idx = record_burst(qc_session, "science", "science_", qc_result)
+        assert "sharpness_score" not in qc_session.captures[qc_idx], \
+            "record_burst itself must not invent a score -- only " \
+            "_score_capture_sharpness (called separately, after) does"
+        win._score_capture_sharpness(qc_session, qc_idx, qc_result)
+        score = qc_session.captures[qc_idx].get("sharpness_score")
+        assert isinstance(score, float), \
+            "a real capture should score as a real float, got {!r}".format(score)
+        on_disk_qc = json.loads((qc_session.dir / "session.json").read_text())
+        assert on_disk_qc["captures"][qc_idx]["sharpness_score"] == score, \
+            "the score must be persisted to session.json, not just held in memory"
+
+        # A scoring failure (green extraction broke, file unreadable, whatever)
+        # must record None and must NOT raise into the capture flow.
+        orig_load_green = _calibrate.load_green_plane
+        _calibrate.load_green_plane = lambda *a, **k: (_ for _ in ()).throw(
+            ValueError("simulated extraction failure"))
+        try:
+            win._score_capture_sharpness(qc_session, qc_idx, qc_result)
+        finally:
+            _calibrate.load_green_plane = orig_load_green
+        assert qc_session.captures[qc_idx]["sharpness_score"] is None, \
+            "a scoring failure should record None, not leave the old score " \
+            "or raise out of this method"
+
+        qcam.stop()
+        shutil.rmtree(qc_root, ignore_errors=True)
+        print("_score_capture_sharpness check PASS: a real FakeCamera capture "
+              "scores as a real float via calibrate.load_green_plane + "
+              "focus.score_capture_sharpness (nothing mocked), the score "
+              "persists to session.json, a simulated extraction failure "
+              "records None rather than raising into the capture flow")
 
 
 if __name__ == "__main__":

@@ -171,6 +171,34 @@ class FocusBox:
 
 
 # ---------------------------------------------------------------------------
+# Post-capture QC (build checklist section 13): the SAME metric the live aid
+# uses, computed once on an actual CAPTURED green frame rather than the live
+# lores stream. "Distinct from the live aid" means the INPUT differs (a
+# captured frame, not a preview frame) -- the math is deliberately identical,
+# so a post-capture score and the live aid's own numbers are directly
+# comparable, not two different metrics that happen to share a name.
+# ---------------------------------------------------------------------------
+def score_capture_sharpness(green_plane, box=None, blur_radius=1):
+    """A recorded number: called once per capture, never smoothed and never
+    tracked against a running high-water mark like FocusMeter's live bar --
+    that machinery exists to make a REAL-TIME climb legible, which is
+    meaningless for one static score computed after the shutter has already
+    fired. box (a FocusBox, fractional field coordinates) scopes the ROI to
+    whatever mattered when the shot was framed; None scores the whole plane.
+    Raises ValueError if the ROI is too small to score meaningfully (mirrors
+    FocusMeter's own min_box_px floor) -- the caller decides what a failed
+    score means for it (qt_shell.py records None rather than losing the
+    capture over it).
+    """
+    plane = np.asarray(green_plane)
+    crop = box.crop(plane) if box is not None else plane
+    if min(crop.shape[:2]) < 16:
+        raise ValueError(
+            "ROI too small to score sharpness ({}x{} px)".format(*crop.shape[:2]))
+    return variance_of_laplacian(crop, blur_radius)
+
+
+# ---------------------------------------------------------------------------
 # The bar: session-relative, scoped to the field being focused. Auto-ranges to
 # the min/max seen this field (not zero-based), so its width covers the narrow
 # band scores occupy near focus. A full bar means best-seen-this-sweep.
@@ -301,7 +329,7 @@ def _dwell(meter, cam, z, frames=6):
     return st
 
 
-if __name__ == "__main__":
+def main():
     cam = FakeCamera()
     cam.start()
 
@@ -343,3 +371,47 @@ if __name__ == "__main__":
           f"(unchanged from {kept:.4f})")
 
     cam.stop()
+
+
+def render_check():
+    # A sharp synthetic plane (a checkerboard: real high-frequency edge
+    # content) must score higher than the SAME plane heavily blurred -- the
+    # one property that actually matters for this metric to be useful as a
+    # QC signal at all.
+    yy, xx = np.mgrid[0:160, 0:200]
+    sharp = 500.0 + 300.0 * (((xx // 40) % 2) ^ ((yy // 40) % 2)).astype(np.float64)
+    blurred = _sep_blur(sharp, _binomial(6))
+    sharp_score = score_capture_sharpness(sharp)
+    blurred_score = score_capture_sharpness(blurred)
+    assert sharp_score > blurred_score * 5, \
+        "a sharp plane should score well above the same plane heavily blurred " \
+        "(got sharp={:.2f}, blurred={:.2f})".format(sharp_score, blurred_score)
+
+    # box=None scores the whole plane; a box should score only its crop, and
+    # a uniform region cropped out of the checkerboard (one flat 40x40 cell,
+    # well clear of any cell boundary) must score near zero even though the
+    # whole-plane score is high.
+    flat_box = FocusBox(0.05, 0.05, 0.05 + 20 / 200, 0.05 + 20 / 160)
+    flat_score = score_capture_sharpness(sharp, box=flat_box)
+    assert flat_score < sharp_score * 0.05, \
+        "a flat region cropped out of a sharp plane should score near zero, " \
+        "not inherit the whole-plane score"
+
+    # too-small ROI refuses rather than returning a meaningless number
+    try:
+        score_capture_sharpness(sharp, box=FocusBox(0.0, 0.0, 0.02, 0.02))
+        raise AssertionError("expected ValueError for a too-small ROI")
+    except ValueError:
+        pass
+
+    print("score_capture_sharpness check PASS: sharp beats blurred, box scoping "
+          "isolates a flat sub-region correctly, too-small ROI refuses rather "
+          "than scoring noise")
+
+
+if __name__ == "__main__":
+    import sys
+    if "--render-check" in sys.argv:
+        render_check()
+    else:
+        main()

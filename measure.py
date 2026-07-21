@@ -54,6 +54,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import sys
 from pathlib import Path
 
@@ -385,11 +386,20 @@ def resolve_capture_raw(session_dir, cap):
 def collect_stack_planes(captures_root):
     """Every tagged z-stack under a captures root, planes ordered and resolved
     to real files: {stack_id: [{"plane": int, "path": Path, "session_dir":
-    Path}, ...]}. Ordering comes from stacks.ordered_planes (integer plane,
-    never folder order), membership from stacks.group_by_stack (active
-    captures only, so an excluded plane is honestly absent). A plane whose
-    raw file no longer resolves is dropped here -- same missing-plane
-    temperament as zstack_process's own flag, not an error."""
+    Path, "excluded": bool, "sharpness_score": float|None}, ...]}. Ordering
+    comes from stacks.ordered_planes (integer plane, never folder order).
+
+    Membership uses stacks.group_by_stack(..., include_excluded=True) --
+    UNLIKE that function's own default -- so an excluded plane still shows
+    up here, marked, rather than vanishing outright: section 13's own rule
+    is that exclude "keeps a frame's stack intent on record", and a human
+    reviewing the filmstrip needs to actually SEE a cut plane (and its
+    sharpness_score, section 13's post-capture QC number) to judge whether
+    the cut was right, and to toggle it back if not.
+
+    A plane whose raw file no longer resolves is dropped here -- same
+    missing-plane temperament as zstack_process's own flag, not an error.
+    """
     if _stacks is None:
         raise RuntimeError("stacks.py could not be imported; needed for the z-stack view")
     root = Path(captures_root)
@@ -398,13 +408,15 @@ def collect_stack_planes(captures_root):
     session_dirs = [p for p in sorted(root.iterdir())
                     if (p / "session.json").is_file()]
     out = {}
-    for stack_id, members in _stacks.group_by_stack(session_dirs).items():
+    groups = _stacks.group_by_stack(session_dirs, include_excluded=True)
+    for stack_id, members in groups.items():
         planes = []
         for sd, cap in _stacks.ordered_planes(members):
             raw = resolve_capture_raw(sd, cap)
             if raw is not None:
                 planes.append({"plane": _stacks.plane_of(cap), "path": raw,
-                               "session_dir": sd})
+                               "session_dir": sd, "excluded": not _stacks.is_active(cap),
+                               "sharpness_score": cap.get("sharpness_score")})
         if planes:
             out[stack_id] = planes
     return out
@@ -439,15 +451,19 @@ if _HAVE_QT:
     class FilmstripWidget(QWidget):
         """Filmstrip for z-stacks: thumbnails down the side, inactive dimmed,
         active lit. Clicking a thumbnail switches the active plane. Per
-        checklist §8, this is the home for per-plane sharpness score and
-        exclude toggle (future section 13 work)."""
+        checklist §8/§13, this is also the home for per-plane sharpness
+        score and the exclude toggle: each thumbnail shows its recorded
+        score (section 13's post-capture QC number, off qt_shell.py's own
+        capture path) and an Include/Exclude button, since a QC score is
+        evidence a human acts on here, never an automatic gate."""
 
-        active_plane_changed = pyqtSignal(int)  # emitted when user clicks a plane
+        active_plane_changed = pyqtSignal(int)   # user clicked a thumbnail
+        exclude_toggled = pyqtSignal(int)        # user clicked a plane's Exclude/Include
 
         def __init__(self, parent=None):
             super().__init__(parent)
-            self.planes = []  # list of {"idx": int, "pixmap": QPixmap,
-                              #          "label": str, "active": bool}
+            self.planes = []  # list of {"idx": int, "pixmap": QPixmap, "label": str,
+                              #          "active": bool, "excluded": bool, "flagged": bool|None}
             self.scroll_area = None
             self.layout_ = None
             self._init_ui()
@@ -482,11 +498,22 @@ if _HAVE_QT:
             p.end()
             return t
 
+        @staticmethod
+        def _border_color(active, excluded, flagged):
+            # Priority: excluded (structural, cut from the built stack) beats
+            # flagged (evidence only, still in the stack) beats active/inactive.
+            if excluded:
+                return "#cc4444"
+            if flagged:
+                return "#e0a030"
+            return "#ffd24e" if active else "#444444"
+
         def set_planes(self, planes_list):
-            """planes_list: list of {"idx": int, "pixmap": QPixmap,
-            "label": str, "active": bool}. Rebuilds the strip; callers
-            re-invoke this on every active-plane switch so the lit/dimmed
-            state always tracks the canvas."""
+            """planes_list: list of {"idx": int, "pixmap": QPixmap, "label": str,
+            "active": bool, "excluded": bool, "score": float|None,
+            "flagged": bool|None}. Rebuilds the strip; callers re-invoke this
+            on every active-plane switch or exclude toggle so the lit/dimmed/
+            excluded state always tracks the canvas and the store."""
             while self.layout_.count() > 0:
                 item = self.layout_.takeAt(0)
                 if item.widget():
@@ -495,20 +522,39 @@ if _HAVE_QT:
             self.planes = planes_list
             for info in planes_list:
                 active = bool(info.get("active"))
+                excluded = bool(info.get("excluded"))
+                flagged = info.get("flagged")
+                score = info.get("score")
+                idx = info["idx"]
+
                 thumb = self._thumb(info["pixmap"], dimmed=not active)
                 btn = QPushButton()
                 btn.setIcon(QIcon(thumb))
                 btn.setIconSize(thumb.size())
-                btn.setToolTip(info.get("label", ""))
-                idx = info["idx"]
+                score_text = ("score {:.1f}".format(score) if score is not None
+                             else "no score recorded")
+                flag_text = "  (soft relative to this stack's best)" if flagged else ""
+                btn.setToolTip("{}\n{}{}".format(info.get("label", ""), score_text, flag_text))
                 btn.clicked.connect(
                     lambda checked=False, i=idx: self.active_plane_changed.emit(i))
                 btn.setStyleSheet("border: 2px solid {}".format(
-                    "#ffd24e" if active else "#444444"))
+                    self._border_color(active, excluded, flagged)))
                 self.layout_.addWidget(btn)
-                lbl = QLabel(info.get("label", ""))
-                lbl.setStyleSheet("color: {}".format("#ffd24e" if active else "#888888"))
+
+                label_text = info.get("label", "")
+                if excluded:
+                    label_text += "  [excluded]"
+                elif flagged:
+                    label_text += "  [soft?]"
+                lbl = QLabel(label_text)
+                lbl.setStyleSheet("color: {}".format(
+                    self._border_color(active, excluded, flagged)))
                 self.layout_.addWidget(lbl)
+
+                exclude_btn = QPushButton("Include" if excluded else "Exclude")
+                exclude_btn.clicked.connect(
+                    lambda checked=False, i=idx: self.exclude_toggled.emit(i))
+                self.layout_.addWidget(exclude_btn)
             self.layout_.addStretch()
 
     class MeasureView(QGraphicsView):
@@ -645,14 +691,18 @@ if _HAVE_QT:
             self.active_tool = None
             self._plane = None
             self._pixel_sha256 = None
-            # Z-stack support (checklist section 8)
+            # Z-stack support (checklist section 8, plus section 13's
+            # post-capture QC: excluded/sharpness_score per plane)
             self._stack = []  # list of {"path": Path, "plane": int (z-position),
-                              #          "array": ndarray, "pixmap": QPixmap}
+                              #          "array": ndarray, "pixmap": QPixmap,
+                              #          "excluded": bool, "sharpness_score": float|None}
             self._active_plane_idx = 0
+            self._current_stack_id = None
 
             self.view = MeasureView(self)
             self.filmstrip = FilmstripWidget()
             self.filmstrip.active_plane_changed.connect(self._on_filmstrip_plane_selected)
+            self.filmstrip.exclude_toggled.connect(self._on_exclude_toggled)
 
             self.objective_combo = QComboBox()
             self.objective_combo.setEditable(True)
@@ -949,10 +999,22 @@ if _HAVE_QT:
             self._render_stack_plane()
 
         def _refresh_filmstrip(self):
+            # best_score: the stack's own best recorded sharpness_score, so
+            # sharpness_relative_flag has something to compare each plane
+            # against -- computed fresh each call so a rescored plane (or a
+            # freshly loaded stack) always compares against the CURRENT best,
+            # never a stale one.
+            scores = [p.get("sharpness_score") for p in self._stack
+                     if p.get("sharpness_score") is not None]
+            best_score = max(scores) if scores else None
             self.filmstrip.set_planes([
                 {"idx": i, "pixmap": p["pixmap"],
                  "label": "plane {}".format(p["plane"]),
-                 "active": (i == self._active_plane_idx)}
+                 "active": (i == self._active_plane_idx),
+                 "excluded": bool(p.get("excluded")),
+                 "score": p.get("sharpness_score"),
+                 "flagged": (_stacks.sharpness_relative_flag(
+                     p.get("sharpness_score"), best_score) if _stacks else None)}
                 for i, p in enumerate(self._stack)])
 
         def _render_stack_plane(self):
@@ -1010,7 +1072,12 @@ if _HAVE_QT:
             """Load resolved stack planes (collect_stack_planes output) into
             memory and the filmstrip. A plane whose file fails to load is
             reported and skipped, not fatal -- same missing-plane temperament
-            as the rest of the stack tooling."""
+            as the rest of the stack tooling.
+
+            The initial active plane defaults to the first NON-excluded one
+            (falling back to plane 0 only if every plane is excluded), so
+            opening a stack lands on a plane that's actually part of the
+            built stack rather than a cut one."""
             loaded, failed = [], []
             for info in planes:
                 try:
@@ -1022,8 +1089,11 @@ if _HAVE_QT:
                 # "plane" is the integer z-position from the tag; "array" is
                 # the pixel data -- kept as two distinct keys on purpose.
                 loaded.append({"path": info["path"], "plane": info["plane"],
-                               "array": arr, "pixmap": pixmap})
+                               "session_dir": info["session_dir"], "array": arr,
+                               "pixmap": pixmap, "excluded": info.get("excluded", False),
+                               "sharpness_score": info.get("sharpness_score")})
             self._stack = loaded
+            self._current_stack_id = stack_id
             if not self._stack:
                 QMessageBox.warning(self, "Stack empty",
                                    "No plane of stack {!r} could be loaded ({})".format(
@@ -1034,8 +1104,37 @@ if _HAVE_QT:
                     self, "Planes skipped",
                     "{} plane(s) could not be loaded and were skipped: {}".format(
                         len(failed), ", ".join(failed)))
-            self._active_plane_idx = 0
+            non_excluded = [i for i, p in enumerate(self._stack) if not p["excluded"]]
+            self._active_plane_idx = non_excluded[0] if non_excluded else 0
             self._render_stack_plane()
+
+        def _on_exclude_toggled(self, plane_idx):
+            """Toggle the exclude flag on one plane (section 13): a
+            deliberate, reversible human action, never automatic. Writes
+            straight to that plane's OWN session.json (measure.py never
+            depends on qt_shell.Session; this is the same read-modify-write
+            shape Session.write() itself uses, just scoped to one capture)."""
+            if not (0 <= plane_idx < len(self._stack)) or _stacks is None:
+                return
+            entry = self._stack[plane_idx]
+            session_json_path = entry["session_dir"] / "session.json"
+            try:
+                data = json.loads(session_json_path.read_text())
+                cap = _stacks.find_tagged(data["captures"], self._current_stack_id,
+                                          entry["plane"])
+                if cap is None:
+                    raise ValueError("capture for plane {} not found in {}".format(
+                        entry["plane"], session_json_path))
+                new_excluded = not entry["excluded"]
+                _stacks.set_exclude(cap, new_excluded)
+                tmp = session_json_path.with_suffix(".tmp")
+                tmp.write_text(json.dumps(data, indent=2))
+                os.replace(tmp, session_json_path)
+            except Exception as exc:
+                QMessageBox.warning(self, "Could not update exclude", str(exc))
+                return
+            entry["excluded"] = new_excluded
+            self._refresh_filmstrip()
 
         # --- committing a mark --------------------------------------------------
         def commit_mark(self, points):
@@ -1340,12 +1439,14 @@ def render_check():
                 (d / f).write_bytes(b"")
             return d
 
-        # plane 2 shot FIRST (earlier session name), resolved via glob
+        # plane 2 shot FIRST (earlier session name), resolved via glob, with a
+        # recorded sharpness_score (section 13's post-capture QC number)
         _fake_session("2026-01-01_0001",
                       [{"kind": "science", "file_prefix": "science_",
-                        "stack": "T1", "plane": 2}],
+                        "stack": "T1", "plane": 2, "sharpness_score": 88.0}],
                       ["science_frame_0000.dng", "science_frame_0001.dng"])
-        # plane 1 shot second, resolved via its files list
+        # plane 1 shot second, resolved via its files list, no score recorded
+        # (predates section 13, or scoring failed -- both look the same: None)
         _fake_session("2026-01-01_0002",
                       [{"kind": "science", "file_prefix": "science_",
                         "files": ["science_frame_0000.dng"],
@@ -1355,34 +1456,120 @@ def render_check():
         _fake_session("2026-01-01_0003",
                       [{"kind": "science", "file_prefix": "science_"}],
                       ["science_frame_0000.dng"])
-        # excluded plane: documented, but must not appear in the built stack
+        # excluded plane: documented (section 13's own rule), must still
+        # SURFACE here (unlike group_by_stack's own default), marked excluded
         _fake_session("2026-01-01_0004",
                       [{"kind": "science", "file_prefix": "science_",
-                        "stack": "T1", "plane": 3, "exclude": True}],
+                        "stack": "T1", "plane": 3, "exclude": True,
+                        "sharpness_score": 12.0}],
                       ["science_frame_0000.dng"])
 
         found = collect_stack_planes(zroot)
         assert list(found) == ["T1"], "exactly one stack should be found, got {}".format(list(found))
         planes = found["T1"]
-        assert [p["plane"] for p in planes] == [1, 2], \
-            "planes must be ordered by the integer tag (1 then 2), and the " \
-            "excluded plane 3 must be absent; got {}".format([p["plane"] for p in planes])
+        assert [p["plane"] for p in planes] == [1, 2, 3], \
+            "planes must be ordered by the integer tag, INCLUDING the excluded " \
+            "one (section 13: documented, not deleted); got {}".format(
+                [p["plane"] for p in planes])
         assert planes[0]["path"].name == "science_frame_0000.dng"
         assert planes[1]["path"].name == "science_frame_0000.dng", \
             "glob fallback should resolve frame 0 of the burst"
         assert planes[0]["session_dir"].name == "2026-01-01_0002", \
             "plane 1 must come from its own session, regardless of shoot order"
 
+        by_plane = {p["plane"]: p for p in planes}
+        assert by_plane[1]["excluded"] is False and by_plane[1]["sharpness_score"] is None
+        assert by_plane[2]["excluded"] is False and by_plane[2]["sharpness_score"] == 88.0
+        assert by_plane[3]["excluded"] is True and by_plane[3]["sharpness_score"] == 12.0, \
+            "the excluded plane must carry excluded=True and its own recorded score"
+
         assert collect_stack_planes(zroot / "no_such_dir") == {}, \
             "a missing root should give no stacks, not raise"
 
         # a capture whose files vanished resolves to None and its plane is dropped
         assert resolve_capture_raw(zroot / "2026-01-01_0003", {"file_prefix": "nope_"}) is None
-        _shutil.rmtree(zroot.parent, ignore_errors=True)
         print("z-stack assembly check PASS: cross-session grouping via stacks.py, "
-              "integer-plane ordering, excluded plane absent, untagged session "
-              "ignored, both raw-resolution paths (files list + prefix glob), "
-              "missing root and missing files degrade cleanly")
+              "integer-plane ordering INCLUDING the excluded plane (marked, not "
+              "dropped), untagged session ignored, both raw-resolution paths "
+              "(files list + prefix glob), missing root and missing files "
+              "degrade cleanly, sharpness_score passed through per plane")
+
+        # --- MeasureWindow._load_stack / _on_exclude_toggled, against the
+        # SAME synthetic stack, exercising the real GUI methods end to end ---
+        if not _HAVE_QT:
+            print("_load_stack / _on_exclude_toggled check SKIPPED: PyQt5 not available")
+        else:
+            qtapp = QApplication.instance() or QApplication([])
+
+            def _write_fake_green_plane(path):
+                # resolve_capture_raw pointed at empty stub .dng files above;
+                # overwrite each with a real, loadable TIFF shaped as an
+                # already-extracted green plane -- load_measurement_plane
+                # accepts that shape directly, no debayer extraction needed,
+                # far cheaper than writing a full-sensor mosaic for this test.
+                import tifffile
+                green_hw = (GREEN_PLANE_RES[1], GREEN_PLANE_RES[0])
+                arr = np.random.default_rng(0).integers(
+                    0, 4096, size=green_hw).astype(np.uint16)
+                tifffile.imwrite(str(path), arr)
+
+            for p in planes:
+                _write_fake_green_plane(p["path"])
+
+            win = MeasureWindow()
+            win._load_stack("T1", planes)
+            assert len(win._stack) == 3, "all 3 planes (incl. excluded) should load"
+            # initial active plane must be the first NON-excluded one (1),
+            # never the excluded plane 3, even though 3 sorts last
+            assert win._stack[win._active_plane_idx]["plane"] == 1, \
+                "the initially active plane should be the first non-excluded " \
+                "one, got plane {}".format(win._stack[win._active_plane_idx]["plane"])
+
+            # the filmstrip actually reflects excluded/score/flagged state
+            win._refresh_filmstrip()
+            assert len(win.filmstrip.planes) == 3
+            plane3_info = next(fp for fp in win.filmstrip.planes
+                               if "3" in fp["label"])
+            assert plane3_info["excluded"] is True
+            assert plane3_info["score"] == 12.0
+            # best score in this stack is 88.0 (plane 2); plane 3's 12.0 is
+            # well below half of that, so it should ALSO be flagged as soft
+            # -- independent evidence, on top of already being excluded
+            assert plane3_info["flagged"] is True, \
+                "plane 3's score (12.0) should register as soft relative to " \
+                "the stack's best (88.0)"
+
+            # toggle plane 3 (index 2, since planes are ordered 1,2,3) back
+            # to included via the REAL _on_exclude_toggled path
+            excluded_idx = next(i for i, e in enumerate(win._stack) if e["plane"] == 3)
+            win._on_exclude_toggled(excluded_idx)
+            assert win._stack[excluded_idx]["excluded"] is False, \
+                "toggling should flip the in-memory state immediately"
+            on_disk = json.loads((zroot / "2026-01-01_0004" / "session.json").read_text())
+            assert on_disk["captures"][0].get("exclude") is None, \
+                "toggling back to included must clear the exclude key in " \
+                "session.json (set_exclude's own pop-not-False rule), not " \
+                "just flip it to false in memory"
+
+            # a fresh collect_stack_planes call must now see plane 3 as active
+            found2 = collect_stack_planes(zroot)
+            by_plane2 = {p["plane"]: p for p in found2["T1"]}
+            assert by_plane2[3]["excluded"] is False, \
+                "the exclude toggle must be visible to a fresh scan of the " \
+                "captures root, not just held in this window's own memory"
+
+            # toggle it back to excluded again, confirm the round trip
+            win._on_exclude_toggled(excluded_idx)
+            assert win._stack[excluded_idx]["excluded"] is True
+            on_disk2 = json.loads((zroot / "2026-01-01_0004" / "session.json").read_text())
+            assert on_disk2["captures"][0].get("exclude") is True
+
+            print("_load_stack / _on_exclude_toggled check PASS: initial active "
+                  "plane skips the excluded one, filmstrip carries excluded/"
+                  "score/flagged per plane, toggling exclude writes through to "
+                  "session.json (both directions) and is visible to a fresh scan")
+
+        _shutil.rmtree(zroot.parent, ignore_errors=True)
 
 
 def main():
