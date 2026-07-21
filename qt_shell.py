@@ -88,6 +88,20 @@ except ImportError:
     except ImportError:
         _calibrate = None
 
+# --- MEASURE MENU (separable): measure.py's own analysis GUI, opened from a
+# menu action, the same pattern as the Calibrate menu below. Unlike
+# ca_measure.py's CAWizard, measure.py never constructs its own camera (it
+# only opens already-captured files), so there is no hardware-sharing risk
+# to resolve first -- this is a safe integration on its own, no
+# camera-conflict caveat.
+try:
+    from . import measure as _measure
+except ImportError:
+    try:
+        import measure as _measure
+    except ImportError:
+        _measure = None
+
 # The green plane calibrate.py measures on: half the sensor's resolution each
 # axis (see debayer.py's extract_green / the build checklist's own invariant).
 # The ruler's field-of-view-in-microns is derived from THIS width/height, not
@@ -1461,6 +1475,19 @@ if _HAVE_QT:
                     "calibrate.py not found alongside this file")
             # --- end calibration integration (menu) -----------------------------
 
+            # --- MEASURE MENU (separable): one menu, one action, same shape
+            # as Calibrate above. To remove: delete this block, _launch_measure,
+            # and the _measure import near GREEN_PLANE_RES at module level.
+            # measure.py itself needs no changes; it already runs standalone.
+            measuremenu = self.menuBar().addMenu("Measure")
+            self._measure_action = measuremenu.addAction(
+                "Measure...", self._launch_measure)
+            self._measure_action.setEnabled(_measure is not None)
+            if _measure is None:
+                self._measure_action.setToolTip(
+                    "measure.py not found alongside this file")
+            # --- end measure menu (menu) -----------------------------------------
+
             self.preview.setMouseTracking(True)
             self.preview.installEventFilter(self)
 
@@ -1656,6 +1683,31 @@ if _HAVE_QT:
             # moment this method returns.
             self._calibrate_window = _calibrate.CalibrationWindow(objective=obj)
             self._calibrate_window.show()
+
+        # --- MEASURE MENU (separable; see the banner comment near the Measure
+        # menu setup for the full removal list)
+        def _launch_measure(self):
+            """Opens measure.py's own MeasureWindow as a SEPARATE window, same
+            treatment as _launch_calibrate above. measure.py only ever opens
+            already-captured files from disk -- it never constructs its own
+            camera -- so unlike ca_measure.py's CAWizard, there is no
+            hardware-sharing risk with the live preview to account for here.
+            Pre-fills the objective from the ruler's own combo as a
+            convenience only; measure.py's window works identically if
+            launched with no objective at all."""
+            if _measure is None:
+                return
+            existing = getattr(self, "_measure_window", None)
+            if existing is not None and existing.isVisible():
+                existing.raise_()
+                existing.activateWindow()
+                return
+            obj = self.ruler_objective_combo.currentText().strip() or None
+            # Held on self, not a local: see _launch_calibrate's own note --
+            # PyQt5 garbage-collects a window with no surviving reference.
+            self._measure_window = _measure.MeasureWindow(objective=obj)
+            self._measure_window.show()
+        # --- end measure menu (method) ---------------------------------------
 
         def _maybe_show_onboarding_gate(self):
             """The first-launch prompt itself (checklist section 4): ask once
@@ -3329,6 +3381,35 @@ def render_check():
               "focus.score_capture_sharpness (nothing mocked), the score "
               "persists to session.json, a simulated extraction failure "
               "records None rather than raising into the capture flow")
+
+        # --- MEASURE MENU (separable): _launch_measure opens a real
+        # measure.MeasureWindow, same "raise the existing one, don't open a
+        # second" contract _launch_calibrate already has (untested until
+        # now, since _launch_calibrate itself has no render_check coverage
+        # either -- this fills that gap for the new Measure action).
+        if _measure is None:
+            print("_launch_measure check SKIPPED: measure.py not importable here")
+        else:
+            mcam = FakeCamera()
+            mwin = FocusPreviewWindow(mcam, FocusMeter())
+            assert mwin._measure_action.isEnabled()
+            mwin.ruler_objective_combo.setCurrentText("40x")
+            assert getattr(mwin, "_measure_window", None) is None
+            mwin._launch_measure()
+            assert mwin._measure_window is not None and mwin._measure_window.isVisible()
+            assert mwin._measure_window.objective_combo.currentText() == "40x", \
+                "the ruler's own objective should pre-fill MeasureWindow's combo"
+            first = mwin._measure_window
+            mwin._launch_measure()
+            assert mwin._measure_window is first, \
+                "a second trigger while the window is open must reuse it, not " \
+                "open a duplicate"
+            mwin._measure_window.close()
+            mcam.stop()
+            print("_launch_measure check PASS: menu action enabled, opens a "
+                  "real MeasureWindow pre-filled from the ruler's objective, "
+                  "a second trigger reuses the existing window rather than "
+                  "opening a duplicate")
 
 
 if __name__ == "__main__":
