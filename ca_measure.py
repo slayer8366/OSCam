@@ -562,7 +562,12 @@ if _HAVE_QT:
         def _render_plot(self, result, m_r, m_b):
             try:
                 import tempfile
-                path = Path(tempfile.mkdtemp()) / "ca_review_plot.png"
+                # One temp dir for the page's lifetime, overwritten on each
+                # Back->redo->Next re-render, rather than a fresh mkdtemp per
+                # visit piling up abandoned directories.
+                if getattr(self, "_plot_dir", None) is None:
+                    self._plot_dir = Path(tempfile.mkdtemp(prefix="ca_review_"))
+                path = self._plot_dir / "ca_review_plot.png"
                 render_ca_plot(result["offset_vs_radius"], m_r, m_b, path)
             except ImportError:
                 self.plot_label.setText(

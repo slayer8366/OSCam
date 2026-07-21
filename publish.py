@@ -112,9 +112,20 @@ def create_publication_manifest(green_plane_path, green_sha256, calibration_ref,
 
 def publish_measurements(green_plane_path, calibration_ref=None, out_dir=None,
                          include_export=True):
-    """Create a publication package: green plane + calibration + results.
-    If out_dir is given, creates the directory with all files inside;
-    otherwise returns just the manifest dict (for testing)."""
+    """Create a publication package around an on-disk green plane: hash it,
+    pull ITS marks out of the central annotation store, and (if out_dir is
+    given) write results.json + manifest.json alongside it. The caller is
+    responsible for placing the green plane file itself (measure.py's
+    publish button writes the in-memory plane as a deflate TIFF into out_dir
+    first, then calls this) -- this function never copies or rewrites pixel
+    data, keeping the write-once rule for measurement masters.
+
+    results.json holds ONLY this image's measurements (the store sliced to
+    the green plane's own hash), so its record count and the manifest's
+    total_measurements always agree -- a package is one image's evidence,
+    not a dump of every measurement ever made on this machine.
+
+    If out_dir is None, returns just the manifest dict (for testing)."""
     if _pixel_hash is None or _export is None or _annotations is None:
         raise RuntimeError(
             "pixel_hash.py, export.py, and annotations.py must all be importable")
@@ -123,42 +134,30 @@ def publish_measurements(green_plane_path, calibration_ref=None, out_dir=None,
     if not green_plane_path.exists():
         raise FileNotFoundError(f"Green plane not found: {green_plane_path}")
 
-    # Hash the green plane
     green_sha256 = _pixel_hash.hash_tiff(green_plane_path)
 
-    # Load the annotation store and count measurements
     store = _annotations.load_annotations()
     image_record = store.get(green_sha256)
     marks = image_record.get("marks", []) if image_record else []
     results_count = len(marks)
 
-    # Create the manifest
     manifest = create_publication_manifest(
         green_plane_path, green_sha256, calibration_ref, results_count=results_count)
 
     if out_dir is None:
         return manifest
 
-    # Create the output directory and write files
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Copy/symlink green plane (or just document it)
-    green_out = out_dir / "green_plane.tif"
-    if not green_out.exists():
-        # For now, just document the source path; in production, copy or
-        # symlink the actual file (depends on size/storage strategy).
-        pass
-
-    # Export measurements
     if include_export:
-        results_out = out_dir / "results.json"
-        _export.export_measurements(store=store, out_path=results_out)
+        # The store sliced to this one image, so the exported records match
+        # the manifest's count exactly (see docstring).
+        store_slice = {green_sha256: image_record} if image_record else {}
+        _export.export_measurements(store=store_slice,
+                                    out_path=out_dir / "results.json")
 
-    # Write manifest
-    manifest_out = out_dir / "manifest.json"
-    manifest_out.write_text(json.dumps(manifest, indent=2))
-
+    (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
     return manifest
 
 
@@ -210,6 +209,54 @@ def render_check():
 
     print("publication manifest check PASS: display derivatives properly marked "
           "as non-measurement (kind='display'), sourced to green_sha256")
+
+    # publish_measurements end-to-end, against a temp annotation store (the
+    # same path-swap isolation annotations.py's own render_check uses):
+    # marks exist for THIS green and for an unrelated image, and the
+    # package must contain only this green's -- results.json and the
+    # manifest count must agree, which is the whole point of the slice.
+    orig_annotation_path = _annotations.ANNOTATION_PATH
+    _annotations.ANNOTATION_PATH = tmp / "annotations.json"
+    try:
+        mark_here = _annotations.build_distance_mark((0, 0), (30, 40), um_per_px=0.5)
+        _annotations.save_mark(green_sha256, mark_here, record_defaults={
+            "shape": list(green.shape), "dtype": str(green.dtype),
+            "kind": "green", "calibration_ref": calib_ref, "source_sha256": None})
+        mark_elsewhere = _annotations.build_distance_mark((0, 0), (3, 4), um_per_px=1.0)
+        _annotations.save_mark("f" * 64, mark_elsewhere, record_defaults={
+            "shape": [4, 4], "dtype": "uint16", "kind": "green",
+            "calibration_ref": None, "source_sha256": None})
+
+        pkg_dir = tmp / "package"
+        m = publish_measurements(green_path, calibration_ref=calib_ref, out_dir=pkg_dir)
+        assert m["results"]["total_measurements"] == 1, \
+            "manifest should count only THIS image's marks"
+        results = json.loads((pkg_dir / "results.json").read_text())
+        assert results["total_measurements"] == 1, \
+            "results.json must hold only this image's measurements, not the whole store"
+        assert results["measurements"][0]["pixel_sha256"] == green_sha256
+        assert results["measurements"][0]["values"]["distance_um"] == 25.0  # 50px * 0.5
+        manifest_on_disk = json.loads((pkg_dir / "manifest.json").read_text())
+        assert manifest_on_disk["green_plane"]["pixel_sha256"] == green_sha256
+        assert manifest_on_disk["results"]["total_measurements"] == 1, \
+            "manifest.json on disk must agree with results.json"
+
+        # An image with NO marks still publishes honestly: zero-count package.
+        bare = np.arange(16, dtype=np.uint16).reshape(4, 4)
+        bare_path = tmp / "bare.tif"
+        tifffile.imwrite(str(bare_path), bare, compression="deflate")
+        bare_dir = tmp / "bare_package"
+        m2 = publish_measurements(bare_path, calibration_ref=None, out_dir=bare_dir)
+        assert m2["results"]["total_measurements"] == 0
+        bare_results = json.loads((bare_dir / "results.json").read_text())
+        assert bare_results["total_measurements"] == 0 and bare_results["measurements"] == []
+        assert "No calibration" in m2["calibration"].get("note", ""), \
+            "an uncalibrated publish should say so, not fake a calibration"
+        print("publish_measurements check PASS: package holds only its own image's "
+              "measurements (store sliced by hash), counts agree between manifest "
+              "and results.json, zero-mark and no-calibration publishes stay honest")
+    finally:
+        _annotations.ANNOTATION_PATH = orig_annotation_path
 
     # Clean up
     import shutil

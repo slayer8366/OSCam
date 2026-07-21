@@ -348,12 +348,75 @@ def format_mark_result(mark):
     return ""
 
 
+# ---------------------------------------------------------------------------
+# Z-stack assembly (build checklist section 8): pure, Qt-free, built ON
+# stacks.py's own group_by_stack/ordered_planes -- one session contributes
+# one plane, so a stack is assembled ACROSS session folders, never read out
+# of a single session's captures list.
+# ---------------------------------------------------------------------------
+
+# Same root qt_shell.py's Session writes into (its OUT_ROOT); a plain
+# constant here rather than an import, since pulling in qt_shell.py from this
+# module would drag the whole capture GUI along just for one path.
+DEFAULT_CAPTURES_ROOT = Path.home() / "captures"
+
+
+def resolve_capture_raw(session_dir, cap):
+    """The on-disk raw file for one tagged capture entry: the first recorded
+    filename that still exists (a snap's `files` list), else the first frame
+    of the capture's own `file_prefix` glob (a burst -- frame 0 stands for
+    the burst, since per-plane measurement wants one plane image, and every
+    frame of a burst shares the same subject and exposure). None if nothing
+    resolves, so a half-deleted session degrades to a missing plane rather
+    than an exception."""
+    sd = Path(session_dir)
+    for name in cap.get("files") or []:
+        p = sd / name
+        if p.is_file():
+            return p
+    prefix = cap.get("file_prefix") or ""
+    for ext in (".dng", ".tif", ".tiff"):
+        hits = sorted(sd.glob("{}frame_*{}".format(prefix, ext)))
+        if hits:
+            return hits[0]
+    return None
+
+
+def collect_stack_planes(captures_root):
+    """Every tagged z-stack under a captures root, planes ordered and resolved
+    to real files: {stack_id: [{"plane": int, "path": Path, "session_dir":
+    Path}, ...]}. Ordering comes from stacks.ordered_planes (integer plane,
+    never folder order), membership from stacks.group_by_stack (active
+    captures only, so an excluded plane is honestly absent). A plane whose
+    raw file no longer resolves is dropped here -- same missing-plane
+    temperament as zstack_process's own flag, not an error."""
+    if _stacks is None:
+        raise RuntimeError("stacks.py could not be imported; needed for the z-stack view")
+    root = Path(captures_root)
+    if not root.is_dir():
+        return {}
+    session_dirs = [p for p in sorted(root.iterdir())
+                    if (p / "session.json").is_file()]
+    out = {}
+    for stack_id, members in _stacks.group_by_stack(session_dirs).items():
+        planes = []
+        for sd, cap in _stacks.ordered_planes(members):
+            raw = resolve_capture_raw(sd, cap)
+            if raw is not None:
+                planes.append({"plane": _stacks.plane_of(cap), "path": raw,
+                               "session_dir": sd})
+        if planes:
+            out[stack_id] = planes
+    return out
+
+
 try:
     from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QLabel,
                                  QVBoxLayout, QHBoxLayout, QPushButton, QComboBox,
                                  QGraphicsView, QGraphicsScene, QFileDialog,
-                                 QMessageBox, QButtonGroup, QWizard, QWizardPage)
-    from PyQt5.QtGui import QPen, QColor, QPolygonF, QPainter
+                                 QMessageBox, QButtonGroup, QWizard, QWizardPage,
+                                 QInputDialog)
+    from PyQt5.QtGui import QPen, QColor, QPolygonF, QPainter, QPixmap, QIcon
     from PyQt5.QtCore import Qt, QPointF, pyqtSignal
     _HAVE_QT = True
 except ImportError:
@@ -371,17 +434,20 @@ if _HAVE_QT:
     # Z-stack support: filmstrip + onion-skin (build checklist section 8)
     # ---------------------------------------------------------------------------
 
+    FILMSTRIP_THUMB = (110, 82)   # thumbnail bounds; source planes are full-res
+
     class FilmstripWidget(QWidget):
         """Filmstrip for z-stacks: thumbnails down the side, inactive dimmed,
-        active lit. Tracks plane count and allows clicking to switch active
-        plane. Per checklist §8, this is the home for per-plane sharpness
-        score and exclude toggle (future section 13 work)."""
+        active lit. Clicking a thumbnail switches the active plane. Per
+        checklist §8, this is the home for per-plane sharpness score and
+        exclude toggle (future section 13 work)."""
 
         active_plane_changed = pyqtSignal(int)  # emitted when user clicks a plane
 
         def __init__(self, parent=None):
             super().__init__(parent)
-            self.planes = []  # list of {"plane_idx": int, "pixmap": QPixmap, "active": bool}
+            self.planes = []  # list of {"idx": int, "pixmap": QPixmap,
+                              #          "label": str, "active": bool}
             self.scroll_area = None
             self.layout_ = None
             self._init_ui()
@@ -400,9 +466,27 @@ if _HAVE_QT:
             lay.addWidget(QLabel("Stack:"))
             lay.addWidget(self.scroll_area, 1)
 
-        def set_planes(self, planes_list, active_idx=0):
-            """planes_list: list of {"idx": int, "pixmap": QPixmap, "active": bool}."""
-            # Clear old buttons
+        @staticmethod
+        def _thumb(pixmap, dimmed):
+            """A thumbnail-sized copy, darkened for inactive planes. The dim is
+            painted into the pixels (semi-opaque black over the whole thumb)
+            because Qt stylesheets have no `opacity` property on plain
+            widgets -- a stylesheet attempt is silently ignored."""
+            t = pixmap.scaled(FILMSTRIP_THUMB[0], FILMSTRIP_THUMB[1],
+                              Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            if not dimmed:
+                return t
+            t = QPixmap(t)   # detach before painting on it
+            p = QPainter(t)
+            p.fillRect(t.rect(), QColor(0, 0, 0, 140))
+            p.end()
+            return t
+
+        def set_planes(self, planes_list):
+            """planes_list: list of {"idx": int, "pixmap": QPixmap,
+            "label": str, "active": bool}. Rebuilds the strip; callers
+            re-invoke this on every active-plane switch so the lit/dimmed
+            state always tracks the canvas."""
             while self.layout_.count() > 0:
                 item = self.layout_.takeAt(0)
                 if item.widget():
@@ -410,19 +494,21 @@ if _HAVE_QT:
 
             self.planes = planes_list
             for info in planes_list:
+                active = bool(info.get("active"))
+                thumb = self._thumb(info["pixmap"], dimmed=not active)
                 btn = QPushButton()
-                btn.setIconSize(info["pixmap"].size())
-                btn.setIcon(info["pixmap"])
-                btn.setMaximumSize(120, 90)
-                btn.setFlat(False)
+                btn.setIcon(QIcon(thumb))
+                btn.setIconSize(thumb.size())
+                btn.setToolTip(info.get("label", ""))
                 idx = info["idx"]
-                btn.clicked.connect(lambda checked=False, i=idx: self.active_plane_changed.emit(i))
-                # active plane: normal, inactive: dimmed
-                if info.get("active"):
-                    btn.setStyleSheet("border: 2px solid yellow")
-                else:
-                    btn.setStyleSheet("opacity: 0.5")
+                btn.clicked.connect(
+                    lambda checked=False, i=idx: self.active_plane_changed.emit(i))
+                btn.setStyleSheet("border: 2px solid {}".format(
+                    "#ffd24e" if active else "#444444"))
                 self.layout_.addWidget(btn)
+                lbl = QLabel(info.get("label", ""))
+                lbl.setStyleSheet("color: {}".format("#ffd24e" if active else "#888888"))
+                self.layout_.addWidget(lbl)
             self.layout_.addStretch()
 
     class MeasureView(QGraphicsView):
@@ -560,9 +646,9 @@ if _HAVE_QT:
             self._plane = None
             self._pixel_sha256 = None
             # Z-stack support (checklist section 8)
-            self._stack = []  # list of {"path": Path, "idx": int, "plane": ndarray, "pixmap": QPixmap}
+            self._stack = []  # list of {"path": Path, "plane": int (z-position),
+                              #          "array": ndarray, "pixmap": QPixmap}
             self._active_plane_idx = 0
-            self._session_dir = None
 
             self.view = MeasureView(self)
             self.filmstrip = FilmstripWidget()
@@ -607,6 +693,12 @@ if _HAVE_QT:
             open_btn = QPushButton("Open image...")
             open_btn.clicked.connect(self._on_open)
 
+            open_stack_btn = QPushButton("Open stack...")
+            open_stack_btn.setEnabled(_stacks is not None)
+            if _stacks is None:
+                open_stack_btn.setToolTip("stacks.py not alongside this file")
+            open_stack_btn.clicked.connect(self._on_open_stack)
+
             restart_btn = QPushButton("Restart wizard...")
             restart_btn.setEnabled(_wizard_pages is not None)
             if _wizard_pages is None:
@@ -632,6 +724,7 @@ if _HAVE_QT:
 
             top = QHBoxLayout()
             top.addWidget(open_btn)
+            top.addWidget(open_stack_btn)
             top.addWidget(restart_btn)
             top.addWidget(export_btn)
             top.addWidget(publish_btn)
@@ -753,7 +846,10 @@ if _HAVE_QT:
 
         def _on_publish_package(self):
             """Publish a complete package with reproducible provenance
-            (checklist §12): green plane + calibration + results."""
+            (checklist §12): green_plane.tif (the measurement image, written
+            deflate so its decode re-hashes to the same pixel_sha256 --
+            pixel_hash.py's own round-trip guarantee), results.json (this
+            image's marks), and manifest.json (the provenance chain)."""
             if _publish is None or _pixel_hash is None:
                 QMessageBox.warning(self, "Publish not available",
                                    "publish.py or pixel_hash.py not importable")
@@ -778,18 +874,22 @@ if _HAVE_QT:
                             "entry_id": entry.get("entry_id"),
                             "um_per_px": um_per_px,
                         }
-                # For now, require a saved green plane file. In production, this
-                # could accept the in-memory plane directly.
+                import tifffile
+                green_path = Path(out_dir) / "green_plane.tif"
+                tifffile.imwrite(str(green_path), self._plane, compression="deflate")
+                manifest = _publish.publish_measurements(
+                    green_path, calibration_ref=calib_ref, out_dir=out_dir)
                 QMessageBox.information(
-                    self, "Publication ready",
-                    "Publication package would contain:\n"
-                    f"  • green plane (pixel_sha256: {self._pixel_sha256[:16]}...)\n"
-                    f"  • objective: {obj}\n"
-                    f"  • calibration: {um_per_px:.4f} µm/px (if available)\n"
-                    f"  • measurement results (from annotation store)\n"
-                    f"  • manifest with full provenance chain\n\n"
-                    "Publication support for in-memory images coming soon. "
-                    "For now, use 'Export results...' to save the measurements JSON.")
+                    self, "Published",
+                    "Wrote publication package to {}:\n"
+                    "  green_plane.tif  (pixel_sha256 {}...)\n"
+                    "  results.json  ({} measurement(s) for this image)\n"
+                    "  manifest.json  (provenance chain{})".format(
+                        out_dir,
+                        manifest["green_plane"]["pixel_sha256"][:16],
+                        manifest["results"]["total_measurements"],
+                        "" if calib_ref else "; NO calibration on record -- "
+                        "results are pixel-only"))
             except Exception as exc:
                 QMessageBox.warning(self, "Publish failed", str(exc))
 
@@ -803,6 +903,12 @@ if _HAVE_QT:
                 QMessageBox.warning(self, "Could not load image",
                                    "Failed to read {}: {}".format(Path(path).name, exc))
                 return
+            # A single image replaces any loaded stack outright -- otherwise
+            # the filmstrip would keep showing (and switching back to) planes
+            # of a stack that is no longer what's on the canvas.
+            self._stack = []
+            self._active_plane_idx = 0
+            self.filmstrip.set_planes([])
             self._plane = plane
             self._pixel_sha256 = (_pixel_hash.pixel_sha256(plane)
                                   if _pixel_hash is not None else None)
@@ -842,84 +948,94 @@ if _HAVE_QT:
             self.view.set_onionskin_enabled(checked)
             self._render_stack_plane()
 
+        def _refresh_filmstrip(self):
+            self.filmstrip.set_planes([
+                {"idx": i, "pixmap": p["pixmap"],
+                 "label": "plane {}".format(p["plane"]),
+                 "active": (i == self._active_plane_idx)}
+                for i, p in enumerate(self._stack)])
+
         def _render_stack_plane(self):
-            """Render the active plane with optional onion-skin neighbors."""
+            """Render the active plane with optional onion-skin neighbors.
+            Marks bind to THIS plane's own pixel_sha256 -- the ghosted
+            neighbours are display, the active plane is the measurement
+            (checklist §8's binding rule)."""
             if not self._stack:
                 return
             active = self._stack[self._active_plane_idx]
-            self._plane = active["plane"]
+            self._plane = active["array"]
             self._pixel_sha256 = (_pixel_hash.pixel_sha256(self._plane)
                                   if _pixel_hash is not None else None)
-            pixmap = _calibrate.array_to_qimage(_calibrate.stretch_to_uint8(self._plane))
-
             onionskin_pixmaps = []
             if self.view.onionskin_enabled:
-                # Render neighbors (previous + next planes) faintly behind
-                for idx in [self._active_plane_idx - 1, self._active_plane_idx + 1]:
+                # Neighbours (previous + next planes) faintly behind
+                for idx in (self._active_plane_idx - 1, self._active_plane_idx + 1):
                     if 0 <= idx < len(self._stack):
-                        neighbor = self._stack[idx]
-                        neighbor_pixmap = _calibrate.array_to_qimage(
-                            _calibrate.stretch_to_uint8(neighbor["plane"]))
-                        onionskin_pixmaps.append(neighbor_pixmap)
-
-            self.view.set_image(pixmap, onionskin_pixmaps=onionskin_pixmaps)
+                        onionskin_pixmaps.append(self._stack[idx]["pixmap"])
+            self.view.set_image(active["pixmap"], onionskin_pixmaps=onionskin_pixmaps)
             self.result_label.setText("")
             self._render_existing_marks()
+            self._refresh_filmstrip()
 
-        def _load_stack(self, session_dir):
-            """Load a z-stack from a session directory (via stacks.py).
-            Populates self._stack and updates the filmstrip."""
-            if _stacks is None:
-                QMessageBox.warning(self, "Z-stack not available",
-                                   "stacks.py is not importable; z-stack view disabled.")
+        def _on_open_stack(self):
+            """Open a tagged z-stack: scan a captures root for sessions whose
+            captures carry stack tags (collect_stack_planes, built on
+            stacks.py's own cross-session grouping -- one session contributes
+            one plane), pick a stack if several exist, load every plane."""
+            root = QFileDialog.getExistingDirectory(
+                self, "Captures root (the folder holding session folders)",
+                str(DEFAULT_CAPTURES_ROOT))
+            if not root:
                 return
-            session_dir = Path(session_dir)
-            session_json = _stacks.load_session(session_dir)
-            if not session_json:
+            try:
+                found = collect_stack_planes(root)
+            except RuntimeError as exc:
+                QMessageBox.warning(self, "Z-stack not available", str(exc))
                 return
-            # Collect all planes from the session
-            planes_by_stack_plane = {}  # (stack_id, plane_idx) -> capture_entry
-            for cap in session_json.get("captures", []):
-                if _stacks.is_active(cap):
-                    stack_id = cap.get(_stacks.STACK)
-                    plane_idx = _stacks.plane_of(cap)
-                    if stack_id and plane_idx is not None:
-                        key = (stack_id, plane_idx)
-                        planes_by_stack_plane[key] = cap
-            if not planes_by_stack_plane:
+            if not found:
+                QMessageBox.information(
+                    self, "No stacks", "No tagged z-stack captures found under "
+                    "{} (planes are tagged at capture time; see stacks.py)".format(root))
                 return
-            # Load the first stack's planes (the most recent/most common case)
-            first_stack = min(planes_by_stack_plane.keys())[0]
-            stack_captures = sorted(
-                [(p, c) for (s, p), c in planes_by_stack_plane.items() if s == first_stack])
-            self._stack = []
-            self._session_dir = session_dir
-            for plane_idx, cap in stack_captures:
-                # Locate the raw file for this capture
-                base = cap.get("base")
-                if not base:
-                    continue
-                raw_path = session_dir / base / f"{base}.dng"
-                if not raw_path.exists():
-                    continue
+            if len(found) == 1:
+                stack_id = next(iter(found))
+            else:
+                stack_id, ok = QInputDialog.getItem(
+                    self, "Choose stack", "Stack:", sorted(found), 0, False)
+                if not ok:
+                    return
+            self._load_stack(stack_id, found[stack_id])
+
+        def _load_stack(self, stack_id, planes):
+            """Load resolved stack planes (collect_stack_planes output) into
+            memory and the filmstrip. A plane whose file fails to load is
+            reported and skipped, not fatal -- same missing-plane temperament
+            as the rest of the stack tooling."""
+            loaded, failed = [], []
+            for info in planes:
                 try:
-                    plane = load_measurement_plane(raw_path)
+                    arr = load_measurement_plane(info["path"])
                 except Exception:
+                    failed.append(info["path"].name)
                     continue
-                pixmap = _calibrate.array_to_qimage(_calibrate.stretch_to_uint8(plane))
-                self._stack.append({
-                    "path": raw_path,
-                    "idx": plane_idx,
-                    "plane": plane,
-                    "pixmap": pixmap,
-                })
-            # Update filmstrip
-            if self._stack:
-                filmstrip_info = [{"idx": i, "pixmap": p["pixmap"], "active": (i == 0)}
-                                  for i, p in enumerate(self._stack)]
-                self.filmstrip.set_planes(filmstrip_info, active_idx=0)
-                self._active_plane_idx = 0
-                self._render_stack_plane()
+                pixmap = _calibrate.array_to_qimage(_calibrate.stretch_to_uint8(arr))
+                # "plane" is the integer z-position from the tag; "array" is
+                # the pixel data -- kept as two distinct keys on purpose.
+                loaded.append({"path": info["path"], "plane": info["plane"],
+                               "array": arr, "pixmap": pixmap})
+            self._stack = loaded
+            if not self._stack:
+                QMessageBox.warning(self, "Stack empty",
+                                   "No plane of stack {!r} could be loaded ({})".format(
+                                       stack_id, ", ".join(failed) or "no files"))
+                return
+            if failed:
+                QMessageBox.information(
+                    self, "Planes skipped",
+                    "{} plane(s) could not be loaded and were skipped: {}".format(
+                        len(failed), ", ".join(failed)))
+            self._active_plane_idx = 0
+            self._render_stack_plane()
 
         # --- committing a mark --------------------------------------------------
         def commit_mark(self, points):
@@ -1203,6 +1319,70 @@ def render_check():
         "ellipse readout should show length/width in microns and the Q ratio"
     print("format_mark_result check PASS: distance/angle/polygon/ellipse readouts "
           "all show their actual computed numbers")
+
+    # --- z-stack assembly (section 8's pure half) --------------------------
+    # Synthetic captures root: two tagged sessions of one stack (planes shot
+    # out of order, to prove ordering is by the integer tag), one untagged
+    # session, and one excluded plane. resolve_capture_raw is exercised on
+    # both of its paths: an explicit `files` list, and the file_prefix glob.
+    import shutil as _shutil
+    import tempfile as _tempfile
+    if _stacks is None:
+        print("z-stack assembly check SKIPPED: stacks.py not importable here")
+    else:
+        zroot = Path(_tempfile.mkdtemp()) / "captures"
+
+        def _fake_session(name, captures, files):
+            d = zroot / name
+            d.mkdir(parents=True)
+            (d / "session.json").write_text(json.dumps({"captures": captures}))
+            for f in files:
+                (d / f).write_bytes(b"")
+            return d
+
+        # plane 2 shot FIRST (earlier session name), resolved via glob
+        _fake_session("2026-01-01_0001",
+                      [{"kind": "science", "file_prefix": "science_",
+                        "stack": "T1", "plane": 2}],
+                      ["science_frame_0000.dng", "science_frame_0001.dng"])
+        # plane 1 shot second, resolved via its files list
+        _fake_session("2026-01-01_0002",
+                      [{"kind": "science", "file_prefix": "science_",
+                        "files": ["science_frame_0000.dng"],
+                        "stack": "T1", "plane": 1}],
+                      ["science_frame_0000.dng"])
+        # untagged session: never part of any stack
+        _fake_session("2026-01-01_0003",
+                      [{"kind": "science", "file_prefix": "science_"}],
+                      ["science_frame_0000.dng"])
+        # excluded plane: documented, but must not appear in the built stack
+        _fake_session("2026-01-01_0004",
+                      [{"kind": "science", "file_prefix": "science_",
+                        "stack": "T1", "plane": 3, "exclude": True}],
+                      ["science_frame_0000.dng"])
+
+        found = collect_stack_planes(zroot)
+        assert list(found) == ["T1"], "exactly one stack should be found, got {}".format(list(found))
+        planes = found["T1"]
+        assert [p["plane"] for p in planes] == [1, 2], \
+            "planes must be ordered by the integer tag (1 then 2), and the " \
+            "excluded plane 3 must be absent; got {}".format([p["plane"] for p in planes])
+        assert planes[0]["path"].name == "science_frame_0000.dng"
+        assert planes[1]["path"].name == "science_frame_0000.dng", \
+            "glob fallback should resolve frame 0 of the burst"
+        assert planes[0]["session_dir"].name == "2026-01-01_0002", \
+            "plane 1 must come from its own session, regardless of shoot order"
+
+        assert collect_stack_planes(zroot / "no_such_dir") == {}, \
+            "a missing root should give no stacks, not raise"
+
+        # a capture whose files vanished resolves to None and its plane is dropped
+        assert resolve_capture_raw(zroot / "2026-01-01_0003", {"file_prefix": "nope_"}) is None
+        _shutil.rmtree(zroot.parent, ignore_errors=True)
+        print("z-stack assembly check PASS: cross-session grouping via stacks.py, "
+              "integer-plane ordering, excluded plane absent, untagged session "
+              "ignored, both raw-resolution paths (files list + prefix glob), "
+              "missing root and missing files degrade cleanly")
 
 
 def main():

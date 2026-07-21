@@ -205,22 +205,26 @@ class Session:
         return True
 
 
-# Fallback: if build_display_flags is not available, provide a stub
 def build_display_flags(args):
-    """Build display flags for hdr_from_session.py from launch arguments."""
-    flags = []
-    if hasattr(args, 'wl') and args.wl:
-        flags.extend(["--wl", str(args.wl)])
-    if hasattr(args, 'lw') and args.lw:
-        flags.extend(["--lw", str(args.lw)])
-    if hasattr(args, 'gains') and args.gains:
-        flags.extend(["--gains"] + args.gains)
-    if hasattr(args, 'ca') and args.ca:
-        flags.extend(["--ca", args.ca])
-    if hasattr(args, 'sharpen') and args.sharpen:
-        flags.extend(["--sharpen", str(args.sharpen)])
-    if hasattr(args, 'shadow_deepen') and args.shadow_deepen:
-        flags.append("--shadow-deepen")
+    """Display-processing flags for hdr_from_session.py, from this file's own
+    launch flags (byte-identical to the shape the original capture.py CLI
+    built, so a processing run kicked off here matches one kicked off there).
+    --wl/--lw are always present (main() gives them defaults). --ca is
+    absolutised because the processor runs inside the session dir, where a
+    relative calibration path would no longer resolve. --sharpen checks
+    `is not None`, not truthiness, so an explicit --sharpen 0 still reaches
+    the processor rather than being silently dropped."""
+    flags = ["--wl", str(args.wl), "--lw", str(args.lw)]
+    if args.gains:
+        flags += ["--gains", str(args.gains[0]), str(args.gains[1])]
+    if args.ca:
+        flags += ["--ca", str(Path(args.ca).resolve())]
+    if args.sharpen is not None:
+        flags += ["--sharpen", str(args.sharpen)]
+    if args.shadow_deepen:
+        flags += ["--shadow-deepen"]
+    if args.archive_raws:
+        flags += ["--archive-raws"]
     return flags
 
 # --- RECORD BUTTON (separable): video's own output folder, deliberately NOT
@@ -2809,7 +2813,7 @@ def main(argv=None):
         camera = Picamera2Camera()
     else:
         camera = FakeCamera()
-    display_flags = build_display_flags(a) if build_display_flags is not None else []
+    display_flags = build_display_flags(a)
     win = FocusPreviewWindow(camera, FocusMeter(), display_flags=display_flags)
     win.resize(1550, 760)          # fallback size if the window manager ever
                                     # ignores the maximize request below
