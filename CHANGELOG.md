@@ -7,6 +7,24 @@ this file is the historical record of what happened and why.
 
 ## 2026-07-21
 
+### Planned: z-stack one-click aid (BUILD_LIST Tier 3, item 6)
+
+Plan approved, not yet built (see `HANDOFF.md`'s "In progress" note for the
+full design and the file/line references it's grounded in). This is the
+feature the user actually asked for; `gallery.py` and `process_wizard.py`
+(below) were built first because the build list gates this one on both.
+
+Shape: a new toggle button in `qt_shell.py`'s `FocusPreviewWindow`, mirroring
+`_toggle_recording`'s own two-state pattern (press to start — captures plane
+0 immediately — press again to end); the existing Capture button/action is
+repurposed while a stack is active to capture each subsequent plane, rather
+than a second new button. Nested per-plane sessions under
+`~/captures/zstack_<timestamp>/plane_N/`, tagged via `stacks.apply_tag`
+exactly as `_on_tag_stack` already does manually. Ending the stack offers
+(never forces) to hand off to `process_wizard.ProcessWizard`, scoped to the
+stack's own root folder so its embedded Gallery naturally shows only this
+stack's planes, pre-selected.
+
 ### Added `process_wizard.py`: choose-your-operations processing wizard
 
 New module (BUILD_LIST Tier 3, item 5), built on top of `gallery.py`
