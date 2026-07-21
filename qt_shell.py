@@ -1144,7 +1144,7 @@ if _HAVE_QT:
         record_stop_done_signal = pyqtSignal(object)
         # --- end record button (signals) ------------------------------------
 
-        def __init__(self, camera, meter, tick_ms=100, display_flags=None):
+        def __init__(self, camera, meter, tick_ms=33, display_flags=None):
             super().__init__()
             self.camera = camera
             self.meter = meter
@@ -2307,6 +2307,8 @@ if _HAVE_QT:
                 self._flat_information("Slot already taken", str(exc))
                 return
             self._session.write()
+            self.meter.reset_field()      # new plane locked in: last plane's peak/settle
+                                           # is stale history, not a real reading for this one
             self._last_stack_id = stack_id
             self._last_stack_plane = plane
             output = _stacks.output_name(stack_id, plane)
@@ -3332,12 +3334,42 @@ def render_check():
         win._on_tag_stack()
         assert offered["value"] == 6, "the next plane offered should be last tag's plane + 1"
 
+        # reset_field must auto-fire on a SUCCESSFUL tag only (spec:
+        # focus_aid_fps_and_stack_reset.md part 2) -- never on a refused tag
+        # (blank ID, (stack, plane) collision) and never on an unrelated
+        # capture, so a plain Capture press mid-hunt can't silently wipe
+        # someone else's in-progress focus history.
+        reset_calls = []
+        real_reset = win.meter.reset_field
+        win.meter.reset_field = lambda: (reset_calls.append(1), real_reset())
+
+        _shoot("science_frame_0002")
+        win._flat_ask_text = lambda title, label, value="": ("T10", True)
+        win._flat_ask_int = lambda title, label, value, minv, maxv, step=1: (1, True)
+        win._on_tag_stack()
+        assert len(reset_calls) == 1, "a successful tag must reset the focus meter's field"
+
+        win._flat_ask_text = lambda title, label, value="": ("", True)
+        win._on_tag_stack()
+        assert len(reset_calls) == 1, "a blank-ID refusal must not reset the focus meter"
+
+        _shoot("science_frame_0003")
+        win._flat_ask_text = lambda title, label, value="": ("T10", True)
+        win._flat_ask_int = lambda title, label, value, minv, maxv, step=1: (1, True)
+        win._on_tag_stack()
+        assert len(reset_calls) == 1, "a collision refusal must not reset the focus meter"
+
+        _shoot("science_frame_0004")
+        assert len(reset_calls) == 1, "an untagged capture must not reset the focus meter"
+
+        win.meter.reset_field = real_reset
         tcam.stop()
         shutil.rmtree(tag_root, ignore_errors=True)
         print("_on_tag_stack check PASS: empty-session guard, tag applied and "
               "persisted to session.json, (stack, plane) collision refuses "
               "without tagging the contender, blank stack ID refused, next "
-              "plane default auto-increments")
+              "plane default auto-increments, focus meter resets on a "
+              "successful tag only")
 
         # _score_capture_sharpness (section 13's post-capture QC): a real
         # FakeCamera burst, scored against its OWN written frame via

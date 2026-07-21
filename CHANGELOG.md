@@ -7,6 +7,31 @@ this file is the historical record of what happened and why.
 
 ## 2026-07-21
 
+### Focus aid: restored tick rate to ~30fps, auto-reset on stack-plane tag
+
+Two changes to the live focus aid's state machine (`qt_shell.py`), per
+`SPEC_focus_aid_fps_and_stack_reset.md`:
+
+- `FocusPreviewWindow`'s `tick_ms` default was `100` (10fps) — a workaround
+  for Wayfire's compositing overhead. Now that the project runs under
+  Labwc (noticeably smoother per the user), that workaround no longer
+  applies. Restored to `33` (~30fps): smooth enough per the user's own
+  report, without burning extra CPU on lores-decode frequency for no
+  visible gain. No other call site overrode the default, so this was a
+  one-line change.
+- `_on_tag_stack` now calls `self.meter.reset_field()` immediately after a
+  **successful** tag (right after `self._session.write()`), so a z-stack
+  session's per-plane refocus-and-confirm loop no longer needs a manual
+  "Reset field (R)" between planes. Fires only on that one path — a
+  refused tag (blank ID, `(stack, plane)` collision) or any other capture
+  (plain snap, flat/science/HDR/dark, burst) leaves focus history alone,
+  since none of those call `reset_field()`.
+
+New `--render-check` coverage bundled into the existing PyQt5-gated
+`_on_tag_stack` check: a successful tag triggers exactly one
+`reset_field()` call; a blank-ID refusal, a collision refusal, and an
+untagged capture each trigger zero.
+
 ### Refreshed README.md
 `cd6e566`
 
