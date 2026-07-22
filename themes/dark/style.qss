@@ -1,0 +1,48 @@
+/* dark - a minimal starter theme proving the themes/ pipeline works end to
+   end (BUILD_LIST Tier 1 item 3). Plain colors only, no image assets, so it
+   has nothing to demonstrate the {{ASSETS}} substitution -- see any later
+   theme that DOES use images for that; this one intentionally stays simple.
+
+   #side_panel is the one Zynergy-specific selector: it's the capture/
+   exposure controls column qt_shell.py sets objectName("side_panel") on,
+   the part these themes are meant to restyle. Everything else here is
+   plain Qt widget styling so the rest of the window doesn't look mismatched
+   against a restyled panel.
+*/
+
+QMainWindow, QWidget {
+    background-color: #1e1f22;
+    color: #e0e0e0;
+}
+
+#side_panel {
+    background-color: #26282c;
+    border-left: 1px solid #38393d;
+}
+
+QPushButton {
+    background-color: #35373b;
+    color: #e0e0e0;
+    border: 1px solid #46484d;
+    border-radius: 3px;
+    padding: 4px 10px;
+}
+
+QPushButton:hover {
+    background-color: #3f4146;
+}
+
+QPushButton:disabled {
+    color: #808080;
+    background-color: #2c2d30;
+}
+
+QLabel {
+    color: #e0e0e0;
+}
+
+QComboBox, QLineEdit {
+    background-color: #2c2d30;
+    color: #e0e0e0;
+    border: 1px solid #46484d;
+}

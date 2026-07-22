@@ -152,6 +152,61 @@ FULL_MODE_LBL = "4056:3040:12:U"
 DENOISE = "off"
 SHARPNESS = "0"
 
+# --- THEMES (BUILD_LIST Tier 1 item 3) --------------------------------------
+# Deliberately open-ended, not a fixed Dark/Light pair: the user plans to
+# design a dozen-plus side-panel aesthetics over time, so the Theme menu is
+# built by SCANNING this folder, never a hardcoded list -- dropping in a new
+# themes/<name>/style.qss is the entire integration step, no code change
+# ever needed. See discover_themes/load_theme_stylesheet below for the exact
+# contract; the side panel itself carries objectName "side_panel" so a
+# theme's QSS has something precise to target.
+THEMES_ROOT = Path(__file__).resolve().parent / "themes"
+
+
+def discover_themes(themes_root=None):
+    """Every theme found under themes_root: one entry per immediate
+    subdirectory that contains a style.qss, sorted by name. Returns
+    [(name, qss_path), ...] -- [] if the folder doesn't exist or holds
+    nothing yet, which is a normal, expected state (no themes designed
+    yet), not an error. Qt-free, so the menu-building logic this feeds is
+    testable without PyQt5."""
+    themes_root = Path(themes_root) if themes_root is not None else THEMES_ROOT
+    if not themes_root.is_dir():
+        return []
+    found = []
+    for d in sorted(themes_root.iterdir()):
+        qss = d / "style.qss"
+        if d.is_dir() and qss.is_file():
+            found.append((d.name, qss))
+    return found
+
+
+def resolve_theme_qss_path(theme_name, themes_root=None):
+    """The style.qss path for a persisted theme preference, or None if no
+    preference is set, or the named theme is no longer found (its folder
+    was deleted/renamed since it was chosen) -- degrades to the stock Qt
+    look rather than crashing main() on a stale preference."""
+    if theme_name is None:
+        return None
+    for name, qss_path in discover_themes(themes_root):
+        if name == theme_name:
+            return qss_path
+    return None
+
+
+def load_theme_stylesheet(qss_path):
+    """A theme's style.qss with {{ASSETS}} substituted for that theme's own
+    assets/ folder (its ABSOLUTE path), so a theme package stays portable
+    and self-contained: plain QSS url() paths resolve against the running
+    app's working directory, not the stylesheet's own location, which would
+    silently break image references the moment the app is launched from
+    anywhere else. A theme author writes url({{ASSETS}}/panel_bg.png) once
+    and it resolves correctly regardless of where qt_shell.py is run from."""
+    qss_path = Path(qss_path)
+    text = qss_path.read_text()
+    assets_dir = qss_path.parent / "assets"
+    return text.replace("{{ASSETS}}", str(assets_dir))
+
 
 def load_profile():
     """Load camera profile (exposure, gains, WB) from disk if it exists."""
@@ -1491,6 +1546,12 @@ if _HAVE_QT:
                 return block
 
             panel = QWidget()
+            # Themes (BUILD_LIST Tier 1 item 3) target this panel specifically
+            # via #side_panel in their own style.qss -- see THEMES_ROOT's own
+            # comment. Set once here, not per-theme: the object name is part
+            # of this widget's identity, not something a theme should need to
+            # know to set itself.
+            panel.setObjectName("side_panel")
             # A floor, not a hard lock: the splitter below is what holds this
             # column's width steady against content changes; this minimum just
             # keeps a drag from squeezing it down to something unusable.
@@ -1607,6 +1668,25 @@ if _HAVE_QT:
                 self._video_res_group.addAction(action)
                 action.triggered.connect(
                     lambda checked, r=res, l=label: self._on_video_resolution_chosen(r, l))
+
+            # THEME MENU (BUILD_LIST Tier 1 item 3): built by scanning
+            # THEMES_ROOT, never a hardcoded list -- see discover_themes'
+            # own comment for why. "Default" (no stylesheet) is always
+            # present even with zero themes designed yet. Same persisted,
+            # next-launch pattern as Video resolution, for consistency.
+            theme_menu = opts.addMenu("Theme")
+            self._theme_group = QActionGroup(self)
+            self._theme_group.setExclusive(True)
+            current_theme = load_pref("theme", None)
+            theme_choices = [("Default", None)] + [
+                (name, name) for name, _qss in discover_themes()]
+            for label, theme_name in theme_choices:
+                action = theme_menu.addAction(label)
+                action.setCheckable(True)
+                action.setChecked(theme_name == current_theme)
+                self._theme_group.addAction(action)
+                action.triggered.connect(
+                    lambda checked, t=theme_name, l=label: self._on_theme_chosen(t, l))
 
             # Capture submenu: each item runs a walkthrough (reshoot guard, frame
             # count, instructional message) that ARMS the Capture button rather
@@ -1745,6 +1825,16 @@ if _HAVE_QT:
                 "Video recording resolution set to {} -- takes effect on the "
                 "next launch, not this session (changing it live would mean "
                 "tearing down and rebuilding the camera while it's running)."
+                .format(label))
+
+        def _on_theme_chosen(self, theme_name, label):
+            # Persisted preference, applied by main() at startup -- same
+            # next-launch shape as video resolution, chosen for consistency
+            # rather than a live app.setStyleSheet() reload.
+            save_pref("theme", theme_name)
+            self._set_capture_status(
+                "theme: {}".format(label),
+                "Theme set to {} -- takes effect on the next launch."
                 .format(label))
 
         def _set_aid(self, on):
@@ -3394,6 +3484,9 @@ def main(argv=None):
         sys.exit("PyQt5 not available. Use --render-check for the headless self-check "
                  "test, or install python3-pyqt5 for the GUI.")
     app = QApplication(sys.argv)
+    theme_qss = resolve_theme_qss_path(load_pref("theme", None))
+    if theme_qss is not None:
+        app.setStyleSheet(load_theme_stylesheet(theme_qss))
     if a.camera:
         try:
             from .camera_backend import Picamera2Camera
@@ -3548,6 +3641,48 @@ def render_check():
     print("video_resolution_kwargs check PASS: no preference means no kwarg "
           "(camera's own default applies), a set preference becomes an "
           "explicit preview_res tuple, both list and tuple input accepted")
+
+    # Themes (BUILD_LIST Tier 1 item 3): discover_themes scans a real folder
+    # tree rather than trusting a hardcoded list, load_theme_stylesheet
+    # substitutes {{ASSETS}} for the theme's own absolute assets/ path, and
+    # resolve_theme_qss_path degrades a stale/deleted preference to None
+    # (stock look) instead of crashing main().
+    import shutil
+    themes_tmp = Path("/tmp/zynergy_render_check_themes")
+    if themes_tmp.exists():
+        shutil.rmtree(themes_tmp)
+    (themes_tmp / "dark" / "assets").mkdir(parents=True)
+    (themes_tmp / "dark" / "style.qss").write_text(
+        "#side_panel { background-image: url({{ASSETS}}/bg.png); }")
+    (themes_tmp / "no_qss_here").mkdir()   # a folder with no style.qss: not a theme
+    (themes_tmp / "not_a_dir.txt").write_text("ignored")   # not a directory: not a theme
+
+    found = discover_themes(themes_tmp)
+    assert [name for name, _ in found] == ["dark"], \
+        "only a subdirectory that actually contains style.qss counts as a theme"
+    assert discover_themes(themes_tmp / "nonexistent") == [], \
+        "a themes root that doesn't exist yet (no themes designed) must be " \
+        "empty, not an error"
+
+    dark_name, dark_qss = found[0]
+    stylesheet = load_theme_stylesheet(dark_qss)
+    expected_assets = str(themes_tmp / "dark" / "assets")
+    assert expected_assets in stylesheet and "{{ASSETS}}" not in stylesheet, \
+        "the {{ASSETS}} placeholder must be substituted for this theme's " \
+        "own absolute assets/ path, not left literal or pointed at the wrong theme"
+
+    assert resolve_theme_qss_path(None, themes_tmp) is None, \
+        "no preference set should resolve to None (stock look)"
+    assert resolve_theme_qss_path("dark", themes_tmp) == dark_qss
+    assert resolve_theme_qss_path("a_theme_that_was_deleted", themes_tmp) is None, \
+        "a stale preference naming a theme that no longer exists must " \
+        "degrade to None (stock look), never raise into main()"
+    shutil.rmtree(themes_tmp, ignore_errors=True)
+    print("themes check PASS: discover_themes finds only real style.qss-bearing "
+          "folders (ignoring files and folders missing a style.qss), "
+          "{{ASSETS}} resolves to the correct theme's own absolute assets "
+          "path, a stale/missing preference degrades to the stock look "
+          "rather than raising")
 
     # Capture-enforces-lock, at the CameraBackend seam: _enforce_exposure_lock reads
     # the live metered values, then calls apply_exposure_lock with that exact
@@ -4011,6 +4146,50 @@ def render_check():
               "mutually exclusive, choosing one persists it immediately and "
               "updates the status text, choosing Default clears the "
               "preference entirely")
+
+        # Theme menu (BUILD_LIST Tier 1 item 3): a fresh window's menu is
+        # built from whatever real theme folders exist under THEMES_ROOT
+        # (Default always present, even with zero designed) and reflects
+        # whichever one is already the persisted preference; choosing one
+        # persists it and updates the status text.
+        global THEMES_ROOT   # PREFS_PATH was already declared global above
+        orig_themes_root = THEMES_ROOT
+        orig_prefs_path_for_theme_check = PREFS_PATH
+        THEMES_ROOT = Path("/tmp/zynergy_render_check_theme_menu")
+        if THEMES_ROOT.exists():
+            shutil.rmtree(THEMES_ROOT)
+        (THEMES_ROOT / "lab_blue").mkdir(parents=True)
+        (THEMES_ROOT / "lab_blue" / "style.qss").write_text("#side_panel {}")
+        PREFS_PATH = Path("/tmp/zynergy_render_check_theme_prefs.json")
+        PREFS_PATH.unlink(missing_ok=True)
+        try:
+            save_pref("theme", None)
+            tcam2 = FakeCamera(async_delay_s=0.0)
+            twin = FocusPreviewWindow(tcam2, FocusMeter())
+            theme_labels = [a.text() for a in twin._theme_group.actions()]
+            assert theme_labels == ["Default", "lab_blue"], \
+                "the menu must be built from what's actually on disk under " \
+                "THEMES_ROOT, Default always present alongside it"
+            checked = {a.text(): a.isChecked() for a in twin._theme_group.actions()}
+            assert checked["Default"] is True and checked["lab_blue"] is False, \
+                "with no preference set yet, Default must be the checked one"
+
+            lab_blue_action = next(a for a in twin._theme_group.actions()
+                                   if a.text() == "lab_blue")
+            lab_blue_action.trigger()
+            assert load_pref("theme", "sentinel") == "lab_blue", \
+                "choosing a theme must persist it immediately"
+            assert "lab_blue" in twin.capture_status.text()
+            assert "next launch" in twin.capture_status.toolTip()
+            tcam2.stop()
+        finally:
+            THEMES_ROOT = orig_themes_root
+            PREFS_PATH = orig_prefs_path_for_theme_check
+            shutil.rmtree(Path("/tmp/zynergy_render_check_theme_menu"), ignore_errors=True)
+        print("theme menu check PASS: a fresh window's menu is built from "
+              "the real theme folders found on disk (Default always "
+              "present), reflects the persisted preference, and choosing a "
+              "theme persists it and updates the status text")
 
         # Green-plane extraction utility (BUILD_LIST Tier 1 item 4): a real
         # subprocess call to debayer.py --green, driven the same way the

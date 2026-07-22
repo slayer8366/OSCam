@@ -46,16 +46,35 @@ working through in dependency order. Progress so far: Tier 1 items 1
 tool-status text after a mark commits), 4 (single green-plane extraction
 utility — "Extract green plane..." File menu action, wraps `debayer.py
 --green` as a subprocess, own `DEBAYER_TOOL`/`default_green_output_path`),
-and 5 (video resolution menu — see the note below; a persisted
-next-launch preference, not a live change, and the build list undersold
-how non-trivial "wire it up" turned out to be) are done. Tier 3 item 4
+5 (video resolution menu — see the note below; a persisted next-launch
+preference, not a live change, and the build list undersold how
+non-trivial "wire it up" turned out to be), and 3 (themes — see the note
+below; an open-ended, scanned-not-hardcoded system, not a fixed
+Dark/Light pair) are all done. That's every Tier 1 item. Tier 3 item 4
 (Gallery module) is done — see `gallery.py` below. Tier 3 item 5
 (processing wizard overhaul) is done — see `process_wizard.py` below.
 Tier 3 item 6 (the z-stack one-click aid, the thing the user actually
-asked for) is also done. **Remaining Tier 1 item 3 (themes for the UI) is
-next** — the most open-ended of the Tier 1 items (how many themes,
-dark/light, where the toggle lives), likely worth a quick design check-in
-before building, unlike items 2/4/5 above which needed none.
+asked for) is also done. **Nothing is currently in progress** — check
+with the user for what's next (Tier 0 investigations, Tier 2's full-
+screen-mode design decision, or further into Tier 3, are all still open).
+
+**Themes detail worth knowing**: the user wants to design a dozen-plus
+side-panel aesthetics over time, so this is NOT a fixed theme list — the
+Options > Theme menu is built by `discover_themes()` scanning
+`themes/<name>/style.qss` under `THEMES_ROOT` (next to `qt_shell.py`).
+Adding a new theme is dropping in a folder, nothing else. A theme's own
+QSS references its images via `url({{ASSETS}}/file.png)`
+(`themes/<name>/assets/`), substituted by `load_theme_stylesheet()` for
+that theme's own absolute path — plain QSS `url()` resolves against the
+app's working directory otherwise, which would silently break on launch
+from anywhere but this exact folder. The side panel itself carries
+`objectName("side_panel")` for a theme's own `#side_panel { ... }` rule
+to target. Same persisted/next-launch pattern as video resolution, for
+consistency (`resolve_theme_qss_path()` degrades a stale/deleted theme
+preference to the stock look, never raises in `main()`). One minimal
+starter theme ships (`themes/dark/style.qss`, plain colors) just to prove
+the pipeline works — the real aesthetics are the user's own to design and
+drop in later.
 
 **Video resolution menu detail worth knowing**: `camera_backend.py`'s
 `Picamera2Camera.set_video_resolution()` has never had a live effect —

@@ -7,6 +7,42 @@ this file is the historical record of what happened and why.
 
 ## 2026-07-21
 
+### Added an extensible themes system (BUILD_LIST Tier 1, item 3)
+
+Built deliberately open-ended rather than a fixed Dark/Light pair: the user
+plans to design a dozen-plus side-panel aesthetics over time and wants the
+code to never need touching again to add one. New `themes/<name>/style.qss`
+contract, scanned dynamically by `discover_themes()` — dropping in a new
+theme folder is the entire integration step. Optional
+`themes/<name>/assets/` for images; a theme's own QSS references them via
+`url({{ASSETS}}/file.png)`, substituted by `load_theme_stylesheet()` for
+that theme's own absolute assets path at load time (plain QSS `url()`
+paths resolve against the app's working directory, not the stylesheet's
+own location, which would silently break image references the moment the
+app is launched from anywhere else — the placeholder is what keeps a
+theme folder portable).
+
+`qt_shell.py`'s side panel (the capture/exposure controls column) now
+carries `objectName("side_panel")`, so a theme's QSS has something precise
+to target with `#side_panel { ... }`. New Options > Theme submenu, built
+from whatever's actually discovered (`Default` always present even with
+zero themes designed yet), same persisted/next-launch pattern as the
+video resolution menu (`resolve_theme_qss_path()` degrades a stale or
+deleted theme preference to the stock look rather than raising in
+`main()`). Shipped one minimal starter theme (`themes/dark/style.qss`,
+plain colors, no image assets) purely to prove the pipeline end to end —
+the actual dozen-plus aesthetics are the user's own design work, not
+something built here.
+
+New render-check coverage: `discover_themes` against a real folder tree
+(ignoring files and folders that aren't themes), `{{ASSETS}}` substitution
+correctness, `resolve_theme_qss_path`'s graceful degradation on a missing
+theme, plus a real `FocusPreviewWindow` check that the Theme menu reflects
+what's actually on disk and persists a choice correctly. Manually
+smoke-tested under `QT_QPA_PLATFORM=offscreen`: the shipped `dark` theme
+discovered, loaded, applied via `app.setStyleSheet`, and the `side_panel`
+object name confirmed present on the real widget.
+
 ### Fixed `save_profile()` to write atomically (data-loss hazard, not a build list item)
 
 Discovered while wrapping up the green-plane extraction work: `git diff`
