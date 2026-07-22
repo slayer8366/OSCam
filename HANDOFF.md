@@ -41,12 +41,15 @@ speculative. Don't build it until someone hits it.
 
 That 13-section checklist is a separate, older track from the newer
 `BUILD_LIST.md` (planning doc, not checked into the repo) the user is now
-working through in dependency order. Progress so far: Tier 1 item 1 (focus
-aid tick rate + auto-reset on stack tag) is done. Tier 3 item 4 (Gallery
-module) is done — see `gallery.py` below. Tier 3 item 5 (processing wizard
-overhaul) is done — see `process_wizard.py` below. **Tier 3 item 6 (the
-z-stack one-click aid, the thing the user actually asked for) is now also
-done.**
+working through in dependency order. Progress so far: Tier 1 items 1
+(focus aid tick rate + auto-reset on stack tag) and 2 (`measure.py`'s
+stale tool-status text after a mark commits — see the fix note two
+paragraphs down) are done. Tier 3 item 4 (Gallery module) is done — see
+`gallery.py` below. Tier 3 item 5 (processing wizard overhaul) is done —
+see `process_wizard.py` below. Tier 3 item 6 (the z-stack one-click aid,
+the thing the user actually asked for) is also done. **Remaining Tier 1
+items (3: themes, 4: single green-plane extraction utility, 5: video
+resolution menu) are next, unblocked, no investigation needed.**
 
 It lives entirely in `qt_shell.py`'s `FocusPreviewWindow`:
 
@@ -162,6 +165,23 @@ print `SKIPPED` (not `FAILED`) when PyQt5 isn't importable — that's
 correct, expected behavior, not a bug to chase.
 
 ## Things that will bite you if you don't know them
+
+**A render-check that HANGS (not fails) right after loading an image is
+almost certainly a blocking `QMessageBox` with no one to click it.**
+`_load_image`-style methods across this project catch a load failure and
+call `QMessageBox.warning(...)`, which is a real modal `.exec_()` — fine in
+the real app, but in a headless `--render-check` run there is no user to
+dismiss it, so the process just sits there forever instead of failing
+loudly. Hit this for real writing `measure.py`'s mark-commit status-line
+test: it reused `green_path`, a fixture file an EARLIER check in the same
+`render_check()` had already `unlink()`ed in its own `finally:` block, so
+the reload raised, and the resulting warning dialog hung the test with no
+error message at all — `timeout <n> python3 -u foo.py --render-check` (the
+`-u` matters; stdout is block-buffered when not a tty, so without it you
+see nothing before the timeout kills it) is what actually revealed where
+it stopped. Lesson: give any UI-driving render-check test its own
+self-contained fixture files, never reuse another check's, even one that
+looks like it should still be sitting there.
 
 **Circular import chain — `wizard_pages.py`'s qt_shell import MUST be
 lazy.** The load order is `qt_shell.py → calibrate.py → wizard_pages.py`

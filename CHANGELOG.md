@@ -7,6 +7,35 @@ this file is the historical record of what happened and why.
 
 ## 2026-07-21
 
+### Fixed `measure.py`'s stale tool-status text after a mark commits (BUILD_LIST Tier 1, item 2)
+
+After a mark committed, `point_status` kept showing its pre-commit text —
+a polygon commit still read "double-click to finish (3+ needed)" — because
+`mousePressEvent`'s auto-commit path (distance/angle) and
+`mouseDoubleClickEvent`'s commit path (polygon/ellipse) both called
+`_clear_pending()` but never reset the status line, unlike `_cancel_pending()`
+(right-click), which already did via `on_point_added([])`. Fixed with a new
+`MeasureWindow._reset_tool_hint()` (the same text `_on_tool_toggled` already
+shows when a tool is first picked — "ready for the next mark" should look
+identical to "just picked this tool"), called from both commit sites and
+refactored into `_on_tool_toggled` itself instead of its own inline
+`setText` call.
+
+New render-check coverage drives the real `mousePressEvent`/
+`mouseDoubleClickEvent` handlers with synthetic `QMouseEvent`s against a
+real loaded image and calibration (not a reimplementation of the fix),
+covering both the auto-commit path and the double-click path. Tracked down
+one real gotcha along the way, worth knowing if you add more UI-driving
+render-check coverage here: the fixture image this reused (`green_path`
+from the `load_measurement_plane` check earlier in the same function) gets
+`unlink()`ed in that earlier check's own `finally:` block, so loading it
+again later raised, and `_load_image`'s `except Exception` branch called
+`QMessageBox.warning(...).exec_()` — a real modal dialog with nothing to
+click it, which hangs a headless test forever rather than failing loudly.
+Fixed by writing a fresh, self-contained fixture file instead of reusing
+another check's already-cleaned-up path. If a render-check ever seems to
+hang (not just fail) right after loading an image, check for exactly this.
+
 ### Added the z-stack one-click aid (BUILD_LIST Tier 3, item 6)
 
 The feature the user actually asked for; `gallery.py` and `process_wizard.py`

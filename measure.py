@@ -620,12 +620,14 @@ if _HAVE_QT:
             if needed is not None and len(self._pending_points) >= needed:
                 self.window_.commit_mark(list(self._pending_points))
                 self._clear_pending()
+                self.window_._reset_tool_hint()
 
         def mouseDoubleClickEvent(self, ev):
             min_points = {"polygon": 3, "ellipse": 5}.get(self.window_.active_tool)
             if min_points is not None and len(self._pending_points) >= min_points:
                 self.window_.commit_mark(list(self._pending_points))
                 self._clear_pending()
+                self.window_._reset_tool_hint()
             else:
                 super().mouseDoubleClickEvent(ev)
 
@@ -811,8 +813,18 @@ if _HAVE_QT:
         def _on_tool_toggled(self, name, checked):
             self.active_tool = name if checked else None
             self.view._clear_pending()
-            self.point_status.setText(self._tool_hint(name) if checked else "")
+            self._reset_tool_hint()
             self.result_label.setText("")
+
+        def _reset_tool_hint(self):
+            """The point-status line's ready-for-the-next-mark state: the
+            active tool's own hint, same text _on_tool_toggled shows when the
+            tool is first picked. Called after a commit too (see the canvas'
+            mousePressEvent/mouseDoubleClickEvent) -- without this, the
+            status line kept showing the LAST pre-commit count/hint (e.g. a
+            polygon commit still read "double-click to finish") until the
+            next point happened to overwrite it."""
+            self.point_status.setText(self._tool_hint(self.active_tool))
 
         @staticmethod
         def _tool_hint(name):
@@ -1401,6 +1413,65 @@ def render_check():
                 print("_refresh_gating staleness check PASS: a fresh calibration "
                       "is quiet, a drifted one shows the staleness reason in the "
                       "status text without disabling any measurement tool")
+
+                # BUILD_LIST Tier 1 item 2: after a mark commits, the status
+                # line used to keep showing the pre-commit count/hint (a
+                # polygon commit still read "double-click to finish") until
+                # the next point happened to overwrite it. Drives the REAL
+                # mousePressEvent/mouseDoubleClickEvent handlers with
+                # synthetic QMouseEvents against a real loaded image, not a
+                # reimplementation of the fix.
+                from PyQt5.QtCore import QEvent
+                from PyQt5.QtGui import QMouseEvent
+
+                def _click(view, x, y, dbl=False):
+                    kind = QEvent.MouseButtonDblClick if dbl else QEvent.MouseButtonPress
+                    ev = QMouseEvent(kind, QPointF(x, y), Qt.LeftButton,
+                                     Qt.LeftButton, Qt.NoModifier)
+                    if dbl:
+                        view.mouseDoubleClickEvent(ev)
+                    else:
+                        view.mousePressEvent(ev)
+
+                # green_path itself was already unlink()ed by the earlier
+                # load_measurement_plane check's own finally: block -- a
+                # fresh, self-contained fixture here, not a reuse of a path
+                # whose lifecycle belongs to that earlier test.
+                status_green_path = Path("/tmp/zynergy_measure_render_check_status.tif")
+                tifffile.imwrite(str(status_green_path), already_green)
+                try:
+                    win._load_image(str(status_green_path))
+
+                    win.distance_btn.setChecked(True)
+                    assert win.point_status.text() == "distance: click two points"
+                    _click(win.view, 10, 10)
+                    assert win.point_status.text() == "distance: 1 of 2 points"
+                    _click(win.view, 20, 20)
+                    assert win.point_status.text() == "distance: click two points", \
+                        "a distance mark auto-commits on its 2nd point; the " \
+                        "status line must reset to the tool hint, not keep " \
+                        "showing '1 of 2'"
+
+                    win.polygon_btn.setChecked(True)
+                    assert win.point_status.text() == (
+                        "polygon: click each vertex, double-click to finish (3+ points)")
+                    _click(win.view, 10, 10)
+                    _click(win.view, 20, 10)
+                    _click(win.view, 20, 20)
+                    assert "3 point(s)" in win.point_status.text()
+                    _click(win.view, 20, 20, dbl=True)
+                    assert win.point_status.text() == (
+                        "polygon: click each vertex, double-click to finish (3+ points)"), \
+                        "a polygon commits on double-click; the status line " \
+                        "must reset to the tool hint, not keep reading the " \
+                        "pre-commit 'double-click to finish' text"
+                finally:
+                    status_green_path.unlink(missing_ok=True)
+                print("mark-commit status-line reset check PASS: both the "
+                      "auto-commit path (distance/angle) and the double-click "
+                      "commit path (polygon/ellipse) reset the point-status "
+                      "line to the tool's own hint immediately after a commit, "
+                      "matching what picking the tool fresh already showed")
         finally:
             _calibrate.CALIBRATION_PATH = orig_path
     else:
