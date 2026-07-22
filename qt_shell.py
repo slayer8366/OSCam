@@ -298,6 +298,16 @@ except ImportError:                 # PyQt5 absent: --render-check still runs
 MIN_FRAC = 0.03                      # smallest box a resize will commit (fractional)
 HANDLE_FRAC = 0.05                   # how near a corner counts as grabbing it
 
+# Appended to the window title only while _is_fullscreen (see
+# _toggle_fullscreen), matched by a labwc rc.xml <windowRule> to trigger
+# labwc's own ToggleAlwaysOnTop action -- the one thing that actually gets
+# this "fake fullscreen" window (see the comment on self._is_fullscreen in
+# FocusPreviewWindow.__init__ for why it's not a real showFullScreen())
+# to raise above the desktop taskbar's wlr-layer-shell surface. No square
+# brackets or other glob(7) metacharacters -- rc.xml title matching is a
+# shell wildcard pattern, not a literal string.
+FULLSCREEN_TITLE_MARKER = " ZYNERGY-FULLSCREEN-MARKER"
+
 SHUTTER_STEPS = 200                  # (legacy name kept for the slider's int range
                                       # semantics; the table below is what's authoritative)
 GAIN_STEPS = 1000
@@ -1202,6 +1212,28 @@ if _HAVE_QT:
             # is ever lost by moving self._panel in and out of it. See
             # _toggle_fullscreen/_toggle_floating_panel.
             self._floating_panel = None
+            # _is_fullscreen/_pre_fullscreen_geometry back this app's OWN
+            # notion of full screen rather than Qt/the window manager's: real
+            # showFullScreen() puts the top-level window into the compositor's
+            # xdg_toplevel fullscreen state, and on this rig (labwc/wlroots,
+            # with the panel's own 2x output scale) that state takes a direct
+            # scanout fast path that skips the compositor's normal scale-up
+            # compositing pass -- the client's own buffer, sized in
+            # unscaled/logical pixels, lands on the physical (2x) panel
+            # covering only a quarter of it. A borderless window manually
+            # resized to the screen's geometry looks identical to the user
+            # but is never flagged as fullscreen to the compositor, so it
+            # stays on the same normal composited (scaled) path ordinary
+            # windowed mode already uses correctly. Confirmed via a photo of
+            # the actual tablet: real fullscreen left the live preview
+            # pinned to a small quarter-screen rectangle regardless of the
+            # xcb-vs-wayland QPA platform (an earlier, wrong theory, see
+            # CHANGELOG.md).
+            self._is_fullscreen = False
+            self._pre_fullscreen_geometry = None
+            # See FULLSCREEN_TITLE_MARKER below (and the entry/exit branches
+            # of _toggle_fullscreen) for what this backs.
+            self._pre_fullscreen_title = None
 
             self.preview = camera.widget if hasattr(camera, "widget") \
                 else _FakePreview(camera)
@@ -1674,8 +1706,22 @@ if _HAVE_QT:
             # that could quietly drift apart over time -- enter does
             # A/B/C, exit does C/B/A-but-slightly-different, six months
             # later they no longer match.
-            if self.isFullScreen():
-                self.showNormal()
+            #
+            # Deliberately NOT real showFullScreen()/showNormal() -- see the
+            # comment on self._is_fullscreen in __init__ for why (the direct
+            # scanout / output scale bug). self._is_fullscreen is this app's
+            # own notion of the state; isFullScreen() would stay False the
+            # whole time now since the window is never put into the
+            # compositor's actual fullscreen state.
+            if self._is_fullscreen:
+                self._is_fullscreen = False
+                if self._pre_fullscreen_title is not None:
+                    self.setWindowTitle(self._pre_fullscreen_title)
+                    self._pre_fullscreen_title = None
+                self.setWindowFlags(self.windowFlags() & ~Qt.FramelessWindowHint)
+                if self._pre_fullscreen_geometry is not None:
+                    self.setGeometry(self._pre_fullscreen_geometry)
+                self.show()   # changing windowFlags unmaps the window; re-show it
                 # Always restore the normal-mode layout exactly, regardless
                 # of whether the floating panel happened to be shown or
                 # hidden at the moment of exit.
@@ -1685,6 +1731,8 @@ if _HAVE_QT:
                     self._floating_panel.hide()
                 self.menuBar().setVisible(True)
             else:
+                self._is_fullscreen = True
+                self._pre_fullscreen_geometry = self.geometry()
                 self.menuBar().setVisible(False)
                 if self._floating_panel is None:
                     # Qt.Tool: a borderless utility window associated with
@@ -1696,7 +1744,7 @@ if _HAVE_QT:
                     lay.setContentsMargins(0, 0, 0, 0)
                 # Reparent the panel into the floating window EVERY entry,
                 # not just the first: exiting puts it back in the splitter
-                # (see the isFullScreen() branch above), so a second or
+                # (see the self._is_fullscreen branch above), so a second or
                 # third entry needs this to actually move it again, not
                 # just on the floating window's own one-time construction.
                 # addWidget() on a new layout reparents automatically --
@@ -1707,12 +1755,42 @@ if _HAVE_QT:
                 # the preview -- the whole point of going full screen --
                 # rather than auto-showing and making the user dismiss it.
                 self._floating_panel.hide()
-                self.showFullScreen()
+                # The desktop taskbar (wf-panel-pi, a wlr-layer-shell surface
+                # living in its own compositor layer ABOVE ordinary windows
+                # by design) otherwise stays visible over this window's
+                # bottom edge -- confirmed via a photo of the actual tablet.
+                # Real showFullScreen() gets special compositor handling
+                # that raises above that layer automatically, but this
+                # deliberately avoids real fullscreen (see the comment on
+                # self._is_fullscreen in __init__). Two direct ways to ask
+                # for that same stacking were tried and reverted, both dead
+                # ends on this rig's labwc: Qt.WindowStaysOnTopHint via
+                # setWindowFlags crashes the preview (forces Qt to recreate
+                # this window's native handle out from under self.preview's
+                # already-created EGL surface -- real XCB BadDrawable/
+                # BadWindow errors); a raw EWMH _NET_WM_STATE_ABOVE
+                # ClientMessage was delivered fine but silently ignored by
+                # labwc. What DOES work: labwc's own ToggleAlwaysOnTop
+                # action, wired up via an rc.xml <windowRule> matched on
+                # this distinctive title suffix (see FULLSCREEN_TITLE_MARKER
+                # and ~/.config/labwc/rc.xml) -- setWindowTitle() is a plain
+                # X11 property change, not a window recreation, so it
+                # carries none of setWindowFlags's crash risk. Set the
+                # title BEFORE the frameless setWindowFlags call below so
+                # the marker is already in place when labwc sees this
+                # window's next map (setWindowFlags's own show() causes
+                # that map -- see the exit branch above for the symmetric
+                # restore).
+                self._pre_fullscreen_title = self.windowTitle()
+                self.setWindowTitle(self._pre_fullscreen_title + FULLSCREEN_TITLE_MARKER)
+                self.setWindowFlags(self.windowFlags() | Qt.FramelessWindowHint)
+                self.setGeometry(QApplication.primaryScreen().geometry())
+                self.show()   # changing windowFlags unmaps the window; re-show it
 
         def _toggle_floating_panel(self):
             # No-op outside full screen (P does nothing in normal windowed
             # mode -- see keyPressEvent's own guard, which only calls this
-            # while self.isFullScreen()).
+            # while self._is_fullscreen).
             if self._floating_panel is None:
                 return
             if self._floating_panel.isVisible():
@@ -3321,7 +3399,7 @@ if _HAVE_QT:
             elif ev.key() == Qt.Key_Escape and self._batch_active:
                 self._abort_batch()
             elif (ev.key() == Qt.Key_Escape and ev.modifiers() & Qt.ControlModifier
-                  and self.isFullScreen()):
+                  and self._is_fullscreen):
                 # FULL SCREEN MODE: Ctrl+Escape exits, not plain Escape --
                 # that key already does real work above (cancel an armed
                 # burst, abort a batch sequence) and shouldn't be overloaded
@@ -3330,7 +3408,7 @@ if _HAVE_QT:
                 self._toggle_fullscreen()
             elif ev.key() == Qt.Key_F11:
                 self._toggle_fullscreen()
-            elif ev.key() == Qt.Key_P and self.isFullScreen():
+            elif ev.key() == Qt.Key_P and self._is_fullscreen:
                 self._toggle_floating_panel()
             elif ev.key() == Qt.Key_Up and hasattr(self.camera, "focus_position"):
                 self.camera.focus_position += 0.25
@@ -4022,7 +4100,9 @@ def render_check():
               "every successful plane capture and never on a failed one")
 
         # Full screen mode with a floating panel (BUILD_LIST Tier 2): real
-        # showFullScreen()/showNormal() calls, real reparenting of the
+        # frameless-window + manual-geometry calls (not showFullScreen()/
+        # showNormal() -- see the comment on self._is_fullscreen in
+        # FocusPreviewWindow.__init__ for why), real reparenting of the
         # actual panel widget between the splitter and the floating window,
         # real menu-bar visibility, real key routing -- nothing bypassed.
         fscam = FakeCamera(async_delay_s=0.0)
@@ -4030,10 +4110,10 @@ def render_check():
         try:
             assert fswin._splitter.indexOf(fswin._panel) != -1, \
                 "the panel must start docked in the splitter, normal mode"
-            assert not fswin.isFullScreen()
+            assert not fswin._is_fullscreen
 
             fswin._toggle_fullscreen()
-            assert fswin.isFullScreen()
+            assert fswin._is_fullscreen
             assert not fswin.menuBar().isVisible(), \
                 "the menu bar must hide on entering full screen"
             assert fswin._splitter.indexOf(fswin._panel) == -1, \
@@ -4056,7 +4136,7 @@ def render_check():
             fswin._toggle_floating_panel()
             assert fswin._floating_panel.isVisible()
             fswin._toggle_fullscreen()
-            assert not fswin.isFullScreen()
+            assert not fswin._is_fullscreen
             assert fswin.menuBar().isVisible(), \
                 "the menu bar must come back on exiting full screen"
             assert fswin._splitter.indexOf(fswin._panel) == 1, \
@@ -4078,20 +4158,20 @@ def render_check():
             # Escape first -- an armed burst still takes priority, matching
             # the two existing Escape branches' own established order.
             fswin._toggle_fullscreen()
-            assert fswin.isFullScreen()
+            assert fswin._is_fullscreen
             fswin._armed = {"kind": "science", "n": 1, "prefix": "science_"}
             cancelled = []
             fswin._cancel_armed = lambda: cancelled.append(1)
             ctrl_esc_ev = QKeyEvent(QEvent.KeyPress, Qt.Key_Escape, Qt.ControlModifier)
             fswin.keyPressEvent(ctrl_esc_ev)
-            assert fswin.isFullScreen(), \
+            assert fswin._is_fullscreen, \
                 "an armed burst must still take priority over exiting " \
                 "full screen, same as it already does over anything else"
             assert cancelled == [1]
             fswin._armed = None
 
             fswin.keyPressEvent(ctrl_esc_ev)
-            assert not fswin.isFullScreen(), \
+            assert not fswin._is_fullscreen, \
                 "Ctrl+Escape must exit full screen once nothing else claims Escape"
 
             # closeEvent's panel_width guard: must not raise, and must not

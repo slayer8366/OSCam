@@ -7,6 +7,84 @@ this file is the historical record of what happened and why.
 
 ## 2026-07-22
 
+### Known limitation (not fixed): full-screen mode doesn't cover the desktop taskbar
+
+Reported after the quarter-screen fix below was confirmed working: the
+live image now fills the real screen correctly, but the labwc taskbar
+(`wf-panel-pi`) stays visible over the bottom edge, confirmed via a photo
+of the actual tablet.
+
+Root cause: `wf-panel-pi` is a `wlr-layer-shell` surface, which lives in
+its own compositor layer ABOVE ordinary windows by design -- real
+`showFullScreen()` gets special compositor handling that raises above
+that layer automatically, but `_toggle_fullscreen` deliberately avoids
+real fullscreen now (see the fix below), so this window has no automatic
+way to get that same stacking.
+
+Two ways tried to raise above it anyway, both dead ends on this rig
+(labwc 0.8.4): `Qt.WindowStaysOnTopHint` via `setWindowFlags` forces Qt
+to recreate the window's native handle out from under `self.preview`'s
+already-created EGL surface -- confirmed on-rig as a real crash (XCB
+`BadDrawable`/`BadWindow`, preview went black, needed a fresh process).
+A raw EWMH `_NET_WM_STATE_ABOVE` `ClientMessage` sent by hand (`ctypes` +
+`libX11`, its own separate Xlib connection, so it never touches Qt's own
+native window) was confirmed delivered (`XSendEvent`/`XFlush` both
+succeeded) but silently ignored -- `xprop` on the window afterward showed
+only `_NET_WM_STATE_FOCUSED`, never `_ABOVE`; labwc doesn't honor that
+request at runtime on this version. Both attempts were reverted; no
+trace of either is left in `qt_shell.py`.
+
+One real lead left unexplored: labwc's own `ToggleAlwaysOnTop` action
+(`labwc-actions(5)`), reachable from an `rc.xml` `<windowRule>` keyed off
+a distinctive window title set via `setWindowTitle()` (a plain X11
+property change, not a `setWindowFlags`-style recreation, so it shouldn't
+carry the same crash risk) -- untried because it requires a one-time edit
+to this rig's own `~/.config/labwc/rc.xml`, outside this repo, and needs
+the user's buy-in first.
+
+### Fixed (for real this time, confirmed live on-rig): full-screen preview stuck at a quarter of the screen
+
+Third attempt at the full-screen preview bug below. The second attempt's
+`xcb` switch was itself confirmed correct and harmless (this session ran
+the actual app against the real IMX477 camera on the rig itself: after
+`_toggle_fullscreen`, the Qt widget geometry, the real X11 window
+(`xwininfo`), and the EGL window surface (`eglQuerySurface`) all reported
+the full 2048x1080 screen size, exactly as they should) — but the user's
+own follow-up photo showed the live image still confined to a small
+rectangle, so the native-window/platform-plugin theory itself was wrong.
+
+Real root cause: this rig's display is a physically 4096x2160 panel
+driven at a compositor-level 2x output scale (`wlr-randr --output
+HDMI-A-1 --scale 2`, in `~/.config/labwc/autostart`, added by the user to
+make the UI physically legible on the panel). XWayland presents that to
+X11/Qt clients as a "logical" 2048x1080 screen with `devicePixelRatio`
+1.0 — Qt has no idea the real panel is 2x bigger. Ordinary windowed
+content is fine because the compositor's normal composited render path
+applies that 2x scale-up when painting the window. But a *real*
+`showFullScreen()` puts the window into the compositor's actual
+`xdg_toplevel` fullscreen state, and wlroots-based compositors (labwc
+included) commonly fast-path a fullscreen surface straight to the
+display's scanout hardware, bypassing the normal composited scale-up
+pass entirely — so the client's own 2048x1080 buffer (correct in its own
+logical terms) lands on the real 4096x2160 panel covering exactly one
+quarter of it, unscaled. Confirmed by screenshotting (`grim`) the actual
+rig mid-fullscreen: solid black/no visible content, consistent with the
+direct-scanout path not going through the normal compositing grim's
+`wlr-screencopy` capture relies on.
+
+Fix: `_toggle_fullscreen` no longer calls `showFullScreen()`/
+`showNormal()` at all. It now sets `Qt.FramelessWindowHint` and manually
+resizes the window to `QApplication.primaryScreen().geometry()` (and
+restores the saved pre-fullscreen geometry + flags on exit) — visually
+identical to the user, but the compositor never sees an `xdg_toplevel`
+fullscreen state, so it stays on the ordinary composited (and therefore
+correctly 2x-scaled) render path. `FocusPreviewWindow._is_fullscreen`
+(plus `_pre_fullscreen_geometry`) now backs this app's own notion of the
+state, since `isFullScreen()` stays `False` the whole time. Re-verified
+live on-rig after the fix, real camera running: `grim` now captures the
+actual specimen image filling the panel (thin aspect-ratio letterbox
+bars only), not a quarter-screen rectangle or black.
+
 ### Fixed: full-screen preview stuck at its old windowed-mode size on-rig
 
 Reported live from the actual tablet (photo evidence): entering full

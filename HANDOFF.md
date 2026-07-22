@@ -150,31 +150,50 @@ across a relaunch, on purpose — see `CHANGELOG.md`'s entry for the reason
 (disorientation risk of a hidden-chrome launch with no visible way out),
 not because this app avoids persisting UI state in general (it doesn't).
 
-**Real on-rig bug, now fixed**: the live preview (`self.preview`, the real
-`QGlPicamera2` widget on-rig) was staying pinned at its old small
-windowed-mode size/position after `F11`, instead of filling the screen —
-confirmed via a photo of the actual tablet. First attempt (forcing an
-explicit `self.preview.resize(...)` a tick after `showFullScreen()`) had
-*zero* effect on-rig and was reverted — wrong theory. Real root cause,
-confirmed on this actual rig (`QApplication().platformName()` returns
-`"wayland"` by default here, running under `labwc`): `self.preview` is a
-`WA_NativeWindow` child widget doing its own direct EGL rendering, not a
-top-level window, and nested native child windows are a documented, real
-limitation of Qt5's native Wayland platform plugin — their underlying
-surface does not reliably follow the widget's own Qt-side geometry once
-the top-level window's own state changes out from under them (confirmed:
-full screen entry correctly resizes the top-level window and even fires
-the preview's own `resizeEvent`/`glViewport` call, but the visible native
-surface itself stays stuck). The fix is environmental, not app-logic:
-`qt_shell.py` now does `os.environ.setdefault("QT_QPA_PLATFORM", "xcb")`
-before PyQt5 resolves a platform, routing through the already-running
-XWayland instead — real X11 child subwindows do not have this limitation.
-`setdefault` so an explicit `QT_QPA_PLATFORM` in the environment still
-wins. This needs on-rig confirmation (F11 after this change) — if it's
-*still* wrong even under `xcb`, the native-window theory itself is wrong
-and the next place to look is whatever labwc/XWayland does differently on
-a real fullscreen `xdg_toplevel`/`_NET_WM_STATE_FULLSCREEN` transition
-versus a plain resize.
+**Real on-rig bug, now actually fixed (confirmed live, real camera, real
+tablet)**: the live preview (`self.preview`, the real `QGlPicamera2`
+widget on-rig) was staying pinned to a small rectangle after `F11`
+instead of filling the screen. Two earlier theories here were both
+wrong and reverted in turn (an explicit `self.preview.resize(...)` nudge;
+then forcing `QT_QPA_PLATFORM=xcb`, which turned out to be harmless but
+not the fix -- see `CHANGELOG.md` for both post-mortems). Real root
+cause: this rig's display is physically 4096x2160 driven at a
+compositor-level 2x output scale (`wlr-randr --output HDMI-A-1 --scale
+2`, in `~/.config/labwc/autostart`, user-added to make the UI legible on
+the panel). XWayland presents that to Qt as a "logical" 2048x1080 screen
+with `devicePixelRatio` 1.0. Ordinary windowed content is fine because
+the compositor's normal composited path scales it up 2x, but a *real*
+`showFullScreen()` puts the window into the compositor's actual
+`xdg_toplevel` fullscreen state, and wlroots-based compositors commonly
+fast-path that straight to display scanout, skipping the scale-up --
+so a 2048x1080 buffer lands on the 4096x2160 panel covering exactly one
+quarter of it.
+
+Fix: `_toggle_fullscreen` no longer calls `showFullScreen()`/
+`showNormal()` at all -- it sets `Qt.FramelessWindowHint` and manually
+resizes to `QApplication.primaryScreen().geometry()` (restoring the
+saved pre-fullscreen geometry + flags on exit), which stays on the
+normal composited (correctly-scaled) path since the compositor never
+sees a real fullscreen state. `self._is_fullscreen` (+
+`self._pre_fullscreen_geometry`) backs this app's own notion of the
+state now; `isFullScreen()` stays `False` throughout. If you touch this
+again: **do not** add `Qt.WindowStaysOnTopHint` via `setWindowFlags` on
+this window after it's shown -- confirmed on-rig to crash (`setWindowFlags`
+recreates the window's native handle out from under `self.preview`'s
+already-created EGL surface, real XCB `BadDrawable`/`BadWindow` errors).
+
+**Known limitation, not yet fixed**: in this fake-fullscreen mode, the
+desktop taskbar (`wf-panel-pi`, a `wlr-layer-shell` surface, always above
+ordinary windows by design) stays visible over the bottom edge -- real
+fullscreen would raise above it automatically, but this deliberately
+isn't real fullscreen anymore (see above). A raw EWMH
+`_NET_WM_STATE_ABOVE` `ClientMessage` was tried (delivered successfully
+per `XSendEvent`/`XFlush`, but silently ignored by labwc -- `xprop`
+never showed `_ABOVE` on the window) and reverted; no trace left in the
+code. The one lead not yet tried: labwc's own `ToggleAlwaysOnTop` action
+via an `rc.xml` `<windowRule>` keyed off a distinctive window title (see
+`CHANGELOG.md`'s entry for the full reasoning) -- needs a one-time edit
+outside this repo, so needs the user's go-ahead first.
 
 **Themes detail worth knowing**: the user wants to design a dozen-plus
 side-panel aesthetics over time, so this is NOT a fixed theme list — the
