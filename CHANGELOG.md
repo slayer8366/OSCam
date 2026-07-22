@@ -7,32 +7,51 @@ this file is the historical record of what happened and why.
 
 ## 2026-07-22
 
-### Planned: `provenance.py` extraction, phase 1 (BUILD_LIST Tier 3, item 1)
+### `provenance.py` extraction, phase 1 (BUILD_LIST Tier 3, item 1)
 
-Plan approved, not yet built (see `HANDOFF.md`'s note for the full design).
-This turn's own Tier 0 investigation confirmed `camera_backend.py` has
-zero session/provenance awareness — the original thin-adapter design
-intent held — so this is a clean pull-out, not a rewrite: `OUT_ROOT`,
-`PROFILE_PATH`, `load_profile`/`save_profile`, `_dump_meta`,
-`new_session_dir`/`new_zstack_root_dir`, `class Session`, and
-`record_capture`/`record_burst`/`record_hdr` move out of `qt_shell.py`
-into a new `provenance.py`. Unblocks Casual Mode (item 2) and the store-
-mechanics migration (phase 2, item 7).
+Built the plan recorded in the prior commit. This turn's own Tier 0
+investigation confirmed `camera_backend.py` has zero session/provenance
+awareness — the original thin-adapter design intent held — so this was a
+clean pull-out, not a rewrite: `OUT_ROOT`, `PROFILE_PATH`, `load_profile`/
+`save_profile`, `_dump_meta`, `new_session_dir`/`new_zstack_root_dir`,
+`class Session`, and `record_capture`/`record_burst`/`record_hdr` moved
+out of `qt_shell.py` into a new `provenance.py`, verbatim. Unblocks
+Casual Mode (item 2) and the store-mechanics migration (phase 2, item 7).
 
 The one real hazard: `render_check()` mutates `OUT_ROOT`/`PROFILE_PATH`
 as module state to isolate its own test fixtures (and, after two real
 incidents this session, to keep the whole self-check off the real
-`~/imx/profile.json`). Every consumer — `qt_shell.py` itself, `gallery.py`,
-`wizard_pages.py` — must reference `provenance.OUT_ROOT`/`provenance.
-PROFILE_PATH` by attribute, never `from provenance import OUT_ROOT`,
-which would create a second binding that silently stops tracking the
-moment either side reassigns it. `provenance.py` will carry an explicit
-comment on the constants themselves saying so, not just this note.
-`list_sessions`/`load_session_json`/`processable_captures`/
+`~/imx/profile.json`). Every consumer references `provenance.OUT_ROOT`/
+`provenance.PROFILE_PATH` by attribute, never `from provenance import
+OUT_ROOT`, which would create a second binding that silently stops
+tracking the moment either side reassigns it — `provenance.py` carries an
+explicit comment on the constants themselves saying so, not just this
+note. `list_sessions`/`load_session_json`/`processable_captures`/
 `capture_correction_status`/`archive_session_raws`/`build_display_flags`
-stay in `qt_shell.py` — reading `session.json` back out for browsing is a
-different concern from writing new provenance records, and the build
+stayed in `qt_shell.py` — reading `session.json` back out for browsing is
+a different concern from writing new provenance records, and the build
 list's own phase-1 scope doesn't cover them.
+
+`gallery.py` and `process_wizard.py`'s `OUT_ROOT` defaults, and
+`wizard_pages.py`'s `new_adhoc_dir`, all went through the same lazy
+`_lazy_qt_shell()` indirection `qt_shell.OUT_ROOT`/`qt_shell.
+new_session_dir` used to resolve through before this move — reworked to
+reference `provenance.OUT_ROOT`/`provenance.new_session_dir` directly
+instead (a plain top-level import, safe since `provenance.py` sits at the
+base of the import graph and imports nothing back into any of these
+three files, unlike the real `qt_shell.py` cycle `_lazy_qt_shell()` still
+exists to break). Left unfixed, `gallery.py`'s and `process_wizard.py`'s
+`OUT_ROOT` defaults would have raised `AttributeError` the first time
+either ran with no explicit `out_root` argument, since `qt_shell.py` no
+longer defines that name.
+
+Caught one real bug the move itself introduced: `qt_shell.py`'s own
+`render_check()` had three internal call sites (`Session(`, `record_burst(`
+×2) that never got module-qualified to `provenance.Session`/`provenance.
+record_burst` when everything else in the file did — `qt_shell.py
+--render-check` was crashing with a `NameError` before this fix. All five
+touched modules' own `--render-check` (`provenance.py`, `qt_shell.py`,
+`gallery.py`, `wizard_pages.py`, `process_wizard.py`) pass clean now.
 
 ### Added full screen mode with a floating panel (BUILD_LIST Tier 2)
 

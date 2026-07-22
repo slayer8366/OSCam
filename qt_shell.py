@@ -3,12 +3,14 @@ together: exposure panel, capture-enforces-lock, burst/HDR walkthroughs with
 a real worker thread, the ruler, and calibration integration all built).
 
 Session/profile management (Session, load_profile/save_profile, new_session_dir,
-_dump_meta) is baked directly into this file rather than a separate capture.py:
-it is generic workflow code (session folders, metadata, profile persistence),
-not sensor-specific, so it lives with the GUI that is its only remaining
-caller rather than as its own module. camera_backend.py stays the place for
-anything that IS sensor-specific (IMX477 resolutions, lores format, ON-RIG
-lines).
+record_capture/record_burst/record_hdr, ...) lives in provenance.py (BUILD_LIST
+Tier 3 item 1, phase 1) -- generic workflow code (session folders, metadata,
+profile persistence), not sensor-specific, so it no longer needs to sit inside
+this GUI file just because this was its only caller at the time it got baked
+in from the old capture.py. Reached here as provenance.X throughout, never a
+`from provenance import X` (see provenance.py's own comment on OUT_ROOT/
+PROFILE_PATH for why). camera_backend.py stays the place for anything that IS
+sensor-specific (IMX477 resolutions, lores format, ON-RIG lines).
 
 The tick is the whole loop: pull the most recent lores frame from the seam, run
 the meter on it, render the box and bar into an RGBA overlay, hand that overlay
@@ -63,6 +65,20 @@ try:
 except ImportError:                 # run directly as a script, not as a package module
     from camera_backend import FakeCamera, LORES_RES, FULL_RES, PREVIEW_RES
     from focus import FocusMeter, FocusBox, FocusState, BarState, score_capture_sharpness
+
+# provenance.py: session creation, per-capture sidecar writing, and the
+# profile store (BUILD_LIST Tier 3 item 1, phase 1) -- pulled out of this
+# file into its own module. Not optional like the guarded imports below:
+# this file's own capture flow cannot function without it, so no
+# try/except-to-None fallback the way stacks/calibrate/measure/gallery get;
+# only the package-vs-script import shape varies. Reference OUT_ROOT/
+# PROFILE_PATH ONLY as provenance.OUT_ROOT/provenance.PROFILE_PATH -- see
+# provenance.py's own comment on those two names for why a `from` import
+# would silently break render_check()'s test-isolation mutation of them.
+try:
+    from . import provenance
+except ImportError:
+    import provenance
 
 # stacks.py's tagging (apply_tag/output_name): the pure, camera-free half of
 # z-stack support (section 1's own seam rule -- this is exactly the kind of
@@ -133,12 +149,14 @@ except ImportError:
 # a green-plane number.
 GREEN_PLANE_RES = (FULL_RES[0] // 2, FULL_RES[1] // 2)
 
-# --- Session and profile management (from capture.py, now baked in) --------
+# --- Session and profile management -----------------------------------
 # Generic capture workflow: session folders, profile persistence, metadata
-# recording. Not IMX477-specific; reusable with any camera sensor.
+# recording. Not IMX477-specific; reusable with any camera sensor. Moved to
+# provenance.py (BUILD_LIST Tier 3 item 1, phase 1) -- OUT_ROOT/PROFILE_PATH/
+# Session/load_profile/save_profile/record_capture/record_burst/record_hdr
+# all live there now; reference them as provenance.X, never a `from` import
+# (see provenance.py's own comment on OUT_ROOT/PROFILE_PATH for why).
 
-OUT_ROOT = Path.home() / "captures"
-PROFILE_PATH = Path.home() / "imx" / "profile.json"
 DEFAULT_BURST = 8
 MAX_BURST = 10
 DEFAULT_STOPS = [-2.0, -1.0, 0.0, 1.0, 2.0]
@@ -148,9 +166,6 @@ PROCESSOR = Path(__file__).resolve().parent / "hdr_from_session.py"
 # menu action wrapping that existing tool, invoked the same by-absolute-
 # path subprocess pattern PROCESSOR already uses above.
 DEBAYER_TOOL = Path(__file__).resolve().parent / "debayer.py"
-FULL_MODE_LBL = "4056:3040:12:U"
-DENOISE = "off"
-SHARPNESS = "0"
 
 # --- THEMES (BUILD_LIST Tier 1 item 3) --------------------------------------
 # Deliberately open-ended, not a fixed Dark/Light pair: the user plans to
@@ -208,74 +223,6 @@ def load_theme_stylesheet(qss_path):
     return text.replace("{{ASSETS}}", str(assets_dir))
 
 
-def load_profile():
-    """Load camera profile (exposure, gains, WB) from disk if it exists."""
-    if PROFILE_PATH.exists():
-        return json.loads(PROFILE_PATH.read_text())
-    return None
-
-
-def save_profile(locked):
-    """Persist camera profile (exposure, gains, WB) to disk. Atomic
-    (temp file, then os.replace), same pattern save_pref/save_calibration/
-    save_mark already use -- this was the one store writer in the file
-    still using a direct write_text, and it cost real data: two overlapping
-    --render-check processes racing a direct write against a read corrupted
-    the actual on-disk hardware profile with fake FakeCamera-probed values
-    during this session's own testing (caught via git diff, not something
-    the render-check suite itself would ever catch, since nothing here
-    exercises concurrent writers)."""
-    PROFILE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    tmp = PROFILE_PATH.with_suffix(".tmp")
-    tmp.write_text(json.dumps(locked, indent=2))
-    os.replace(tmp, PROFILE_PATH)
-
-
-def _dump_meta(path, md):
-    """Write capture metadata to a JSON sidecar file."""
-    def _j(o):
-        try:
-            json.dumps(o)
-            return o
-        except TypeError:
-            return str(o)
-    path.write_text(json.dumps({k: _j(v) for k, v in md.items()}, indent=2))
-
-
-def new_session_dir(root=None):
-    """Create a new timestamped session directory for captures."""
-    root = Path(root) if root else OUT_ROOT
-    ts = datetime.strftime(datetime.now(), "%Y-%m-%d_%H%M%S")
-    d = root / ts
-    n = 1
-    while d.exists():
-        d = root / "{}_{}".format(ts, n)
-        n += 1
-    d.mkdir(parents=True, exist_ok=True)
-    return ts, d
-
-
-def new_zstack_root_dir(root=None):
-    """Create a new timestamped z-stack root directory (the parent folder for
-    one stack run's plane_0/plane_1/... sessions) -- same collision-avoiding
-    timestamp loop as new_session_dir, just named zstack_<timestamp> instead
-    of <timestamp>, so it never collides with an ordinary session dir either.
-    The returned ts doubles as the stack's own stack_id (stacks.apply_tag's
-    tag value): the on-disk folder name and the tag it holds visibly match,
-    rather than inventing a second ID scheme."""
-    root = Path(root) if root else OUT_ROOT
-    ts = datetime.strftime(datetime.now(), "%Y-%m-%d_%H%M%S")
-    ts_n = ts
-    d = root / "zstack_{}".format(ts_n)
-    n = 1
-    while d.exists():
-        ts_n = "{}_{}".format(ts, n)
-        d = root / "zstack_{}".format(ts_n)
-        n += 1
-    d.mkdir(parents=True, exist_ok=True)
-    return ts_n, d
-
-
 def default_green_output_path(raw_path):
     """Where a green-plane extraction would land with no explicit output
     given -- <raw's own dir>/<raw's own stem>_green.tif. Matches
@@ -286,84 +233,6 @@ def default_green_output_path(raw_path):
     rule, not two."""
     raw_path = Path(raw_path)
     return raw_path.with_suffix("").parent / (raw_path.stem + "_green.tif")
-
-
-class Session:
-    """Session state: captures directory, locked settings, and session.json log."""
-
-    def __init__(self, root, locked, display_flags, session_dir=None):
-        self.root = Path(root)
-        self.locked = dict(locked)
-        self.display_flags = list(display_flags)
-        if session_dir is not None:
-            # Explicit directory (e.g. a z-stack's own plane_N naming)
-            # instead of the usual auto-timestamped one -- ts is just
-            # whatever that directory is actually called.
-            self.dir = Path(session_dir)
-            self.dir.mkdir(parents=True, exist_ok=True)
-            self.ts = self.dir.name
-        else:
-            self.ts, self.dir = new_session_dir(root)
-        self.captures = []
-        self.write()
-
-    def write(self):
-        """Write session.json with current state."""
-        payload = {
-            "session_timestamp": self.ts,
-            "tool": "qt_shell.py",
-            "mode": FULL_MODE_LBL,
-            "denoise": DENOISE,
-            "sharpness": SHARPNESS,
-            "display_flags": self.display_flags,
-            "captures": self.captures,
-        }
-        (self.dir / "session.json").write_text(json.dumps(payload, indent=2))
-
-    def existing(self, prefixes):
-        """Files already present for any of these prefixes."""
-        hits = []
-        for p in prefixes:
-            hits += list(self.dir.glob("{}frame_*".format(p)))
-        return hits
-
-    def clear(self, prefixes, kinds):
-        """Remove files for these prefixes and capture entries of these kinds."""
-        removed = 0
-        for f in self.existing(prefixes):
-            f.unlink()
-            removed += 1
-        self.captures = [c for c in self.captures if c.get("kind") not in kinds]
-        self._reindex()
-        self.write()
-        return removed
-
-    def _reindex(self):
-        for i, c in enumerate(self.captures):
-            c["index"] = i
-
-    def record(self, entry):
-        """Record a new capture entry to the session."""
-        entry["timestamp"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        entry["locked_settings"] = dict(self.locked)
-        self.captures.append(entry)
-        self._reindex()
-        self.write()
-        return entry["index"]
-
-    def has_captures(self):
-        return len(self.captures) > 0
-
-    def close(self):
-        """Remove the folder iff nothing was captured (only session.json on disk)."""
-        if self.has_captures():
-            return False
-        others = [p for p in self.dir.iterdir() if p.name != "session.json"]
-        if others:
-            return False
-        (self.dir / "session.json").unlink()
-        self.dir.rmdir()
-        return True
 
 
 def build_display_flags(args):
@@ -397,7 +266,7 @@ def build_display_flags(args):
 # camera_backend.py (start_recording/stop_recording/is_recording, plus their
 # FakeCamera/Picamera2Camera implementations). Nothing else depends on any
 # of it existing.
-VIDEO_OUT_ROOT = OUT_ROOT / "video"
+VIDEO_OUT_ROOT = provenance.OUT_ROOT / "video"
 
 try:
     from PyQt5.QtWidgets import (QApplication, QMainWindow, QLabel, QWidget,
@@ -813,76 +682,6 @@ def save_pref(key, value):
         os.replace(tmp, PREFS_PATH)
     except Exception:
         pass
-
-
-# ---------------------------------------------------------------------------
-# Recording a shot (pure: no Qt, so the record path is testable off-rig)
-# ---------------------------------------------------------------------------
-def record_capture(session, result):
-    """Persist a CaptureResult into a Session: write the metadata sidecar next to
-    the raw and append a 'snap' record. The real exposure and gain of the
-    auto-exposed shot come off the metadata, since the GUI is not locking them.
-    Returns the capture index. Qt-free on purpose, so the whole record-a-shot
-    flow runs under --render-check with the FakeCamera."""
-    sidecar = result.raw.parent / (result.raw.stem + ".meta.json")
-    _dump_meta(sidecar, result.metadata or {})
-    md = result.metadata or {}
-    files = [result.raw.name] + ([result.preview.name] if result.preview else [])
-    return session.record({
-        "kind": "snap",
-        "note": "",
-        "file_prefix": "snap_",
-        "frame_count": 1,
-        "files": files,
-        "actual_us": md.get("ExposureTime"),
-        "actual_s": (md.get("ExposureTime") / 1e6) if md.get("ExposureTime") else None,
-        "analogue_gain": md.get("AnalogueGain"),
-    })
-
-
-def record_burst(session, kind, file_prefix, result, note=""):
-    """Persist a capture_burst() result into a Session: write every frame's
-    .meta.json sidecar, then ONE session-level record for the whole burst (one
-    session.record call per burst, not per frame). `result` is capture_burst's
-    return value: {"actual_us": ..., "frames": [CaptureResult, ...]}. Returns the
-    capture index. Qt-free, so this runs under --render-check with FakeCamera."""
-    for i, frame in enumerate(result["frames"]):
-        sidecar = frame.raw.parent / (frame.raw.stem + ".meta.json")
-        _dump_meta(sidecar, frame.metadata or {})
-    actual = result["actual_us"]
-    return session.record({
-        "kind": kind,
-        "note": note,
-        "file_prefix": file_prefix,
-        "frame_count": len(result["frames"]),
-        "requested_us": actual,
-        "actual_us": actual,
-        "actual_s": (actual / 1e6) if actual else None,
-    })
-
-
-def record_hdr(session, sci_levels, dark_levels, note=""):
-    """Persist an HDR bracket (the two capture_bracket_phase results, science then
-    dark) into a Session: write every frame's sidecar across both phases, then
-    ONE 'hdr' record carrying both level lists, mirroring do_hdr exactly. The
-    CaptureResult objects are stripped out of the level dicts before they go into
-    session.json (only JSON-serializable fields belong there; each frame's full
-    metadata already went into its own sidecar). Returns the capture index."""
-    def _write_sidecars_and_strip(levels):
-        stripped = []
-        for lv in levels:
-            for frame in lv["frames"]:
-                sidecar = frame.raw.parent / (frame.raw.stem + ".meta.json")
-                _dump_meta(sidecar, frame.metadata or {})
-            stripped.append({k: v for k, v in lv.items() if k != "frames"})
-        return stripped
-
-    sci_clean = _write_sidecars_and_strip(sci_levels)
-    dark_clean = _write_sidecars_and_strip(dark_levels)
-    return session.record({
-        "kind": "hdr", "note": note,
-        "levels": sci_clean, "dark_levels": dark_clean,
-    })
 
 
 # ---------------------------------------------------------------------------
@@ -1521,12 +1320,12 @@ if _HAVE_QT:
             # Bring up locked at launch: reuse the CLI's profile.json if present,
             # else meter once. Either way the panel starts consistent with the lock.
             startup_locked = None
-            if load_profile is not None:
-                startup_locked = load_profile()
+            if provenance.load_profile is not None:
+                startup_locked = provenance.load_profile()
             if startup_locked is None:
                 startup_locked = self.camera.probe()
-                if save_profile is not None:
-                    save_profile(startup_locked)
+                if provenance.save_profile is not None:
+                    provenance.save_profile(startup_locked)
                 self.exp_status.setText("Probed at startup:\nShutter {} - Gain {:.2f}".format(
                     fmt_shutter_fraction(startup_locked["shutter_us"]),
                     startup_locked["analogue_gain"]))
@@ -2221,8 +2020,8 @@ if _HAVE_QT:
                 self.exp_status.setText("reprobe failed: {}".format(result))
                 return
             self.camera.apply_exposure_lock(result)
-            if save_profile is not None:
-                save_profile(result)
+            if provenance.save_profile is not None:
+                provenance.save_profile(result)
             self._apply_panel_values(result["shutter_us"], result["analogue_gain"],
                                      result["awb_red_gain"], result["awb_blue_gain"],
                                      False, False)
@@ -2297,8 +2096,7 @@ if _HAVE_QT:
                 return
             if self._session is None:
                 # Open a session on the first shot: a timestamped folder under
-                # OUT_ROOT via Session (both baked into this file; see the
-                # "Session and profile management" section above).
+                # provenance.OUT_ROOT via provenance.Session (see provenance.py).
                 # locked_settings snapshots profile.json (or {} if none); the actual
                 # per-shot exposure enforced below is recorded per-capture instead,
                 # via record_capture's metadata, not here.
@@ -2378,7 +2176,7 @@ if _HAVE_QT:
                                          "capture failed: {}".format(result))
                 return
             try:
-                idx = record_capture(self._session, result)
+                idx = provenance.record_capture(self._session, result)
                 self._set_capture_status(
                     "saved {}".format(result.raw.name),
                     "saved {}  (session {}, capture #{})".format(
@@ -2511,7 +2309,8 @@ if _HAVE_QT:
         # --- burst / HDR walkthroughs (arm-then-fire on the same Capture control)
         def _ensure_session(self):
             if self._session is None:
-                self._session = Session(OUT_ROOT, load_profile() or {}, self._display_flags)
+                self._session = provenance.Session(
+                    provenance.OUT_ROOT, provenance.load_profile() or {}, self._display_flags)
                 self._snap_counter = 0   # fresh per session; see _start_capture
 
         # --- shared dialog shape (consistent, flat command dialogs) ---
@@ -2703,7 +2502,7 @@ if _HAVE_QT:
                 return
             if self.camera.is_recording():
                 return
-            stack_id, root = new_zstack_root_dir(OUT_ROOT)
+            stack_id, root = provenance.new_zstack_root_dir(provenance.OUT_ROOT)
             self._zstack = {"root": root, "stack_id": stack_id, "next_plane": 0}
             # Mutual exclusion, mirroring how Record disables capture_kind_
             # combo while recording (_on_record_start_finished): nothing else
@@ -2723,8 +2522,9 @@ if _HAVE_QT:
                 return
             plane = self._zstack["next_plane"]
             plane_dir = self._zstack["root"] / "plane_{}".format(plane)
-            plane_session = Session(self._zstack["root"], load_profile() or {},
-                                    self._display_flags, session_dir=plane_dir)
+            plane_session = provenance.Session(
+                self._zstack["root"], provenance.load_profile() or {},
+                self._display_flags, session_dir=plane_dir)
             self._capturing = True
             self._enforce_exposure_lock()
             self._set_capture_controls(
@@ -2736,7 +2536,7 @@ if _HAVE_QT:
             def _worker():
                 try:
                     result = self.camera.capture_burst(plane_session.dir, "science_", 1)
-                    idx = record_burst(plane_session, "science", "science_", result)
+                    idx = provenance.record_burst(plane_session, "science", "science_", result)
                     _stacks.apply_tag(plane_session.captures, idx,
                                       self._zstack["stack_id"], plane)
                     plane_session.write()
@@ -3063,7 +2863,7 @@ if _HAVE_QT:
                             session.dir, "dark_", armed["nd"], base_us, ordered)
                     finally:
                         self.camera.exit_still_mode(base_us)
-                    idx = record_hdr(session, armed["sci_levels"], dark_levels)
+                    idx = provenance.record_hdr(session, armed["sci_levels"], dark_levels)
                     sci_n = sum(lv["frame_count"] for lv in armed["sci_levels"])
                     dark_n = sum(lv["frame_count"] for lv in dark_levels)
                     return {"kind": "hdr", "phase": "dark", "index": idx,
@@ -3072,7 +2872,7 @@ if _HAVE_QT:
             else:
                 prefix = armed["prefix"]
                 result = self.camera.capture_burst(session.dir, prefix, armed["n"])
-                idx = record_burst(session, kind, prefix, result)
+                idx = provenance.record_burst(session, kind, prefix, result)
                 if kind == "science":
                     # Post-capture QC (section 13): flat/dark are calibration
                     # frames, never stack planes (see _on_tag_stack's own
@@ -3145,7 +2945,7 @@ if _HAVE_QT:
 
             def _worker():
                 try:
-                    idx = record_hdr(self._session, sci_levels, [])
+                    idx = provenance.record_hdr(self._session, sci_levels, [])
                     result = {"kind": "hdr", "phase": "dark", "index": idx,
                              "summary": "science-only (dark phase skipped)"}
                 except Exception as exc:
@@ -3234,7 +3034,7 @@ if _HAVE_QT:
             # and gone).
             if self._capturing:
                 return
-            dlg = ProcessSessionDialog(OUT_ROOT, self._display_flags, self)
+            dlg = ProcessSessionDialog(provenance.OUT_ROOT, self._display_flags, self)
             if dlg.exec_() != QDialog.Accepted:
                 return
             picked = dlg.selected()
@@ -3250,7 +3050,7 @@ if _HAVE_QT:
             # mean reprocessing just to tidy up an already-processed session).
             if self._capturing:
                 return
-            dlg = ArchiveSessionDialog(OUT_ROOT, self)
+            dlg = ArchiveSessionDialog(provenance.OUT_ROOT, self)
             if dlg.exec_() != QDialog.Accepted:
                 return
             session_dir = dlg.selected_session_dir()
@@ -3270,7 +3070,7 @@ if _HAVE_QT:
                     "processing wizard unavailable",
                     "process_wizard.py not found beside this file, skipped")
                 return
-            wiz = _process_wizard.ProcessWizard(OUT_ROOT, self)
+            wiz = _process_wizard.ProcessWizard(provenance.OUT_ROOT, self)
             wiz.exec_()
 
         def _open_green_extraction(self):
@@ -3286,7 +3086,7 @@ if _HAVE_QT:
                     "green extraction unavailable",
                     "gallery.py not found beside this file, skipped")
                 return
-            dlg = _gallery.GalleryPickDialog(OUT_ROOT, self)
+            dlg = _gallery.GalleryPickDialog(provenance.OUT_ROOT, self)
             if dlg.exec_() != QDialog.Accepted:
                 return
             paths = dlg.selected_paths()
@@ -3352,7 +3152,7 @@ if _HAVE_QT:
                     "gallery unavailable",
                     "gallery.py not found beside this file, skipped")
                 return
-            dlg = _gallery.GalleryBrowseWindow(OUT_ROOT, self)
+            dlg = _gallery.GalleryBrowseWindow(provenance.OUT_ROOT, self)
             dlg.exec_()
 
         def _offer_archive_raws(self, session_dir):
@@ -3623,10 +3423,13 @@ def render_check():
     # specific reproducible trigger. Not wrapped in try/finally: a failed
     # assertion here ends the process immediately anyway (this is a one-shot
     # script, not a long-running service), so there is no real window where
-    # a restore would matter and one didn't happen.
-    global PROFILE_PATH
-    _orig_profile_path_for_render_check = PROFILE_PATH
-    PROFILE_PATH = Path("/tmp/zynergy_render_check_profile.json")
+    # a restore would matter and one didn't happen. Module-attribute
+    # assignment on provenance, not a `global` rebind here -- qt_shell.py no
+    # longer owns this name, and a `global` rebind would only ever shadow a
+    # local, never reach the real provenance.PROFILE_PATH every consumer
+    # (this file, gallery.py, wizard_pages.py) actually reads.
+    _orig_profile_path_for_render_check = provenance.PROFILE_PATH
+    provenance.PROFILE_PATH = Path("/tmp/zynergy_render_check_profile.json")
 
     box = FocusBox.centered(0.5, 0.4)
     bar = BarState(fill=0.5, current=0.02, hi=0.03, lo=0.0, at_peak=False, settled=True)
@@ -3824,93 +3627,34 @@ def render_check():
         "locked values drifted from the metered snapshot taken just before the lock"
     print("capture-lock check PASS: metered snapshot -> apply_exposure_lock -> auto off, values held")
 
-    # record_capture: Qt-free, exercised against a FakeCamera capture straight off
-    # the async seam, into a throwaway Session.
-    # record_capture: Qt-free, exercised against a FakeCamera capture straight off
-    # the async seam, into a throwaway Session (Session is baked into this file;
-    # see the "Session and profile management" section above).
-    import shutil
-    from camera_backend import CaptureResult
-    tmp_root = Path("/tmp/zynergy_render_check_captures")
-    if tmp_root.exists():
-        shutil.rmtree(tmp_root)
-    session = Session(tmp_root, {}, [])
-    cam = FakeCamera(async_delay_s=0.0)
-    done = threading.Event()
-    got = {}
-
-    def _on_done(result):
-        got["result"] = result
-        done.set()
-
-    cam.capture_still_async(session.dir, "snap_frame_0000", _on_done)
-    done.wait(timeout=2.0)
-    idx = record_capture(session, got["result"])
-    assert idx == 0, "first recorded capture should be index 0"
-    assert session.captures[0]["kind"] == "snap", "record_capture did not record a snap"
-    sidecar = got["result"].raw.parent / (got["result"].raw.stem + ".meta.json")
-    assert sidecar.exists(), "record_capture did not write a .meta.json sidecar"
-    print("record_capture check PASS: sidecar written, session record appended")
-
-    # record_burst / record_hdr: the two new burst-wiring helpers, exercised
-    # against FakeCamera.capture_burst / capture_bracket_phase directly (no
-    # Qt), so the whole record path for all four burst kinds is covered
-    # off-rig before ever touching a PyQt5 widget.
-    from camera_backend import CaptureResult as _CR   # noqa: F401 (already imported above)
-    burst_root = Path("/tmp/zynergy_render_check_burst")
-    if burst_root.exists():
-        shutil.rmtree(burst_root)
-    bsession = Session(burst_root, {}, [])
-    bcam = FakeCamera()
-
-    flat_result = bcam.capture_burst(bsession.dir, "flat_", 3, shutter_us=5000)
-    flat_idx = record_burst(bsession, "flat", "flat_", flat_result)
-    assert flat_idx == 0, "first burst record should be index 0"
-    rec = bsession.captures[0]
-    assert rec["kind"] == "flat" and rec["frame_count"] == 3, \
-        "record_burst did not record a 3-frame flat"
-    for i in range(3):
-        sidecar = bsession.dir / "flat_frame_{:04d}.meta.json".format(i)
-        assert sidecar.exists(), "record_burst missing sidecar for frame {}".format(i)
-
-    bcam.enter_still_mode()
-    sci = bcam.capture_bracket_phase(bsession.dir, "", 2, 10_000, [-1.0, 0.0, 1.0])
-    dark = bcam.capture_bracket_phase(bsession.dir, "dark_", 2, 10_000, [-1.0, 0.0, 1.0])
-    bcam.exit_still_mode(8000)
-    hdr_idx = record_hdr(bsession, sci, dark)
-    assert hdr_idx == 1, "HDR should be the second record in this session"
-    hdr_rec = bsession.captures[1]
-    assert hdr_rec["kind"] == "hdr", "record_hdr did not record kind=hdr"
-    assert len(hdr_rec["levels"]) == 3 and len(hdr_rec["dark_levels"]) == 3, \
-        "record_hdr level counts off"
-    assert "frames" not in hdr_rec["levels"][0], \
-        "record_hdr must strip CaptureResult objects before writing session.json"
-    for lv in sci:
-        for i in range(2):
-            sidecar = bsession.dir / "{}frame_{:04d}.meta.json".format(lv["file_prefix"], i)
-            assert sidecar.exists(), "record_hdr missing a science sidecar"
-    json.loads((bsession.dir / "session.json").read_text())   # must be JSON-serializable
-    print("record_burst / record_hdr check PASS: sidecars written, session records "
-          "appended, HDR level dicts JSON-clean")
+    # record_capture/record_burst/record_hdr mechanics (sidecar writing,
+    # session-record shape, HDR level-dict stripping) are now proven by
+    # provenance.py's own --render-check, not re-proven here -- see
+    # HANDOFF.md's provenance.py extraction note. What's left below reuses
+    # provenance.Session/record_burst purely as infrastructure to build
+    # fixture sessions for the processing-wizard helpers that DO stay in
+    # this file (list_sessions/load_session_json/processable_captures/
+    # capture_correction_status/archive_session_raws).
 
     # Processing wizard pure helpers: list_sessions/load_session_json/
     # processable_captures/capture_correction_status, exercised against
-    # the same flat+hdr session just built above, plus a second session
-    # to confirm list_sessions finds multiple and sorts most-recent-first.
+    # a flat+science session built here as fixture data, plus a second
+    # session to confirm list_sessions finds multiple and sorts
+    # most-recent-first.
     wiz_root = Path("/tmp/zynergy_render_check_wizard")
     if wiz_root.exists():
         shutil.rmtree(wiz_root)
-    s_old = Session(wiz_root, {}, [])
+    s_old = provenance.Session(wiz_root, {}, [])
     wcam = FakeCamera()
     old_flat = wcam.capture_burst(s_old.dir, "flat_", 2, shutter_us=5000)
-    record_burst(s_old, "flat", "flat_", old_flat)
+    provenance.record_burst(s_old, "flat", "flat_", old_flat)
     old_sci = wcam.capture_burst(s_old.dir, "science_", 2)
-    record_burst(s_old, "science", "science_", old_sci)
+    provenance.record_burst(s_old, "science", "science_", old_sci)
     import time as _time
     _time.sleep(1.05)   # session dirs are timestamp-named; force a distinct, later name
-    s_new = Session(wiz_root, {}, [])
+    s_new = provenance.Session(wiz_root, {}, [])
     new_sci = wcam.capture_burst(s_new.dir, "science_", 2)
-    record_burst(s_new, "science", "science_", new_sci)
+    provenance.record_burst(s_new, "science", "science_", new_sci)
 
     found = list_sessions(wiz_root)
     assert len(found) == 2, "list_sessions should find both session dirs"
@@ -3969,7 +3713,7 @@ def render_check():
             shutil.rmtree(tag_root)
         tcam = FakeCamera(async_delay_s=0.0)
         win = FocusPreviewWindow(tcam, FocusMeter())
-        win._session = Session(tag_root, {}, [])
+        win._session = provenance.Session(tag_root, {}, [])
         infos = []
         win._flat_information = lambda title, text: infos.append((title, text))
 
@@ -3983,7 +3727,7 @@ def render_check():
             tcam.capture_still_async(win._session.dir, stem,
                                      lambda r: (g.__setitem__("r", r), d.set()))
             d.wait(timeout=5.0)
-            idx = record_capture(win._session, g["r"])
+            idx = provenance.record_capture(win._session, g["r"])
             win._session.captures[idx]["kind"] = "science"
             win._session.write()
             return idx
@@ -4095,9 +3839,13 @@ def render_check():
         zstack_reset_calls = []
         real_zstack_reset = zwin.meter.reset_field
         zwin.meter.reset_field = lambda: (zstack_reset_calls.append(1), real_zstack_reset())
-        global OUT_ROOT
-        _orig_out_root = OUT_ROOT
-        OUT_ROOT = zroot
+        # Module-attribute assignment on provenance, not a `global` rebind --
+        # same reasoning as the PROFILE_PATH isolation at the top of this
+        # function: _start_zstack/_ensure_session/etc. all read
+        # provenance.OUT_ROOT by attribute, so this is what actually
+        # redirects them during the test.
+        _orig_out_root = provenance.OUT_ROOT
+        provenance.OUT_ROOT = zroot
         try:
             # Guard: starting while a capture is already in flight is a no-op.
             zwin._capturing = True
@@ -4233,7 +3981,7 @@ def render_check():
             assert zwin._zstack is None
             called = []
             zwin._capture_zstack_plane = lambda: called.append(1)
-            zwin._session = Session(zroot / "plain", {}, [])
+            zwin._session = provenance.Session(zroot / "plain", {}, [])
             zwin._start_capture()
             _pump_until_idle()
             assert not called, \
@@ -4502,9 +4250,9 @@ def render_check():
         if qc_root.exists():
             shutil.rmtree(qc_root)
         qcam = FakeCamera(async_delay_s=0.0)
-        qc_session = Session(qc_root, {}, [])
+        qc_session = provenance.Session(qc_root, {}, [])
         qc_result = qcam.capture_burst(qc_session.dir, "science_", 2)
-        qc_idx = record_burst(qc_session, "science", "science_", qc_result)
+        qc_idx = provenance.record_burst(qc_session, "science", "science_", qc_result)
         assert "sharpness_score" not in qc_session.captures[qc_idx], \
             "record_burst itself must not invent a score -- only " \
             "_score_capture_sharpness (called separately, after) does"
@@ -4566,7 +4314,7 @@ def render_check():
                   "a second trigger reuses the existing window rather than "
                   "opening a duplicate")
 
-    PROFILE_PATH = _orig_profile_path_for_render_check
+    provenance.PROFILE_PATH = _orig_profile_path_for_render_check
 
 
 if __name__ == "__main__":

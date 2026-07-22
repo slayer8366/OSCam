@@ -55,9 +55,15 @@ Dark/Light pair) are all done. That's every Tier 1 item. Tier 3 item 4
 (processing wizard overhaul) is done — see `process_wizard.py` below.
 Tier 3 item 6 (the z-stack one-click aid, the thing the user actually
 asked for) is also done. **Tier 2 (full screen mode with a floating
-panel) is now also done** — see the note below. **In progress:
-`provenance.py` extraction, phase 1 (Tier 3 item 1).** Plan approved, not
-yet built. Both Tier 0 investigations are also now done (see their own
+panel) is now also done** — see the note below. **`provenance.py`
+extraction, phase 1 (Tier 3 item 1), is now done**: `OUT_ROOT`,
+`PROFILE_PATH`, `load_profile`/`save_profile`, `_dump_meta`,
+`new_session_dir`/`new_zstack_root_dir`, `Session`, `record_capture`/
+`record_burst`/`record_hdr` all live in `provenance.py`; `qt_shell.py`,
+`gallery.py`, `wizard_pages.py`, and `process_wizard.py` all reference
+them as `provenance.X` (never a `from provenance import X` — see
+`provenance.py`'s own comment on why). All five modules' own
+`--render-check` pass. Both Tier 0 investigations are also now done (see their own
 note below) — the second one (CA wizard's live-capture path still
 building its own independent camera) is what still gates the Measure-menu
 reorg (item 3).

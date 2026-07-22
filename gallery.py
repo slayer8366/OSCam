@@ -59,13 +59,23 @@ try:
 except ImportError:
     import pixel_hash as _pixel_hash
 
+# provenance.py's OUT_ROOT: safe as a top-level import (provenance.py sits at
+# the base of the import graph, stdlib only, imports nothing back into this
+# file), unlike qt_shell below. Reference as provenance.OUT_ROOT, never a
+# `from` import -- see provenance.py's own comment on why.
+try:
+    from . import provenance
+except ImportError:
+    import provenance
+
 
 def _lazy_qt_shell():
-    """qt_shell.py's list_sessions/load_session_json/OUT_ROOT, imported
-    lazily -- qt_shell.py imports this module (for GalleryBrowseWindow), so
-    a top-level import back into it here would be circular. Same trick
+    """qt_shell.py's list_sessions/load_session_json, imported lazily --
+    qt_shell.py imports this module (for GalleryBrowseWindow), so a
+    top-level import back into it here would be circular. Same trick
     wizard_pages.py already uses for the same reason (see its own
-    _lazy_qt_shell)."""
+    _lazy_qt_shell). OUT_ROOT no longer needs this: see provenance import
+    above."""
     try:
         from . import qt_shell as _qt_shell
     except ImportError:
@@ -131,10 +141,10 @@ def list_gallery_entries(out_root=None):
     """Every capture across every session under out_root, most recent
     session first (list_sessions' own order), as GalleryEntry tuples.
     Filesystem/JSON metadata only -- no raw decode, so this stays instant
-    even over a large captures tree. Defaults to qt_shell.py's own OUT_ROOT
-    (~/captures) when out_root is None."""
+    even over a large captures tree. Defaults to provenance.py's own
+    OUT_ROOT (~/captures) when out_root is None."""
     qt_shell = _lazy_qt_shell()
-    out_root = Path(out_root) if out_root is not None else qt_shell.OUT_ROOT
+    out_root = Path(out_root) if out_root is not None else provenance.OUT_ROOT
     entries = []
     for session_dir in qt_shell.list_sessions(out_root):
         session_json = qt_shell.load_session_json(session_dir)

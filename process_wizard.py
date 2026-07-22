@@ -49,6 +49,11 @@ try:
 except ImportError:
     import hdr_from_session as _hdr_from_session
 
+try:
+    from . import provenance
+except ImportError:
+    import provenance
+
 # hdr_from_session.py's own default --wl (sensor white level, scaled to the
 # 16-bit container frame_average.py writes) -- reused, not reinvented, so a
 # master this wizard produces is interpreted with the same assumption
@@ -154,10 +159,10 @@ def run_pipeline(groups, out_dir, mode, gains=None):
 
 def new_output_dir(out_root=None):
     """A fresh timestamped folder under out_root/processed, collision-
-    avoiding the same way qt_shell.new_session_dir already does (mirrored,
-    not imported, to keep this module's only qt_shell dependency the lazy
-    one gallery.py already established for OUT_ROOT)."""
-    out_root = Path(out_root) if out_root is not None else _gallery._lazy_qt_shell().OUT_ROOT
+    avoiding the same way provenance.new_session_dir already does (mirrored,
+    not imported, since this folder lives under processed/, not among the
+    session dirs new_session_dir itself mints)."""
+    out_root = Path(out_root) if out_root is not None else provenance.OUT_ROOT
     processed_root = out_root / "processed"
     processed_root.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y-%m-%d_%H%M%S")

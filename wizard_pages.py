@@ -35,20 +35,27 @@ try:
 except ImportError:
     _HAVE_PICAMERA2 = False
 
+# provenance.py's new_session_dir: safe as a top-level import (provenance.py
+# sits at the base of the import graph, stdlib only, imports nothing back
+# into this file), unlike qt_shell below.
+try:
+    from . import provenance
+except ImportError:
+    import provenance
+
 ADHOC_OUT_ROOT = Path.home() / "captures" / "adhoc"
 
 
 def _lazy_qt_shell():
-    """qt_shell.py's session/profile helpers (formerly capture.py, now baked
-    into qt_shell.py -- see qt_shell.py's own module docstring), imported
-    lazily rather than at module load time: qt_shell.py itself imports
-    calibrate.py, and calibrate.py imports this module for ImageSourcePage,
-    so importing qt_shell.py here at load time would be a circular import
-    partway through calibrate.py's own load. Deferred to first real use (well
-    after every module involved has finished loading), the cycle never
-    actually closes. Same reasoning, same pattern as _overlay_helpers()
-    below -- kept as two functions rather than one shared one so each stays
-    a one-line change if either's import set ever diverges."""
+    """qt_shell.py's render_overlay_into/state_color (formerly capture.py,
+    now baked into qt_shell.py -- see qt_shell.py's own module docstring),
+    imported lazily rather than at module load time: qt_shell.py itself
+    imports calibrate.py, and calibrate.py imports this module for
+    ImageSourcePage, so importing qt_shell.py here at load time would be a
+    circular import partway through calibrate.py's own load. Deferred to
+    first real use (well after every module involved has finished loading),
+    the cycle never actually closes. new_adhoc_dir no longer needs this: see
+    provenance import above."""
     try:
         from . import qt_shell as _qt_shell
     except ImportError:
@@ -58,17 +65,11 @@ def _lazy_qt_shell():
 
 def new_adhoc_dir(root=None):
     """A fresh timestamped folder for one ad hoc wizard capture, via
-    qt_shell.py's own new_session_dir (reused, not reimplemented) so naming
-    matches every other capture folder in the project. Raises RuntimeError if
-    qt_shell.py is not importable -- its collision-avoiding timestamp logic is
-    not worth re-deriving here."""
-    try:
-        qt_shell = _lazy_qt_shell()
-    except ImportError:
-        raise RuntimeError("qt_shell.py could not be imported; needed for new_session_dir")
+    provenance.py's own new_session_dir (reused, not reimplemented) so
+    naming matches every other capture folder in the project."""
     root = Path(root) if root is not None else ADHOC_OUT_ROOT
     root.mkdir(parents=True, exist_ok=True)
-    _ts, d = qt_shell.new_session_dir(root)
+    _ts, d = provenance.new_session_dir(root)
     return d
 
 
