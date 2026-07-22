@@ -5,6 +5,60 @@ dump — each entry names the commit(s) it corresponds to for traceability.
 See `HANDOFF.md` for what a fresh agent needs to know before working here;
 this file is the historical record of what happened and why.
 
+## 2026-07-22
+
+### Added full screen mode with a floating panel (BUILD_LIST Tier 2)
+
+The build list flagged this as blocked on a design decision (auto-hide on
+idle vs. an explicit toggle key vs. an always-visible translucent
+overlay). Discussed it with the user: explicit toggle key, deliberately —
+a translucent overlay would permanently obscure part of the live
+specimen view, which matters more here than in a typical app, since this
+is a tool used to visually judge focus/color/contrast. They also asked
+for the menu bar to hide during full screen, with a way back out.
+
+`F11` (or View > "Full screen") toggles; the SAME `_panel` widget instance
+(now stored as `self._panel`, not just a local in `__init__`) reparents
+between the normal-mode `QSplitter` and a lazily-created, never-destroyed
+floating `Qt.Tool | Qt.FramelessWindowHint` window on entry/exit, so no
+control's state — a slider position, a combo selection — is ever lost by
+the move. Hidden by default on entry (explicit toggle, not auto-shown —
+maximizing the preview is the whole point); `P` shows/hides it while full
+screen, and is a genuine no-op otherwise (not `Tab`, which is Qt's own
+widget-focus-traversal key — repurposing it would have silently broken
+keyboard navigation through the sliders and combos). `Ctrl+Escape` exits
+— plain `Escape` already does real work in this app (cancel an armed
+burst, abort a batch sequence) and wasn't overloaded with a third
+meaning; being a distinct key combination, it needs no priority ordering
+against those two existing branches. `closeEvent`'s `panel_width` save
+now guards on the panel actually being a splitter child, since mid-float
+`self._splitter.sizes()` no longer describes it.
+
+Deliberately not persisted across a relaunch (unlike `panel_width`, the
+ruler toggle, or the focus-aid-at-startup preference, which all do
+persist once set) — launching straight into full screen with the menu
+bar already hidden, with no visible reminder that F11/Ctrl+Escape is the
+way out, could genuinely be disorienting in a way a remembered panel
+width never is.
+
+New render-check coverage drives the real toggle methods and real
+`QKeyEvent`s (not bypassed): entering hides the menu bar and reparents
+the real panel out of the splitter; a full second entry/exit cycle
+confirms the reparenting actually repeats (this caught a real bug — the
+panel was only ever added to the floating window's layout on its first
+construction, so a second F11 press left it stranded); Ctrl+Escape only
+exits once an armed burst no longer claims Escape first; `P` is a true
+no-op outside full screen. Also manually smoke-tested end to end under
+`QT_QPA_PLATFORM=offscreen`.
+
+**Also**: `render_check()` now monkeypatches `PROFILE_PATH` for its ENTIRE
+duration (not just the sub-blocks that already did), after real hardware
+profile data got silently overwritten a second time despite the earlier
+atomic-write fix — the second occurrence didn't reproduce reliably enough
+to pin to a specific trigger, so this is the belt-and-suspenders fix: no
+`FocusPreviewWindow` constructed anywhere in the self-check, now or in the
+future, can ever touch the real file again.
+
 ## 2026-07-21
 
 ### Carried the focus-meter auto-reset over to the z-stack aid (SPEC_focus_aid_fps_and_stack_reset.md part 2)

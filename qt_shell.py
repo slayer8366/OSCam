@@ -405,7 +405,7 @@ try:
                                  QHBoxLayout, QSplitter, QMessageBox, QInputDialog,
                                  QDialog, QComboBox, QActionGroup, QFileDialog)
     from PyQt5.QtCore import QTimer, Qt, QRect, QEvent, pyqtSignal, QObject
-    from PyQt5.QtGui import QImage, QPainter
+    from PyQt5.QtGui import QImage, QPainter, QKeyEvent, QCloseEvent
     _HAVE_QT = True
 except ImportError:                 # PyQt5 absent: --render-check still runs
     _HAVE_QT = False
@@ -1380,6 +1380,14 @@ if _HAVE_QT:
             # see _toggle_zstack/_start_zstack/_capture_zstack_plane/_end_zstack.
             self._zstack = None
 
+            # FULL SCREEN MODE (BUILD_LIST Tier 2): the floating panel window,
+            # created lazily on first entry into full screen and reused
+            # (never destroyed/recreated) across every toggle after that, so
+            # no control's state -- a slider position, a combo selection --
+            # is ever lost by moving self._panel in and out of it. See
+            # _toggle_fullscreen/_toggle_floating_panel.
+            self._floating_panel = None
+
             self.preview = camera.widget if hasattr(camera, "widget") \
                 else _FakePreview(camera)
 
@@ -1546,6 +1554,12 @@ if _HAVE_QT:
                 return block
 
             panel = QWidget()
+            # Stored on self (not just a local) so full-screen mode's
+            # floating-panel toggle (_toggle_fullscreen/_toggle_floating_
+            # panel, defined later in this class) can reparent this exact
+            # widget between the splitter and a floating window -- the same
+            # instance either way, so no control ever loses its state.
+            self._panel = panel
             # Themes (BUILD_LIST Tier 1 item 3) target this panel specifically
             # via #side_panel in their own style.qss -- see THEMES_ROOT's own
             # comment. Set once here, not per-theme: the object name is part
@@ -1634,6 +1648,7 @@ if _HAVE_QT:
             filemenu.addAction("Quit", self.close)
             view = self.menuBar().addMenu("View")
             view.addAction("Reset field (R)").triggered.connect(self.meter.reset_field)
+            view.addAction("Full screen (F11)").triggered.connect(self._toggle_fullscreen)
             opts = self.menuBar().addMenu("Options")
             self._aid_action = opts.addAction("Focus aid (F)")
             self._aid_action.setCheckable(True)
@@ -1836,6 +1851,68 @@ if _HAVE_QT:
                 "theme: {}".format(label),
                 "Theme set to {} -- takes effect on the next launch."
                 .format(label))
+
+        # --- FULL SCREEN MODE (BUILD_LIST Tier 2) ----------------------------
+        def _toggle_fullscreen(self):
+            # One method for both directions (F11 in, Ctrl+Escape or the
+            # View menu action either way) rather than two separate methods
+            # that could quietly drift apart over time -- enter does
+            # A/B/C, exit does C/B/A-but-slightly-different, six months
+            # later they no longer match.
+            if self.isFullScreen():
+                self.showNormal()
+                # Always restore the normal-mode layout exactly, regardless
+                # of whether the floating panel happened to be shown or
+                # hidden at the moment of exit.
+                if self._splitter.indexOf(self._panel) == -1:
+                    self._splitter.insertWidget(1, self._panel)
+                if self._floating_panel is not None:
+                    self._floating_panel.hide()
+                self.menuBar().setVisible(True)
+            else:
+                self.menuBar().setVisible(False)
+                if self._floating_panel is None:
+                    # Qt.Tool: a borderless utility window associated with
+                    # this one, no separate taskbar entry, doesn't steal
+                    # keyboard focus from the preview underneath it.
+                    self._floating_panel = QWidget(
+                        self, Qt.Tool | Qt.FramelessWindowHint)
+                    lay = QVBoxLayout(self._floating_panel)
+                    lay.setContentsMargins(0, 0, 0, 0)
+                # Reparent the panel into the floating window EVERY entry,
+                # not just the first: exiting puts it back in the splitter
+                # (see the isFullScreen() branch above), so a second or
+                # third entry needs this to actually move it again, not
+                # just on the floating window's own one-time construction.
+                # addWidget() on a new layout reparents automatically --
+                # QSplitter notices the child leaving and adjusts itself.
+                self._floating_panel.layout().addWidget(self._panel)
+                # Explicit-toggle by design (BUILD_LIST Tier 2's own picked
+                # interaction model): hidden by default on entry, maximizing
+                # the preview -- the whole point of going full screen --
+                # rather than auto-showing and making the user dismiss it.
+                self._floating_panel.hide()
+                self.showFullScreen()
+
+        def _toggle_floating_panel(self):
+            # No-op outside full screen (P does nothing in normal windowed
+            # mode -- see keyPressEvent's own guard, which only calls this
+            # while self.isFullScreen()).
+            if self._floating_panel is None:
+                return
+            if self._floating_panel.isVisible():
+                self._floating_panel.hide()
+            else:
+                self._floating_panel.adjustSize()
+                # Top-right corner of the screen, matching where the panel
+                # already sits relative to the preview in normal mode.
+                # QApplication.primaryScreen() rather than the newer (Qt
+                # 5.14+) QWidget.screen(), for broader PyQt5 compatibility.
+                screen = QApplication.primaryScreen().availableGeometry()
+                w = self._floating_panel.width()
+                self._floating_panel.move(screen.right() - w, screen.top())
+                self._floating_panel.show()
+                self._floating_panel.raise_()
 
         def _set_aid(self, on):
             self._aid_on = bool(on)
@@ -3427,6 +3504,18 @@ if _HAVE_QT:
                 self._cancel_armed()
             elif ev.key() == Qt.Key_Escape and self._batch_active:
                 self._abort_batch()
+            elif (ev.key() == Qt.Key_Escape and ev.modifiers() & Qt.ControlModifier
+                  and self.isFullScreen()):
+                # FULL SCREEN MODE: Ctrl+Escape exits, not plain Escape --
+                # that key already does real work above (cancel an armed
+                # burst, abort a batch sequence) and shouldn't be overloaded
+                # with a third meaning. Being a distinct key combination, this
+                # never collides with either branch above; no ordering needed.
+                self._toggle_fullscreen()
+            elif ev.key() == Qt.Key_F11:
+                self._toggle_fullscreen()
+            elif ev.key() == Qt.Key_P and self.isFullScreen():
+                self._toggle_floating_panel()
             elif ev.key() == Qt.Key_Up and hasattr(self.camera, "focus_position"):
                 self.camera.focus_position += 0.25
             elif ev.key() == Qt.Key_Down and hasattr(self.camera, "focus_position"):
@@ -3440,9 +3529,15 @@ if _HAVE_QT:
             # in try/except like every other save_pref call: a failed write here
             # should never block the window from actually closing.
             try:
-                sizes = self._splitter.sizes()
-                if len(sizes) >= 2:
-                    save_pref("panel_width", int(sizes[1]))
+                # FULL SCREEN MODE: only meaningful while self._panel is
+                # actually a splitter child -- mid-float (full screen with
+                # the floating panel toggle in play) it isn't, and
+                # .sizes() would no longer describe it at all. Skip the
+                # save rather than persist a stale/wrong width.
+                if self._splitter.indexOf(self._panel) != -1:
+                    sizes = self._splitter.sizes()
+                    if len(sizes) >= 2:
+                        save_pref("panel_width", int(sizes[1]))
             except Exception:
                 pass
             self.timer.stop()
@@ -3518,6 +3613,21 @@ def main(argv=None):
 # Headless self-check for the pure parts (no PyQt, no camera)
 # ---------------------------------------------------------------------------
 def render_check():
+    # Never touch the REAL ~/imx/profile.json for the whole duration of this
+    # function, no matter how many FocusPreviewWindow instances get built
+    # below or what triggers save_profile's own probe-and-save fallback --
+    # real hardware exposure/gain/WB data got silently overwritten with
+    # fake FakeCamera-probed values TWICE during this session's own testing
+    # despite save_profile() itself already being made atomic (see
+    # CHANGELOG.md), and a second occurrence could not be pinned to a
+    # specific reproducible trigger. Not wrapped in try/finally: a failed
+    # assertion here ends the process immediately anyway (this is a one-shot
+    # script, not a long-running service), so there is no real window where
+    # a restore would matter and one didn't happen.
+    global PROFILE_PATH
+    _orig_profile_path_for_render_check = PROFILE_PATH
+    PROFILE_PATH = Path("/tmp/zynergy_render_check_profile.json")
+
     box = FocusBox.centered(0.5, 0.4)
     bar = BarState(fill=0.5, current=0.02, hi=0.03, lo=0.0, at_peak=False, settled=True)
     st = FocusState(valid=True, source="green", raw=0.02, smoothed=0.02, bar=bar)
@@ -4147,6 +4257,99 @@ def render_check():
               "reset.md part 2, carried over) the focus meter resets on "
               "every successful plane capture and never on a failed one")
 
+        # Full screen mode with a floating panel (BUILD_LIST Tier 2): real
+        # showFullScreen()/showNormal() calls, real reparenting of the
+        # actual panel widget between the splitter and the floating window,
+        # real menu-bar visibility, real key routing -- nothing bypassed.
+        fscam = FakeCamera(async_delay_s=0.0)
+        fswin = FocusPreviewWindow(fscam, FocusMeter())
+        try:
+            assert fswin._splitter.indexOf(fswin._panel) != -1, \
+                "the panel must start docked in the splitter, normal mode"
+            assert not fswin.isFullScreen()
+
+            fswin._toggle_fullscreen()
+            assert fswin.isFullScreen()
+            assert not fswin.menuBar().isVisible(), \
+                "the menu bar must hide on entering full screen"
+            assert fswin._splitter.indexOf(fswin._panel) == -1, \
+                "the panel must be reparented OUT of the splitter on entry"
+            assert fswin._floating_panel is not None
+            assert not fswin._floating_panel.isVisible(), \
+                "the floating panel starts HIDDEN on entry -- explicit " \
+                "toggle by design, not auto-shown (that would defeat the " \
+                "whole point of maximizing the preview)"
+
+            # P toggles the floating panel while full screen; it must be a
+            # genuine no-op outside full screen (checked further below).
+            fswin._toggle_floating_panel()
+            assert fswin._floating_panel.isVisible()
+            fswin._toggle_floating_panel()
+            assert not fswin._floating_panel.isVisible()
+
+            # Exiting restores normal mode exactly, regardless of whatever
+            # state the floating panel toggle was left in.
+            fswin._toggle_floating_panel()
+            assert fswin._floating_panel.isVisible()
+            fswin._toggle_fullscreen()
+            assert not fswin.isFullScreen()
+            assert fswin.menuBar().isVisible(), \
+                "the menu bar must come back on exiting full screen"
+            assert fswin._splitter.indexOf(fswin._panel) == 1, \
+                "the panel must be reparented back into the splitter at " \
+                "its original index on exit"
+            assert not fswin._floating_panel.isVisible(), \
+                "the floating panel must be hidden on exit even if it was " \
+                "left visible mid-full-screen"
+
+            # P must be a genuine no-op outside full screen -- not swallowed
+            # silently, just never routed to _toggle_floating_panel at all.
+            called = []
+            fswin._toggle_floating_panel = lambda: called.append(1)
+            p_ev = QKeyEvent(QEvent.KeyPress, Qt.Key_P, Qt.NoModifier)
+            fswin.keyPressEvent(p_ev)
+            assert not called, "P must do nothing while not full screen"
+
+            # Ctrl+Escape only exits full screen when nothing else claims
+            # Escape first -- an armed burst still takes priority, matching
+            # the two existing Escape branches' own established order.
+            fswin._toggle_fullscreen()
+            assert fswin.isFullScreen()
+            fswin._armed = {"kind": "science", "n": 1, "prefix": "science_"}
+            cancelled = []
+            fswin._cancel_armed = lambda: cancelled.append(1)
+            ctrl_esc_ev = QKeyEvent(QEvent.KeyPress, Qt.Key_Escape, Qt.ControlModifier)
+            fswin.keyPressEvent(ctrl_esc_ev)
+            assert fswin.isFullScreen(), \
+                "an armed burst must still take priority over exiting " \
+                "full screen, same as it already does over anything else"
+            assert cancelled == [1]
+            fswin._armed = None
+
+            fswin.keyPressEvent(ctrl_esc_ev)
+            assert not fswin.isFullScreen(), \
+                "Ctrl+Escape must exit full screen once nothing else claims Escape"
+
+            # closeEvent's panel_width guard: must not raise, and must not
+            # save a bogus width, while the panel is mid-float.
+            fswin._toggle_fullscreen()
+            fswin._toggle_floating_panel()
+            assert fswin._splitter.indexOf(fswin._panel) == -1
+            fswin.closeEvent(QCloseEvent())   # must not raise
+        finally:
+            fscam.stop()
+        print("full screen mode check PASS: entering hides the menu bar and "
+              "reparents the real panel widget out of the splitter (hidden "
+              "by default, explicit toggle); P shows/hides it while full "
+              "screen; exiting always restores the menu bar and the "
+              "panel's original splitter position regardless of the "
+              "floating panel's own visibility state; P is a genuine "
+              "no-op outside full screen; Ctrl+Escape exits only once an "
+              "armed burst no longer claims Escape first, same priority "
+              "order the existing Escape branches already have; "
+              "closeEvent's panel_width save does not raise or misbehave "
+              "while the panel is mid-float")
+
         # Video resolution menu (BUILD_LIST Tier 1 item 5): a fresh window's
         # menu reflects whatever preference (if any) was already on disk,
         # and choosing an entry both persists the new preference AND updates
@@ -4362,6 +4565,8 @@ def render_check():
                   "real MeasureWindow pre-filled from the ruler's objective, "
                   "a second trigger reuses the existing window rather than "
                   "opening a duplicate")
+
+    PROFILE_PATH = _orig_profile_path_for_render_check
 
 
 if __name__ == "__main__":

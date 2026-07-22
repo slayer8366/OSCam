@@ -54,9 +54,34 @@ Dark/Light pair) are all done. That's every Tier 1 item. Tier 3 item 4
 (Gallery module) is done — see `gallery.py` below. Tier 3 item 5
 (processing wizard overhaul) is done — see `process_wizard.py` below.
 Tier 3 item 6 (the z-stack one-click aid, the thing the user actually
-asked for) is also done. **Nothing is currently in progress** — check
-with the user for what's next (Tier 0 investigations, Tier 2's full-
-screen-mode design decision, or further into Tier 3, are all still open).
+asked for) is also done. **Tier 2 (full screen mode with a floating
+panel) is now also done** — see the note below. **Nothing is currently in
+progress** — check with the user for what's next (Tier 0 investigations,
+or further into Tier 3, are the remaining open items).
+
+**Full screen mode detail worth knowing**: `F11` toggles; the interaction
+model (explicit toggle key, not auto-hide-on-idle or an always-visible
+translucent overlay — a translucent overlay would permanently obscure
+part of the live specimen view) and the menu-bar-hides/Ctrl+Escape-exits
+behavior both came from a direct discussion with the user, not a default
+assumed here. `FocusPreviewWindow._panel` (the SAME widget instance
+docked in `self._splitter` normally) reparents into a lazily-created,
+never-destroyed floating `Qt.Tool | Qt.FramelessWindowHint` window
+(`self._floating_panel`) on every full-screen entry, and back into the
+splitter on every exit — reparenting happens on EVERY toggle, not just
+the widget's first construction; an earlier version of this only added
+the panel to the floating window's layout inside the `if self.
+_floating_panel is None:` one-time-creation block, so a second F11 press
+left the panel stranded wherever it last was. If you touch
+`_toggle_fullscreen` again, keep the reparenting call outside that
+one-time guard. `P` shows/hides the floating panel while full screen
+(genuine no-op otherwise); plain `Escape` was deliberately left untouched
+(already cancels an armed burst / aborts a batch sequence) — `Ctrl+
+Escape` is the exit, a distinct key combination so it never needs
+priority ordering against those two existing branches. Not persisted
+across a relaunch, on purpose — see `CHANGELOG.md`'s entry for the reason
+(disorientation risk of a hidden-chrome launch with no visible way out),
+not because this app avoids persisting UI state in general (it doesn't).
 
 **Themes detail worth knowing**: the user wants to design a dozen-plus
 side-panel aesthetics over time, so this is NOT a fixed theme list — the
@@ -213,24 +238,26 @@ correct, expected behavior, not a bug to chase.
 
 ## Things that will bite you if you don't know them
 
-**Never run two `--render-check` invocations concurrently (any module,
-but especially `qt_shell.py`).** `save_profile()` writes the SHARED,
-single `~/imx/profile.json` (real hardware exposure/gain/WB data), and
-`FocusPreviewWindow.__init__` calls it via a probe-and-save fallback
-whenever `load_profile()` doesn't find a profile. It was, until this
-session, the one store writer left in `qt_shell.py` using a direct
-`write_text` instead of the atomic temp-file-then-`os.replace` pattern
-every other store here uses — fixed now, but the underlying exposure is
-structural: this file is real, shared, global state, not scoped to a
-temp dir the way every OTHER render-check fixture in this project
-carefully is. Two overlapping runs (background `&` processes, or running
-the full module sweep in parallel Bash calls instead of sequentially)
-racing a read against a write is the leading explanation for how real
-hardware profile data got silently overwritten with fake
-`FakeCamera`-probed values earlier this session — caught only by chance,
-via `git diff` before committing, not by anything in the test suite
-itself. Run the `--render-check` sweep sequentially, one module at a
-time, same as the command in this file's own "Recommended first move."
+**`qt_shell.py`'s `render_check()` now monkeypatches `PROFILE_PATH` for
+its ENTIRE duration, and that's load-bearing — don't remove it.**
+`save_profile()` writes the SHARED, single `~/imx/profile.json` (real
+hardware exposure/gain/WB data), and `FocusPreviewWindow.__init__` calls
+it via a probe-and-save fallback whenever `load_profile()` doesn't find a
+profile — which happens on every `FocusPreviewWindow` construction in the
+self-check if `PROFILE_PATH` isn't redirected first. Real hardware
+profile data got silently overwritten with fake `FakeCamera`-probed
+values TWICE this session: first explained by two overlapping
+`--render-check` processes racing a read against a write (fixed by making
+`save_profile()` itself atomic — temp file + `os.replace`, matching every
+other store here), then a SECOND time, sequential, no concurrency
+involved, that never reproduced reliably enough to pin to a specific
+cause. Given that, the fix is no longer "be careful running things
+concurrently" — `render_check()`'s very first lines now redirect
+`PROFILE_PATH` to a temp file for the whole function, restored at the very
+end, so no `FocusPreviewWindow` built anywhere in the self-check, now or
+in the future, can touch the real file at all. If you add a new
+Qt-gated check that constructs a `FocusPreviewWindow`, you get this for
+free; just don't reach for the real `PROFILE_PATH` directly inside one.
 
 **A render-check that HANGS (not fails) right after loading an image is
 almost certainly a blocking `QMessageBox` with no one to click it.**
