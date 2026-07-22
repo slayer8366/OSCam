@@ -1692,6 +1692,19 @@ if _HAVE_QT:
                 # rather than auto-showing and making the user dismiss it.
                 self._floating_panel.hide()
                 self.showFullScreen()
+                # On-rig bug: self.preview is the real QGlPicamera2 widget,
+                # which paints through its own native window (WA_NativeWindow/
+                # WA_PaintOnScreen) rather than Qt's normal backing store. That
+                # native surface does not reliably pick up the splitter's new
+                # post-panel-removal, post-showFullScreen() geometry from Qt's
+                # layout cascade alone -- observed on-rig as the live preview
+                # staying pinned at its old small windowed-mode size/position
+                # instead of filling the screen. Forcing an explicit resize
+                # one event-loop tick later (after the window manager has
+                # actually applied the fullscreen geometry) reliably unsticks
+                # it. _FakePreview (off-rig) has no such native-window quirk,
+                # so this is a no-op there beyond the redundant resize call.
+                QTimer.singleShot(0, lambda: self.preview.resize(self._splitter.size()))
 
         def _toggle_floating_panel(self):
             # No-op outside full screen (P does nothing in normal windowed
@@ -4022,6 +4035,15 @@ def render_check():
                 "the menu bar must hide on entering full screen"
             assert fswin._splitter.indexOf(fswin._panel) == -1, \
                 "the panel must be reparented OUT of the splitter on entry"
+            # The forced preview resize (see _toggle_fullscreen's own comment
+            # on the real QGlPicamera2 native-window bug this works around)
+            # is scheduled via QTimer.singleShot(0, ...), so it only actually
+            # runs once the event loop gets a turn.
+            _pump_until_idle()
+            assert fswin.preview.size() == fswin._splitter.size(), \
+                "the preview must be explicitly resized to fill the " \
+                "splitter once full screen has taken effect, not left at " \
+                "its stale pre-fullscreen size"
             assert fswin._floating_panel is not None
             assert not fswin._floating_panel.isVisible(), \
                 "the floating panel starts HIDDEN on entry -- explicit " \
@@ -4088,8 +4110,10 @@ def render_check():
             fscam.stop()
         print("full screen mode check PASS: entering hides the menu bar and "
               "reparents the real panel widget out of the splitter (hidden "
-              "by default, explicit toggle); P shows/hides it while full "
-              "screen; exiting always restores the menu bar and the "
+              "by default, explicit toggle), and forces the preview to "
+              "fill the splitter once the event loop settles (the on-rig "
+              "QGlPicamera2-stuck-at-old-size fix); P shows/hides it while "
+              "full screen; exiting always restores the menu bar and the "
               "panel's original splitter position regardless of the "
               "floating panel's own visibility state; P is a genuine "
               "no-op outside full screen; Ctrl+Escape exits only once an "

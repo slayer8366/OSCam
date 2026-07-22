@@ -7,6 +7,25 @@ this file is the historical record of what happened and why.
 
 ## 2026-07-22
 
+### Fixed: full-screen preview stuck at its old windowed-mode size on-rig
+
+Reported live from the actual tablet (photo evidence): entering full
+screen resized the window itself but the live camera preview stayed
+pinned to a small rectangle at its old size/position instead of filling
+the screen. Root cause: `self.preview` is the real `QGlPicamera2` widget
+on-rig, which paints through its own native window (`WA_NativeWindow`/
+`WA_PaintOnScreen`, bypassing Qt's normal backing store) — that native
+surface does not reliably follow the splitter's new geometry from Qt's
+layout cascade alone once the panel is reparented out and the window goes
+full screen. `_toggle_fullscreen` now schedules an explicit
+`self.preview.resize(self._splitter.size())` via `QTimer.singleShot(0,
+...)`, one event-loop tick after `showFullScreen()` so the window manager
+has actually applied the fullscreen geometry first. `_FakePreview`
+(off-rig) has no native-window quirk, so the new `--render-check`
+assertion (pumps events, checks `preview.size() == splitter.size()`) only
+proves the resize call fires and lands correctly — not that it fixes the
+real EGL/native-surface behavior, which needs on-rig confirmation.
+
 ### `provenance.py` extraction, phase 1 (BUILD_LIST Tier 3, item 1)
 
 Built the plan recorded in the prior commit. This turn's own Tier 0

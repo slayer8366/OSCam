@@ -150,6 +150,23 @@ across a relaunch, on purpose — see `CHANGELOG.md`'s entry for the reason
 (disorientation risk of a hidden-chrome launch with no visible way out),
 not because this app avoids persisting UI state in general (it doesn't).
 
+**Real on-rig bug, now fixed**: the live preview (`self.preview`, the real
+`QGlPicamera2` widget on-rig) was staying pinned at its old small
+windowed-mode size/position after `F11`, instead of filling the screen —
+confirmed via a photo of the actual tablet. Root cause: `QGlPicamera2`
+paints through its own native window (`WA_NativeWindow`/`WA_PaintOnScreen`,
+bypassing Qt's normal backing store), which does not reliably pick up the
+splitter's new post-panel-removal, post-`showFullScreen()` geometry from
+Qt's layout cascade alone. `_toggle_fullscreen`'s entry branch now
+schedules `self.preview.resize(self._splitter.size())` via
+`QTimer.singleShot(0, ...)` — one event-loop tick after `showFullScreen()`,
+once the window manager has actually applied the fullscreen geometry —
+which reliably unsticks it. `_FakePreview` (off-rig) has no such
+native-window quirk, so `--render-check` can only verify the resize call
+itself fires and lands (new assertion in the full-screen render-check
+block), not that it fixes the real EGL/native-surface behavior — that
+needs on-rig confirmation.
+
 **Themes detail worth knowing**: the user wants to design a dozen-plus
 side-panel aesthetics over time, so this is NOT a fixed theme list — the
 Options > Theme menu is built by `discover_themes()` scanning
