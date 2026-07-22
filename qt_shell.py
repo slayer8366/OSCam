@@ -58,10 +58,10 @@ from pathlib import Path
 import numpy as np
 
 try:
-    from .camera_backend import FakeCamera, LORES_RES, FULL_RES
+    from .camera_backend import FakeCamera, LORES_RES, FULL_RES, PREVIEW_RES
     from .focus import FocusMeter, FocusBox, FocusState, BarState, score_capture_sharpness
 except ImportError:                 # run directly as a script, not as a package module
-    from camera_backend import FakeCamera, LORES_RES, FULL_RES
+    from camera_backend import FakeCamera, LORES_RES, FULL_RES, PREVIEW_RES
     from focus import FocusMeter, FocusBox, FocusState, BarState, score_capture_sharpness
 
 # stacks.py's tagging (apply_tag/output_name): the pure, camera-free half of
@@ -321,7 +321,7 @@ try:
     from PyQt5.QtWidgets import (QApplication, QMainWindow, QLabel, QWidget,
                                  QVBoxLayout, QPushButton, QSlider, QCheckBox,
                                  QHBoxLayout, QSplitter, QMessageBox, QInputDialog,
-                                 QDialog, QComboBox)
+                                 QDialog, QComboBox, QActionGroup)
     from PyQt5.QtCore import QTimer, Qt, QRect, QEvent, pyqtSignal, QObject
     from PyQt5.QtGui import QImage, QPainter
     _HAVE_QT = True
@@ -344,6 +344,40 @@ LONG_EXPOSURE_MAX_US = 3_000_000   # 3.0s cap, per the earlier explicit decision
 NORMAL_SHUTTER_MAX_US = 50_000
 
 PREFS_PATH = Path.home() / ".zynergy" / "gui_prefs.json"
+
+# --- VIDEO RESOLUTION MENU (BUILD_LIST Tier 1 item 5) -----------------------
+# camera_backend.py's set_video_resolution() validates input but, as its own
+# docstring says plainly, currently has NO live effect: a recording always
+# encodes the preview config's fixed "main" stream, built once when the
+# camera is constructed. Changing it for real means changing preview_res at
+# CONSTRUCTION time, not calling a setter mid-session -- doing that live
+# would mean tearing down and rebuilding the camera+widget while running,
+# exactly the kind of in-session camera reconfiguration this project has
+# been burned by before (see start_recording's own history notes). So this
+# menu writes a persisted preference (gui_prefs.json, the same store/pattern
+# panel_width and the focus-aid startup options already use) that main()
+# reads at camera-construction time -- takes effect on the NEXT launch, not
+# immediately, and says so.
+# "2K" here means 2048x1080 (DCI 2K flat), not the also-common informal
+# usage for 2560x1440 -- picked because it is the more literal "2K" and
+# there is no ambiguity to inherit either way.
+VIDEO_RESOLUTION_PRESETS = [
+    ("Default ({}x{}, current preview)".format(PREVIEW_RES[0], PREVIEW_RES[1]), None),
+    ("1080p (1920x1080)", (1920, 1080)),
+    ("2K (2048x1080)", (2048, 1080)),
+]
+
+
+def video_resolution_kwargs(pref=None):
+    """Camera-construction kwargs for the persisted "video_resolution" pref:
+    {} if none set (the camera's own PREVIEW_RES default applies, unchanged
+    behavior), else {"preview_res": (w, h)}. Qt-free and camera-free, so
+    main()'s wiring is testable without constructing a real window or
+    camera."""
+    if pref is None:
+        return {}
+    w, h = pref
+    return {"preview_res": (int(w), int(h))}
 
 
 # ---------------------------------------------------------------------------
@@ -1520,6 +1554,24 @@ if _HAVE_QT:
             self._reset_on_aid_action.setChecked(bool(load_pref("reset_field_on_aid_enable", True)))
             self._startup_action.setChecked(bool(load_pref("focus_aid_at_startup", False)))
 
+            # VIDEO RESOLUTION MENU (BUILD_LIST Tier 1 item 5): a persisted
+            # preference, not a live change -- see VIDEO_RESOLUTION_PRESETS'
+            # own comment for why. Exclusive checkable actions (QActionGroup),
+            # the standard Qt shape for "pick one of N" in a menu.
+            video_res_menu = opts.addMenu("Video resolution")
+            self._video_res_group = QActionGroup(self)
+            self._video_res_group.setExclusive(True)
+            current_video_res = load_pref("video_resolution", None)
+            current_video_res = (tuple(current_video_res)
+                                 if current_video_res is not None else None)
+            for label, res in VIDEO_RESOLUTION_PRESETS:
+                action = video_res_menu.addAction(label)
+                action.setCheckable(True)
+                action.setChecked(res == current_video_res)
+                self._video_res_group.addAction(action)
+                action.triggered.connect(
+                    lambda checked, r=res, l=label: self._on_video_resolution_chosen(r, l))
+
             # Capture submenu: each item runs a walkthrough (reshoot guard, frame
             # count, instructional message) that ARMS the Capture button rather
             # than firing immediately. The next press of Capture (button or File
@@ -1644,6 +1696,20 @@ if _HAVE_QT:
                 self._last_readout = txt
 
         # --- focus aid on/off ----------------------------------------------
+        def _on_video_resolution_chosen(self, res, label):
+            # Persisted preference only -- see VIDEO_RESOLUTION_PRESETS' own
+            # comment for why this can't just call camera.set_video_resolution()
+            # and have it take effect now. Status text says so explicitly
+            # rather than silently doing nothing, the same honesty standard
+            # "processing unavailable"/"gallery unavailable" already hold.
+            save_pref("video_resolution", list(res) if res is not None else None)
+            self._set_capture_status(
+                "video resolution: {}".format(label),
+                "Video recording resolution set to {} -- takes effect on the "
+                "next launch, not this session (changing it live would mean "
+                "tearing down and rebuilding the camera while it's running)."
+                .format(label))
+
         def _set_aid(self, on):
             self._aid_on = bool(on)
             self._aid_action.setChecked(self._aid_on)     # keep the menu in sync
@@ -3227,7 +3293,7 @@ def main(argv=None):
             from .camera_backend import Picamera2Camera
         except ImportError:
             from camera_backend import Picamera2Camera
-        camera = Picamera2Camera()
+        camera = Picamera2Camera(**video_resolution_kwargs(load_pref("video_resolution", None)))
     else:
         camera = FakeCamera()
     display_flags = build_display_flags(a)
@@ -3364,6 +3430,18 @@ def render_check():
     assert zero_min_stops[0] > 0, "zero-min shutter table produced a non-positive stop"
     print("slider-map check PASS: shutter stop table + fraction format, gain linear, "
           "long-exposure table to 3.0s, zero-min safe")
+
+    # video_resolution_kwargs (BUILD_LIST Tier 1 item 5): no pref set means
+    # no kwarg at all (the camera's own PREVIEW_RES default applies,
+    # unchanged behavior), a set pref becomes an explicit preview_res tuple.
+    assert video_resolution_kwargs(None) == {}, \
+        "no preference should mean no kwarg, not some hardcoded default"
+    assert video_resolution_kwargs([1920, 1080]) == {"preview_res": (1920, 1080)}
+    assert video_resolution_kwargs((2048, 1080)) == {"preview_res": (2048, 1080)}, \
+        "must accept a tuple too, not just the list JSON round-trips through"
+    print("video_resolution_kwargs check PASS: no preference means no kwarg "
+          "(camera's own default applies), a set preference becomes an "
+          "explicit preview_res tuple, both list and tuple input accepted")
 
     # Capture-enforces-lock, at the CameraBackend seam: _enforce_exposure_lock reads
     # the live metered values, then calls apply_exposure_lock with that exact
@@ -3782,6 +3860,51 @@ def render_check():
               "opens it scoped to the stack's own root with every plane "
               "pre-selected, and a plain Capture press with no active stack "
               "is completely unaffected")
+
+        # Video resolution menu (BUILD_LIST Tier 1 item 5): a fresh window's
+        # menu reflects whatever preference (if any) was already on disk,
+        # and choosing an entry both persists the new preference AND updates
+        # the status text to say it takes effect next launch, not now.
+        global PREFS_PATH
+        orig_prefs_path = PREFS_PATH
+        PREFS_PATH = Path("/tmp/zynergy_render_check_prefs.json")
+        PREFS_PATH.unlink(missing_ok=True)
+        try:
+            save_pref("video_resolution", [1920, 1080])
+            vcam = FakeCamera(async_delay_s=0.0)
+            vwin = FocusPreviewWindow(vcam, FocusMeter())
+            checked = {a.text(): a.isChecked() for a in vwin._video_res_group.actions()}
+            assert checked["1080p (1920x1080)"] is True, \
+                "a fresh window must reflect whatever preference was already on disk"
+            assert checked["2K (2048x1080)"] is False
+            assert sum(checked.values()) == 1, \
+                "the resolution choices must be mutually exclusive"
+
+            twok_action = next(a for a in vwin._video_res_group.actions()
+                               if a.text() == "2K (2048x1080)")
+            twok_action.trigger()
+            assert load_pref("video_resolution", None) == [2048, 1080], \
+                "choosing a resolution must persist it immediately"
+            assert "2K" in vwin.capture_status.text()
+            assert "next launch" in vwin.capture_status.toolTip(), \
+                "the detail text must say this takes effect next launch, " \
+                "not silently imply it already applied"
+
+            default_action = next(a for a in vwin._video_res_group.actions()
+                                  if a.text().startswith("Default"))
+            default_action.trigger()
+            assert load_pref("video_resolution", "sentinel") is None, \
+                "choosing Default must clear the preference, not save a " \
+                "placeholder value"
+
+            vcam.stop()
+        finally:
+            PREFS_PATH = orig_prefs_path
+        print("video resolution menu check PASS: a fresh window's menu "
+              "reflects an on-disk preference, the three presets are "
+              "mutually exclusive, choosing one persists it immediately and "
+              "updates the status text, choosing Default clears the "
+              "preference entirely")
 
         # _score_capture_sharpness (section 13's post-capture QC): a real
         # FakeCamera burst, scored against its OWN written frame via

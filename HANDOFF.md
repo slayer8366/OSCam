@@ -42,14 +42,31 @@ speculative. Don't build it until someone hits it.
 That 13-section checklist is a separate, older track from the newer
 `BUILD_LIST.md` (planning doc, not checked into the repo) the user is now
 working through in dependency order. Progress so far: Tier 1 items 1
-(focus aid tick rate + auto-reset on stack tag) and 2 (`measure.py`'s
-stale tool-status text after a mark commits — see the fix note two
-paragraphs down) are done. Tier 3 item 4 (Gallery module) is done — see
+(focus aid tick rate + auto-reset on stack tag), 2 (`measure.py`'s stale
+tool-status text after a mark commits), and 5 (video resolution menu —
+see the note below; a persisted next-launch preference, not a live
+change, and the build list undersold how non-trivial "wire it up" turned
+out to be) are done. Tier 3 item 4 (Gallery module) is done — see
 `gallery.py` below. Tier 3 item 5 (processing wizard overhaul) is done —
 see `process_wizard.py` below. Tier 3 item 6 (the z-stack one-click aid,
 the thing the user actually asked for) is also done. **Remaining Tier 1
-items (3: themes, 4: single green-plane extraction utility, 5: video
-resolution menu) are next, unblocked, no investigation needed.**
+items (3: themes, 4: single green-plane extraction utility) are next,
+unblocked, no investigation needed.**
+
+**Video resolution menu detail worth knowing**: `camera_backend.py`'s
+`Picamera2Camera.set_video_resolution()` has never had a live effect —
+recording always encodes the preview config's fixed "main" stream, set
+once at construction — despite a stale comment in `__init__` claiming
+otherwise (it describes an abandoned mode-switching design;
+`start_recording`'s own history notes are the accurate account). The new
+Options > "Video resolution" menu in `qt_shell.py` writes a `gui_prefs.json`
+preference via the new `video_resolution_kwargs()` helper, which `main()`
+reads at camera-construction time (`Picamera2Camera(**video_resolution_
+kwargs(...))`) — takes effect next launch, not immediately, and the
+status text says so. If you ever want this to apply live, that means
+tearing down and rebuilding the camera+widget while running; think hard
+about it first, given this project's track record with in-session camera
+reconfiguration (see `start_recording`'s own docstring).
 
 It lives entirely in `qt_shell.py`'s `FocusPreviewWindow`:
 

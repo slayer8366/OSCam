@@ -7,6 +7,40 @@ this file is the historical record of what happened and why.
 
 ## 2026-07-21
 
+### Added the video resolution menu (BUILD_LIST Tier 1, item 5)
+
+The build list undersold this one: `camera_backend.py`'s
+`set_video_resolution()` already validated input, but its own docstring is
+explicit that it currently has **no live effect** — `start_recording()`
+always encodes the preview config's fixed "main" stream, built once at
+camera construction. A comment in `Picamera2Camera.__init__` claiming the
+video config is rebuilt fresh per-recording is stale, describing an earlier
+mode-switching design `start_recording`'s own history notes say was tried
+and abandoned (it froze the preview pane and shifted exposure on every
+switch). So wiring a menu straight to the setter would have produced a
+menu that looks functional but silently changes nothing.
+
+Asked the user how to handle it given this project's own repeated,
+documented aversion to live camera reconfiguration risk: chose a persisted
+preference over a live rebuild. New `qt_shell.py` Options > "Video
+resolution" submenu (Default / 1080p / 2K, mutually exclusive via
+`QActionGroup`, same shape `save_pref`/`load_pref` already use for
+`panel_width` and the focus-aid startup options) writes `gui_prefs.json`;
+`main()` reads it via the new `video_resolution_kwargs()` (Qt-free, so this
+wiring is testable without a real camera) and passes `preview_res=` to
+`Picamera2Camera()` at construction. Explicitly does **not** apply live —
+the status text says "takes effect on the next launch" rather than
+silently implying it already worked, the same honesty standard
+"processing unavailable"/"gallery unavailable" already hold elsewhere.
+
+New render-check coverage: `video_resolution_kwargs` in isolation (no
+preference means no kwarg at all, not a hardcoded default), plus a real
+`FocusPreviewWindow` check that a fresh window's menu reflects whatever
+preference is already on disk, the three presets are mutually exclusive,
+choosing one persists it immediately and updates the status text/tooltip,
+and choosing Default clears the preference entirely rather than saving a
+placeholder value.
+
 ### Fixed `measure.py`'s stale tool-status text after a mark commits (BUILD_LIST Tier 1, item 2)
 
 After a mark committed, `point_status` kept showing its pre-commit text —
