@@ -7,6 +7,31 @@ this file is the historical record of what happened and why.
 
 ## 2026-07-21
 
+### Carried the focus-meter auto-reset over to the z-stack aid (SPEC_focus_aid_fps_and_stack_reset.md part 2)
+
+The original spec (implemented earlier this session, `ccc00fb`) called
+`self.meter.reset_field()` on a successful manual stack-plane tag
+(`_on_tag_stack`) and explicitly flagged that this requirement would carry
+over to "whatever action ends up being 'this plane is locked in'" once a
+one-click z-stack flow existed. That flow (`_capture_zstack_plane`/
+`_on_zstack_plane_finished`) was built later in the session without this
+carrying over — a real gap the spec's own forward note anticipated
+exactly. Fixed: `_on_zstack_plane_finished`'s success path now resets the
+field, same reasoning as the manual tag ("last plane's peak/settle is
+stale history, not a real reading for this one"); the failure branch
+(`isinstance(result, Exception)`) already returns before reaching it, so a
+failed capture/tag still can't wipe unrelated focus history.
+
+Extended the z-stack aid's own render-check coverage (rather than adding
+a separate test) to assert the same three-way contract `_on_tag_stack`'s
+own test already proves: fires once per successful plane (checked after
+plane 0's auto-capture and again after two more Capture presses), and
+does not fire on a simulated tag failure (`stacks.apply_tag` monkeypatched
+to raise) — run last in the sequence, after the folder-layout/tagging
+assertions, since the simulated failure deliberately leaves a stray
+untagged plane folder behind that would otherwise break the "exactly
+plane_0/1/2" check.
+
 ### Added an extensible themes system (BUILD_LIST Tier 1, item 3)
 
 Built deliberately open-ended rather than a fixed Dark/Light pair: the user

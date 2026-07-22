@@ -120,6 +120,13 @@ It lives entirely in `qt_shell.py`'s `FocusPreviewWindow`:
   its own `zstack_plane_done_signal` (kept separate from `burst_done_
   signal`, which is hardwired to `self._session`/`self._batch_active` —
   both wrong here).
+- `_on_zstack_plane_finished`'s success path calls `self.meter.reset_
+  field()` — `SPEC_focus_aid_fps_and_stack_reset.md` part 2's requirement
+  carried over from the manual `_on_tag_stack` path, per that spec's own
+  forward note (this WAS a real gap for one session's worth of time: the
+  z-stack aid shipped without it, caught and fixed once the spec was
+  re-read against the finished flow). Fires only on a successful plane
+  capture+tag, never on the failure branch above it.
 - While a stack is active, `capture_kind_combo`/`record_btn` are disabled
   (mirrors Record's own mutual-exclusion of `capture_kind_combo`);
   `capture_btn`/`_capture_action` stay enabled and repurposed.

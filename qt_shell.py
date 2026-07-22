@@ -2687,6 +2687,16 @@ if _HAVE_QT:
                 return
             plane = result["plane"]
             self._zstack["next_plane"] = plane + 1
+            # SPEC_focus_aid_fps_and_stack_reset.md part 2, carried over per
+            # its own forward-looking note: "whatever action ends up being
+            # 'this plane is locked in' -- whether that's today's
+            # _on_tag_stack or its future replacement." This IS that
+            # replacement's own successful-tag path (apply_tag already
+            # succeeded inside the worker above; a failed capture/tag took
+            # the isinstance(result, Exception) branch above and returned
+            # before reaching here) -- last plane's peak/settle is stale
+            # history, not a real reading for this one.
+            self.meter.reset_field()
             self._set_capture_controls(enabled=True, label="Capture")
             self.zstack_btn.setText(
                 "End Z-Stack ({} plane{})".format(
@@ -3968,6 +3978,13 @@ def render_check():
         zroot.mkdir(parents=True)
         zcam = FakeCamera(async_delay_s=0.0)
         zwin = FocusPreviewWindow(zcam, FocusMeter())
+        # SPEC_focus_aid_fps_and_stack_reset.md part 2, carried over to the
+        # z-stack aid per that spec's own forward-looking note: reset_field
+        # must fire on every SUCCESSFUL plane capture (this flow's version of
+        # "a stack plane tag succeeded"), and must NOT fire on a failed one.
+        zstack_reset_calls = []
+        real_zstack_reset = zwin.meter.reset_field
+        zwin.meter.reset_field = lambda: (zstack_reset_calls.append(1), real_zstack_reset())
         global OUT_ROOT
         _orig_out_root = OUT_ROOT
         OUT_ROOT = zroot
@@ -3991,6 +4008,9 @@ def render_check():
             _pump_until_idle()
             assert zwin._zstack["next_plane"] == 1, \
                 "plane 0 must be captured as part of starting, no separate press needed"
+            assert len(zstack_reset_calls) == 1, \
+                "plane 0's own successful capture+tag must reset the focus " \
+                "meter's field, same as a manual stack-plane tag always has"
 
             # Two more Capture presses -- the REPURPOSED _start_capture path,
             # not a direct call to _capture_zstack_plane, proving the
@@ -4001,6 +4021,10 @@ def render_check():
             _pump_until_idle()
             assert zwin._zstack["next_plane"] == 3, \
                 "each Capture press while active must capture the next plane"
+            assert len(zstack_reset_calls) == 3, \
+                "each successful plane capture must reset the focus meter's " \
+                "field, so refocusing for the next plane never starts from " \
+                "a stale, already-settled peak left over from the last one"
 
             plane_dirs = sorted(stack_root.glob("plane_*"))
             assert [p.name for p in plane_dirs] == ["plane_0", "plane_1", "plane_2"], \
@@ -4018,6 +4042,25 @@ def render_check():
                 assert isinstance(cap.get("sharpness_score"), float), \
                     "a plane capture should get the same post-capture QC " \
                     "score a normal science capture gets"
+
+            # A FAILED plane capture must NOT reset the field -- the spec's
+            # own constraint carried over exactly: only a successful tag.
+            # Run last (after the folder-layout/tagging checks above), since
+            # this deliberately leaves a plane_3 folder behind that would
+            # otherwise break the "exactly plane_0/1/2" assertion.
+            real_apply_tag = _stacks.apply_tag
+            _stacks.apply_tag = lambda *a, **k: (_ for _ in ()).throw(
+                ValueError("simulated tag failure"))
+            try:
+                zwin._start_capture()
+                _pump_until_idle()
+            finally:
+                _stacks.apply_tag = real_apply_tag
+            assert zwin._zstack["next_plane"] == 3, \
+                "a failed plane capture must not advance next_plane"
+            assert len(zstack_reset_calls) == 3, \
+                "a failed plane capture/tag must NOT reset the focus meter's " \
+                "field -- only a successful tag may"
 
             # Guard: ending while a capture is in flight is a no-op.
             zwin._capturing = True
@@ -4099,8 +4142,10 @@ def render_check():
               "science-kind session each, end guard refuses mid-capture, "
               "declining the process offer never opens the wizard, accepting "
               "opens it scoped to the stack's own root with every plane "
-              "pre-selected, and a plain Capture press with no active stack "
-              "is completely unaffected")
+              "pre-selected, a plain Capture press with no active stack "
+              "is completely unaffected, and (SPEC_focus_aid_fps_and_stack_"
+              "reset.md part 2, carried over) the focus meter resets on "
+              "every successful plane capture and never on a failed one")
 
         # Video resolution menu (BUILD_LIST Tier 1 item 5): a fresh window's
         # menu reflects whatever preference (if any) was already on disk,
