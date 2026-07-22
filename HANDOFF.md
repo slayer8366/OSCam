@@ -153,19 +153,28 @@ not because this app avoids persisting UI state in general (it doesn't).
 **Real on-rig bug, now fixed**: the live preview (`self.preview`, the real
 `QGlPicamera2` widget on-rig) was staying pinned at its old small
 windowed-mode size/position after `F11`, instead of filling the screen —
-confirmed via a photo of the actual tablet. Root cause: `QGlPicamera2`
-paints through its own native window (`WA_NativeWindow`/`WA_PaintOnScreen`,
-bypassing Qt's normal backing store), which does not reliably pick up the
-splitter's new post-panel-removal, post-`showFullScreen()` geometry from
-Qt's layout cascade alone. `_toggle_fullscreen`'s entry branch now
-schedules `self.preview.resize(self._splitter.size())` via
-`QTimer.singleShot(0, ...)` — one event-loop tick after `showFullScreen()`,
-once the window manager has actually applied the fullscreen geometry —
-which reliably unsticks it. `_FakePreview` (off-rig) has no such
-native-window quirk, so `--render-check` can only verify the resize call
-itself fires and lands (new assertion in the full-screen render-check
-block), not that it fixes the real EGL/native-surface behavior — that
-needs on-rig confirmation.
+confirmed via a photo of the actual tablet. First attempt (forcing an
+explicit `self.preview.resize(...)` a tick after `showFullScreen()`) had
+*zero* effect on-rig and was reverted — wrong theory. Real root cause,
+confirmed on this actual rig (`QApplication().platformName()` returns
+`"wayland"` by default here, running under `labwc`): `self.preview` is a
+`WA_NativeWindow` child widget doing its own direct EGL rendering, not a
+top-level window, and nested native child windows are a documented, real
+limitation of Qt5's native Wayland platform plugin — their underlying
+surface does not reliably follow the widget's own Qt-side geometry once
+the top-level window's own state changes out from under them (confirmed:
+full screen entry correctly resizes the top-level window and even fires
+the preview's own `resizeEvent`/`glViewport` call, but the visible native
+surface itself stays stuck). The fix is environmental, not app-logic:
+`qt_shell.py` now does `os.environ.setdefault("QT_QPA_PLATFORM", "xcb")`
+before PyQt5 resolves a platform, routing through the already-running
+XWayland instead — real X11 child subwindows do not have this limitation.
+`setdefault` so an explicit `QT_QPA_PLATFORM` in the environment still
+wins. This needs on-rig confirmation (F11 after this change) — if it's
+*still* wrong even under `xcb`, the native-window theory itself is wrong
+and the next place to look is whatever labwc/XWayland does differently on
+a real fullscreen `xdg_toplevel`/`_NET_WM_STATE_FULLSCREEN` transition
+versus a plain resize.
 
 **Themes detail worth knowing**: the user wants to design a dozen-plus
 side-panel aesthetics over time, so this is NOT a fixed theme list — the

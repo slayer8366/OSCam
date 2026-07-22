@@ -12,19 +12,34 @@ this file is the historical record of what happened and why.
 Reported live from the actual tablet (photo evidence): entering full
 screen resized the window itself but the live camera preview stayed
 pinned to a small rectangle at its old size/position instead of filling
-the screen. Root cause: `self.preview` is the real `QGlPicamera2` widget
-on-rig, which paints through its own native window (`WA_NativeWindow`/
-`WA_PaintOnScreen`, bypassing Qt's normal backing store) — that native
-surface does not reliably follow the splitter's new geometry from Qt's
-layout cascade alone once the panel is reparented out and the window goes
-full screen. `_toggle_fullscreen` now schedules an explicit
-`self.preview.resize(self._splitter.size())` via `QTimer.singleShot(0,
-...)`, one event-loop tick after `showFullScreen()` so the window manager
-has actually applied the fullscreen geometry first. `_FakePreview`
-(off-rig) has no native-window quirk, so the new `--render-check`
-assertion (pumps events, checks `preview.size() == splitter.size()`) only
-proves the resize call fires and lands correctly — not that it fixes the
-real EGL/native-surface behavior, which needs on-rig confirmation.
+the screen.
+
+First attempt: theorized `self.preview` (the real `QGlPicamera2` widget
+on-rig, a `WA_NativeWindow`/`WA_PaintOnScreen` widget painting through its
+own native window rather than Qt's backing store) just needed an explicit
+nudge, and had `_toggle_fullscreen` schedule `self.preview.resize(self.
+_splitter.size())` via `QTimer.singleShot(0, ...)`. Reported back as
+having *zero* effect on-rig — wrong theory, reverted (including the
+render-check assertion added for it).
+
+Real root cause, found by actually checking this rig's Qt platform
+(`QApplication().platformName()` → `"wayland"`, running under `labwc`):
+nested native child windows (exactly what `self.preview` is) are a
+documented, real limitation of Qt5's native Wayland platform plugin —
+their underlying surface does not reliably follow the widget's own
+Qt-side geometry once the top-level window's own state changes out from
+under them. Confirmed this really was it: the preview's own `resizeEvent`
+and `glViewport` call WERE firing correctly with the new size (so the
+first fix's theory about Qt-side resize not happening was itself wrong),
+but the actual visible native surface stayed stuck regardless — a
+Wayland-compositor-level disconnect, not anything `qt_shell.py`'s own
+code could paper over. Fix is environmental: `qt_shell.py` now does
+`os.environ.setdefault("QT_QPA_PLATFORM", "xcb")` before PyQt5 resolves a
+platform, routing through the already-running XWayland instead, where
+real X11 child subwindows don't have this limitation. `setdefault` so an
+explicit `QT_QPA_PLATFORM` in the environment still wins. Needs on-rig
+confirmation (this environment has no way to visually verify a real
+fullscreen Wayland/X11 compositor transition).
 
 ### `provenance.py` extraction, phase 1 (BUILD_LIST Tier 3, item 1)
 

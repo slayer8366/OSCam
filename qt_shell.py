@@ -57,6 +57,22 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
+# Force XWayland (xcb) over Qt's native "wayland" QPA platform, before PyQt5
+# resolves one at QApplication construction time -- setdefault so an explicit
+# QT_QPA_PLATFORM in the environment still wins. self.preview (the real
+# QGlPicamera2 on-rig, --camera) is a WA_NativeWindow child widget doing its
+# own direct EGL rendering, not a top-level window. Nested native child
+# windows are a documented, real limitation of Qt5's native Wayland platform
+# plugin: their underlying surface does not reliably follow the widget's own
+# Qt-side resize/reposition once the TOP-LEVEL window's own geometry changes
+# out from under them (confirmed on-rig: full screen entry correctly resizes
+# the top-level window and even fires the preview's own resizeEvent/glViewport
+# call, but the actual visible native surface stays stuck at its old small
+# size/position regardless). X11 child subwindows (available here via the
+# already-running XWayland, confirmed with QApplication().platformName()) do
+# not have this limitation -- decades-old, fully dynamic subwindow support.
+os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
+
 import numpy as np
 
 try:
@@ -1692,19 +1708,6 @@ if _HAVE_QT:
                 # rather than auto-showing and making the user dismiss it.
                 self._floating_panel.hide()
                 self.showFullScreen()
-                # On-rig bug: self.preview is the real QGlPicamera2 widget,
-                # which paints through its own native window (WA_NativeWindow/
-                # WA_PaintOnScreen) rather than Qt's normal backing store. That
-                # native surface does not reliably pick up the splitter's new
-                # post-panel-removal, post-showFullScreen() geometry from Qt's
-                # layout cascade alone -- observed on-rig as the live preview
-                # staying pinned at its old small windowed-mode size/position
-                # instead of filling the screen. Forcing an explicit resize
-                # one event-loop tick later (after the window manager has
-                # actually applied the fullscreen geometry) reliably unsticks
-                # it. _FakePreview (off-rig) has no such native-window quirk,
-                # so this is a no-op there beyond the redundant resize call.
-                QTimer.singleShot(0, lambda: self.preview.resize(self._splitter.size()))
 
         def _toggle_floating_panel(self):
             # No-op outside full screen (P does nothing in normal windowed
@@ -4035,15 +4038,6 @@ def render_check():
                 "the menu bar must hide on entering full screen"
             assert fswin._splitter.indexOf(fswin._panel) == -1, \
                 "the panel must be reparented OUT of the splitter on entry"
-            # The forced preview resize (see _toggle_fullscreen's own comment
-            # on the real QGlPicamera2 native-window bug this works around)
-            # is scheduled via QTimer.singleShot(0, ...), so it only actually
-            # runs once the event loop gets a turn.
-            _pump_until_idle()
-            assert fswin.preview.size() == fswin._splitter.size(), \
-                "the preview must be explicitly resized to fill the " \
-                "splitter once full screen has taken effect, not left at " \
-                "its stale pre-fullscreen size"
             assert fswin._floating_panel is not None
             assert not fswin._floating_panel.isVisible(), \
                 "the floating panel starts HIDDEN on entry -- explicit " \
@@ -4110,10 +4104,8 @@ def render_check():
             fscam.stop()
         print("full screen mode check PASS: entering hides the menu bar and "
               "reparents the real panel widget out of the splitter (hidden "
-              "by default, explicit toggle), and forces the preview to "
-              "fill the splitter once the event loop settles (the on-rig "
-              "QGlPicamera2-stuck-at-old-size fix); P shows/hides it while "
-              "full screen; exiting always restores the menu bar and the "
+              "by default, explicit toggle); P shows/hides it while full "
+              "screen; exiting always restores the menu bar and the "
               "panel's original splitter position regardless of the "
               "floating panel's own visibility state; P is a genuine "
               "no-op outside full screen; Ctrl+Escape exits only once an "
