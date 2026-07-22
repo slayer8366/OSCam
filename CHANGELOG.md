@@ -7,6 +7,33 @@ this file is the historical record of what happened and why.
 
 ## 2026-07-22
 
+### Planned: `provenance.py` extraction, phase 1 (BUILD_LIST Tier 3, item 1)
+
+Plan approved, not yet built (see `HANDOFF.md`'s note for the full design).
+This turn's own Tier 0 investigation confirmed `camera_backend.py` has
+zero session/provenance awareness — the original thin-adapter design
+intent held — so this is a clean pull-out, not a rewrite: `OUT_ROOT`,
+`PROFILE_PATH`, `load_profile`/`save_profile`, `_dump_meta`,
+`new_session_dir`/`new_zstack_root_dir`, `class Session`, and
+`record_capture`/`record_burst`/`record_hdr` move out of `qt_shell.py`
+into a new `provenance.py`. Unblocks Casual Mode (item 2) and the store-
+mechanics migration (phase 2, item 7).
+
+The one real hazard: `render_check()` mutates `OUT_ROOT`/`PROFILE_PATH`
+as module state to isolate its own test fixtures (and, after two real
+incidents this session, to keep the whole self-check off the real
+`~/imx/profile.json`). Every consumer — `qt_shell.py` itself, `gallery.py`,
+`wizard_pages.py` — must reference `provenance.OUT_ROOT`/`provenance.
+PROFILE_PATH` by attribute, never `from provenance import OUT_ROOT`,
+which would create a second binding that silently stops tracking the
+moment either side reassigns it. `provenance.py` will carry an explicit
+comment on the constants themselves saying so, not just this note.
+`list_sessions`/`load_session_json`/`processable_captures`/
+`capture_correction_status`/`archive_session_raws`/`build_display_flags`
+stay in `qt_shell.py` — reading `session.json` back out for browsing is a
+different concern from writing new provenance records, and the build
+list's own phase-1 scope doesn't cover them.
+
 ### Added full screen mode with a floating panel (BUILD_LIST Tier 2)
 
 The build list flagged this as blocked on a design decision (auto-hide on

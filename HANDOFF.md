@@ -55,9 +55,70 @@ Dark/Light pair) are all done. That's every Tier 1 item. Tier 3 item 4
 (processing wizard overhaul) is done — see `process_wizard.py` below.
 Tier 3 item 6 (the z-stack one-click aid, the thing the user actually
 asked for) is also done. **Tier 2 (full screen mode with a floating
-panel) is now also done** — see the note below. **Nothing is currently in
-progress** — check with the user for what's next (Tier 0 investigations,
-or further into Tier 3, are the remaining open items).
+panel) is now also done** — see the note below. **In progress:
+`provenance.py` extraction, phase 1 (Tier 3 item 1).** Plan approved, not
+yet built. Both Tier 0 investigations are also now done (see their own
+note below) — the second one (CA wizard's live-capture path still
+building its own independent camera) is what still gates the Measure-menu
+reorg (item 3).
+
+**`provenance.py` extraction plan** (read this before writing any of the
+code — it resolves a real Python gotcha that has already bitten this repo
+twice via a different mechanism):
+
+- Moving out of `qt_shell.py`, verbatim: `OUT_ROOT`, `PROFILE_PATH`,
+  `load_profile`/`save_profile`, `_dump_meta`, `new_session_dir`/
+  `new_zstack_root_dir`, `class Session`, `record_capture`/`record_burst`/
+  `record_hdr`. Confirmed via this session's own Tier 0 investigation that
+  `camera_backend.py` has zero session/provenance awareness, so this is a
+  clean pull-out of code that already lives in exactly one place.
+- **Staying** in `qt_shell.py` (out of phase-1 scope): `list_sessions`,
+  `load_session_json`, `processable_captures`, `capture_correction_
+  status`, `archive_session_raws`, `build_display_flags` — reading
+  `session.json` back out for browsing/processing-prep is a different
+  concern from writing new provenance records.
+- **The constraint that shapes everything**: `qt_shell.py`'s own
+  `render_check()` mutates `OUT_ROOT`/`PROFILE_PATH` as module state
+  (isolating test fixtures, and — after two real incidents this session —
+  keeping the whole self-check off the real `~/imx/profile.json`).
+  Whichever module owns these names is where that mutation has to happen.
+  Every consumer (`qt_shell.py`, `gallery.py`, `wizard_pages.py`) must
+  reference `provenance.OUT_ROOT`/`provenance.PROFILE_PATH` **by
+  attribute** — never `from provenance import OUT_ROOT`, which creates a
+  second, independent binding that silently stops tracking the moment
+  either side reassigns it. `provenance.py` carries an explicit comment
+  on the constants themselves about this, not just here.
+- `qt_shell.py`'s ~23 internal call sites (11 production, ~12 in
+  `render_check()`) get module-qualified: `Session(` → `provenance.
+  Session(`, etc. — matching how `_calibrate.X()`/`_stacks.X()`/
+  `_gallery.X()` already work in this file. `gallery.py`'s `OUT_ROOT`
+  default and `wizard_pages.py`'s `new_adhoc_dir()` get the same
+  treatment (both currently reach `qt_shell.OUT_ROOT`/`qt_shell.
+  new_session_dir` via their own private `_lazy_qt_shell()`).
+- Test relocation, not just a move: the `render_check()` blocks that
+  prove `Session`/`record_*` *mechanics* move into `provenance.py`'s own
+  `--render-check`; `qt_shell.py`'s keeps only what's actually GUI
+  behavior, calling into `provenance.*` as supporting infrastructure.
+- Not in this pass: phase 2 (store-mechanics migration for `calibrate.py`/
+  `annotations.py`/`ca_measure.py`) and Casual Mode (item 2) — both
+  explicitly depend on this landing first.
+
+**Tier 0 investigation results** (both now answered):
+1. `camera_backend.py` is NOT session-aware — see above.
+2. The CA wizard's live-capture path (via the shared `wizard_pages.
+   ImageSourcePage`/`_CapturePane`) still constructs its own independent
+   `Picamera2Camera()`, confirmed still true. This is exactly why
+   `CAWizard` still isn't wired into `qt_shell.py`'s own menu (only
+   referenced in comments there). Still gates the Measure-menu reorg
+   (Tier 3 item 3) — that reorg needs this fixed first, or needs to ship
+   with CA's live-capture path explicitly disabled/flagged.
+
+If you're picking this up mid-build: check `git log` and this section
+against what's actually in the repo — this describes the plan, not
+necessarily what has landed yet.
+
+Nothing else is currently in progress beyond the `provenance.py`
+extraction above.
 
 **Full screen mode detail worth knowing**: `F11` toggles; the interaction
 model (explicit toggle key, not auto-hide-on-idle or an always-visible
