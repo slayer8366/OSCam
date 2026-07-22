@@ -43,15 +43,19 @@ That 13-section checklist is a separate, older track from the newer
 `BUILD_LIST.md` (planning doc, not checked into the repo) the user is now
 working through in dependency order. Progress so far: Tier 1 items 1
 (focus aid tick rate + auto-reset on stack tag), 2 (`measure.py`'s stale
-tool-status text after a mark commits), and 5 (video resolution menu —
-see the note below; a persisted next-launch preference, not a live
-change, and the build list undersold how non-trivial "wire it up" turned
-out to be) are done. Tier 3 item 4 (Gallery module) is done — see
-`gallery.py` below. Tier 3 item 5 (processing wizard overhaul) is done —
-see `process_wizard.py` below. Tier 3 item 6 (the z-stack one-click aid,
-the thing the user actually asked for) is also done. **Remaining Tier 1
-items (3: themes, 4: single green-plane extraction utility) are next,
-unblocked, no investigation needed.**
+tool-status text after a mark commits), 4 (single green-plane extraction
+utility — "Extract green plane..." File menu action, wraps `debayer.py
+--green` as a subprocess, own `DEBAYER_TOOL`/`default_green_output_path`),
+and 5 (video resolution menu — see the note below; a persisted
+next-launch preference, not a live change, and the build list undersold
+how non-trivial "wire it up" turned out to be) are done. Tier 3 item 4
+(Gallery module) is done — see `gallery.py` below. Tier 3 item 5
+(processing wizard overhaul) is done — see `process_wizard.py` below.
+Tier 3 item 6 (the z-stack one-click aid, the thing the user actually
+asked for) is also done. **Remaining Tier 1 item 3 (themes for the UI) is
+next** — the most open-ended of the Tier 1 items (how many themes,
+dark/light, where the toggle lives), likely worth a quick design check-in
+before building, unlike items 2/4/5 above which needed none.
 
 **Video resolution menu detail worth knowing**: `camera_backend.py`'s
 `Picamera2Camera.set_video_resolution()` has never had a live effect —
@@ -182,6 +186,25 @@ print `SKIPPED` (not `FAILED`) when PyQt5 isn't importable — that's
 correct, expected behavior, not a bug to chase.
 
 ## Things that will bite you if you don't know them
+
+**Never run two `--render-check` invocations concurrently (any module,
+but especially `qt_shell.py`).** `save_profile()` writes the SHARED,
+single `~/imx/profile.json` (real hardware exposure/gain/WB data), and
+`FocusPreviewWindow.__init__` calls it via a probe-and-save fallback
+whenever `load_profile()` doesn't find a profile. It was, until this
+session, the one store writer left in `qt_shell.py` using a direct
+`write_text` instead of the atomic temp-file-then-`os.replace` pattern
+every other store here uses — fixed now, but the underlying exposure is
+structural: this file is real, shared, global state, not scoped to a
+temp dir the way every OTHER render-check fixture in this project
+carefully is. Two overlapping runs (background `&` processes, or running
+the full module sweep in parallel Bash calls instead of sequentially)
+racing a read against a write is the leading explanation for how real
+hardware profile data got silently overwritten with fake
+`FakeCamera`-probed values earlier this session — caught only by chance,
+via `git diff` before committing, not by anything in the test suite
+itself. Run the `--render-check` sweep sequentially, one module at a
+time, same as the command in this file's own "Recommended first move."
 
 **A render-check that HANGS (not fails) right after loading an image is
 almost certainly a blocking `QMessageBox` with no one to click it.**

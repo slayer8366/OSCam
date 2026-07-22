@@ -7,6 +7,54 @@ this file is the historical record of what happened and why.
 
 ## 2026-07-21
 
+### Fixed `save_profile()` to write atomically (data-loss hazard, not a build list item)
+
+Discovered while wrapping up the green-plane extraction work: `git diff`
+showed `profile.json` — real hardware exposure/gain/WB data — had been
+silently overwritten with fake `FakeCamera`-probed values. Root cause:
+`save_profile()` was the one store writer in `qt_shell.py` still using a
+direct `PROFILE_PATH.write_text(...)`, not the temp-file-then-`os.replace`
+pattern `save_pref`/`save_calibration`/`save_mark` all already use.
+`FocusPreviewWindow.__init__` falls back to probing and saving a fresh
+profile whenever `load_profile()` doesn't find one; two overlapping
+`--render-check` processes (run while debugging the `measure.py` hang
+earlier this session) racing a non-atomic write against a read is the
+leading explanation, though not caught in the act — a single clean run
+could not reproduce it. Fixed to the same atomic pattern regardless; real
+data was restored via `git checkout -- profile.json` before committing
+anything (confirmed against `git log`/`git show HEAD` first). Not a build
+list item, but real data loss from a real gap in this exact codebase,
+directly triggered by this session's own testing — worth fixing on sight
+rather than filing away.
+
+### Added the single green-plane extraction utility (BUILD_LIST Tier 1, item 4)
+
+A new "Extract green plane..." File menu action in `qt_shell.py`, exactly
+as small as the build list said it'd be: `debayer.py --green` already does
+the real work (zero-interpolation green extraction, provenance-stamped
+output), so this is a menu action wrapping it — pick a source via the
+Gallery pick dialog, pick a destination via a save-file dialog defaulting
+to `debayer.py`'s own CLI naming convention (new Qt-free
+`default_green_output_path()`, so a file this menu writes has the
+identical name someone would get running `debayer.py --green` by hand on
+the same input), then run it as a subprocess on a worker thread — same
+`subprocess.run(..., stdin=subprocess.DEVNULL)` shape `_run_process_cmd`
+already uses for `hdr_from_session.py`, new `DEBAYER_TOOL` constant
+alongside the existing `PROCESSOR` one. Its own signal/handler pair
+(`green_extract_done_signal`/`_on_green_extract_finished`), not a reuse of
+`_on_process_finished`, which offers to archive a session's raws on
+success — meaningless here, since this action has no session involved at
+all.
+
+New render-check coverage: `default_green_output_path` against
+`debayer.py`'s own default naming formula, plus a real end-to-end
+`debayer.py --green` subprocess call (driven through the real worker
+thread + queued signal, `processEvents()`-pumped the same way the z-stack
+aid's own coverage proved that mechanism works) asserting the output file
+exists with real `debayer.py` provenance (`"software": "debayer.py"`,
+`"transform": "single_green_extraction"`), plus a failure case (bad input
+path) reporting instead of hanging or being silently swallowed.
+
 ### Added the video resolution menu (BUILD_LIST Tier 1, item 5)
 
 The build list undersold this one: `camera_backend.py`'s

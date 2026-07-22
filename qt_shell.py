@@ -143,6 +143,11 @@ DEFAULT_BURST = 8
 MAX_BURST = 10
 DEFAULT_STOPS = [-2.0, -1.0, 0.0, 1.0, 2.0]
 PROCESSOR = Path(__file__).resolve().parent / "hdr_from_session.py"
+# GREEN-PLANE EXTRACTION UTILITY (BUILD_LIST Tier 1 item 4): debayer.py
+# itself does the real work (--green, zero interpolation); this is just a
+# menu action wrapping that existing tool, invoked the same by-absolute-
+# path subprocess pattern PROCESSOR already uses above.
+DEBAYER_TOOL = Path(__file__).resolve().parent / "debayer.py"
 FULL_MODE_LBL = "4056:3040:12:U"
 DENOISE = "off"
 SHARPNESS = "0"
@@ -156,9 +161,19 @@ def load_profile():
 
 
 def save_profile(locked):
-    """Persist camera profile (exposure, gains, WB) to disk."""
+    """Persist camera profile (exposure, gains, WB) to disk. Atomic
+    (temp file, then os.replace), same pattern save_pref/save_calibration/
+    save_mark already use -- this was the one store writer in the file
+    still using a direct write_text, and it cost real data: two overlapping
+    --render-check processes racing a direct write against a read corrupted
+    the actual on-disk hardware profile with fake FakeCamera-probed values
+    during this session's own testing (caught via git diff, not something
+    the render-check suite itself would ever catch, since nothing here
+    exercises concurrent writers)."""
     PROFILE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    PROFILE_PATH.write_text(json.dumps(locked, indent=2))
+    tmp = PROFILE_PATH.with_suffix(".tmp")
+    tmp.write_text(json.dumps(locked, indent=2))
+    os.replace(tmp, PROFILE_PATH)
 
 
 def _dump_meta(path, md):
@@ -204,6 +219,18 @@ def new_zstack_root_dir(root=None):
         n += 1
     d.mkdir(parents=True, exist_ok=True)
     return ts_n, d
+
+
+def default_green_output_path(raw_path):
+    """Where a green-plane extraction would land with no explicit output
+    given -- <raw's own dir>/<raw's own stem>_green.tif. Matches
+    debayer.py's own CLI default naming EXACTLY (main()'s own
+    `stem.parent / (stem.name + "_green.tif")` when no -o is given), so a
+    file this menu action writes has the identical name someone would get
+    running debayer.py --green on the same input by hand -- one naming
+    rule, not two."""
+    raw_path = Path(raw_path)
+    return raw_path.with_suffix("").parent / (raw_path.stem + "_green.tif")
 
 
 class Session:
@@ -321,7 +348,7 @@ try:
     from PyQt5.QtWidgets import (QApplication, QMainWindow, QLabel, QWidget,
                                  QVBoxLayout, QPushButton, QSlider, QCheckBox,
                                  QHBoxLayout, QSplitter, QMessageBox, QInputDialog,
-                                 QDialog, QComboBox, QActionGroup)
+                                 QDialog, QComboBox, QActionGroup, QFileDialog)
     from PyQt5.QtCore import QTimer, Qt, QRect, QEvent, pyqtSignal, QObject
     from PyQt5.QtGui import QImage, QPainter
     _HAVE_QT = True
@@ -1238,6 +1265,14 @@ if _HAVE_QT:
         # which has its own per-plane Session and no batch queue.
         zstack_plane_done_signal = pyqtSignal(object)
 
+        # GREEN-PLANE EXTRACTION UTILITY (BUILD_LIST Tier 1 item 4): debayer.py
+        # runs as a subprocess on a worker thread, same shape as
+        # process_done_signal above; kept separate since _on_process_finished
+        # is specific to the session-based processing flow (it offers to
+        # archive the session's raws on success, which makes no sense for a
+        # standalone extraction that has no session involved at all).
+        green_extract_done_signal = pyqtSignal(object)
+
         def __init__(self, camera, meter, tick_ms=33, display_flags=None):
             super().__init__()
             self.camera = camera
@@ -1534,6 +1569,7 @@ if _HAVE_QT:
             filemenu.addAction("Process files...", self._open_process_wizard)
             filemenu.addAction("Archive session raws...", self._open_archive_wizard)
             filemenu.addAction("Browse captures...", self._open_gallery_browser)
+            filemenu.addAction("Extract green plane...", self._open_green_extraction)
             filemenu.addAction("Quit", self.close)
             view = self.menuBar().addMenu("View")
             view.addAction("Reset field (R)").triggered.connect(self.meter.reset_field)
@@ -1631,6 +1667,7 @@ if _HAVE_QT:
             self.record_start_done_signal.connect(self._on_record_start_finished)
             self.record_stop_done_signal.connect(self._on_record_stop_finished)
             self.zstack_plane_done_signal.connect(self._on_zstack_plane_finished)
+            self.green_extract_done_signal.connect(self._on_green_extract_finished)
 
             self.camera.start()
             startup_on = bool(load_pref("focus_aid_at_startup", False))
@@ -3059,6 +3096,75 @@ if _HAVE_QT:
             wiz = _process_wizard.ProcessWizard(OUT_ROOT, self)
             wiz.exec_()
 
+        def _open_green_extraction(self):
+            # GREEN-PLANE EXTRACTION UTILITY (BUILD_LIST Tier 1 item 4): the
+            # real work is entirely debayer.py's own --green (zero
+            # interpolation) -- this menu action is just pick a source, pick
+            # a destination, run it as a subprocess, same pattern as
+            # _run_process_cmd above. No new image logic here.
+            if self._capturing:
+                return
+            if _gallery is None:
+                self._set_capture_status(
+                    "green extraction unavailable",
+                    "gallery.py not found beside this file, skipped")
+                return
+            dlg = _gallery.GalleryPickDialog(OUT_ROOT, self)
+            if dlg.exec_() != QDialog.Accepted:
+                return
+            paths = dlg.selected_paths()
+            if not paths:
+                return
+            raw_path = paths[0]
+            default_out = default_green_output_path(raw_path)
+            out_path, _ = QFileDialog.getSaveFileName(
+                self, "Save green plane", str(default_out),
+                "TIFF (*.tif *.tiff)")
+            if not out_path:
+                return
+            self._run_green_extract_cmd(raw_path, Path(out_path))
+
+        def _run_green_extract_cmd(self, raw_path, out_path):
+            if DEBAYER_TOOL is None or not DEBAYER_TOOL.exists():
+                self._set_capture_status(
+                    "green extraction unavailable",
+                    "debayer.py not found beside this file, skipped")
+                return
+            cmd = [sys.executable, str(DEBAYER_TOOL), str(raw_path),
+                  "--green", "-o", str(out_path)]
+            self._capturing = True   # reuse the same busy-guard the capture path uses
+            self._set_capture_controls(enabled=False, label="Extracting ...")
+            self._set_capture_status("extracting green plane ...",
+                                     "running: {}".format(" ".join(cmd)))
+
+            def _worker():
+                try:
+                    r = subprocess.run(cmd, capture_output=True, text=True,
+                                       stdin=subprocess.DEVNULL)
+                    payload = (r.returncode == 0, str(out_path), r.stdout, r.stderr)
+                except Exception as exc:
+                    payload = (False, str(out_path), "", str(exc))
+                self.green_extract_done_signal.emit(payload)
+
+            threading.Thread(target=_worker, daemon=True).start()
+
+        def _on_green_extract_finished(self, payload):
+            # Own handler, not a reuse of _on_process_finished: that one
+            # offers to archive a session's raws on success, which makes no
+            # sense here -- this action has no session involved at all.
+            self._capturing = False
+            self._set_capture_controls(enabled=True, label="Capture")
+            ok, out_path, stdout, stderr = payload
+            if ok:
+                self._set_capture_status(
+                    "green plane saved",
+                    "wrote {}\n\n{}".format(out_path, stdout[-4000:]))
+            else:
+                detail = (stderr or stdout)[-4000:]
+                self._set_capture_status(
+                    "green extraction failed",
+                    "green extraction failed:\n\n{}".format(detail))
+
         def _open_gallery_browser(self):
             # Standalone browse mode (gallery.py): just looking, no commit.
             # Independent of self._capturing -- it only reads the filesystem,
@@ -3905,6 +4011,61 @@ def render_check():
               "mutually exclusive, choosing one persists it immediately and "
               "updates the status text, choosing Default clears the "
               "preference entirely")
+
+        # Green-plane extraction utility (BUILD_LIST Tier 1 item 4): a real
+        # subprocess call to debayer.py --green, driven the same way the
+        # z-stack aid's own worker thread was proven -- processEvents()
+        # pumped until _capturing clears, since green_extract_done_signal is
+        # a genuinely queued cross-thread connection too.
+        import tifffile
+
+        assert default_green_output_path(Path("/a/b/science_frame_0000.dng")) == \
+            Path("/a/b/science_frame_0000_green.tif"), \
+            "must match debayer.py's own default CLI naming exactly"
+
+        gx_root = Path("/tmp/zynergy_render_check_green_extract")
+        if gx_root.exists():
+            shutil.rmtree(gx_root)
+        gx_root.mkdir(parents=True)
+        gxcam = FakeCamera(async_delay_s=0.0)
+        gxwin = FocusPreviewWindow(gxcam, FocusMeter())
+        try:
+            mosaic = np.random.default_rng(0).integers(
+                0, 4000, size=(32, 32)).astype(np.uint16)
+            raw_path = gx_root / "science_frame_0000.tif"
+            tifffile.imwrite(str(raw_path), mosaic)
+            out_path = gx_root / "extracted_green.tif"
+
+            gxwin._run_green_extract_cmd(raw_path, out_path)
+            _pump_gxwin_deadline = time.time() + 15.0
+            while gxwin._capturing and time.time() < _pump_gxwin_deadline:
+                qtapp.processEvents()
+                time.sleep(0.005)
+            assert not gxwin._capturing, "green extraction never completed"
+            assert out_path.is_file(), "debayer.py --green must have written the output"
+            desc = json.loads(tifffile.TiffFile(str(out_path)).pages[0].description)
+            assert desc.get("software") == "debayer.py"
+            assert desc.get("transform") == "single_green_extraction", \
+                "must be a real debayer.py --green extraction, not a copy"
+            assert "green" in gxwin.capture_status.text().lower()
+
+            # A failure (bad input path) must be reported, not silently
+            # swallowed or left looking like it's still running.
+            gxwin._run_green_extract_cmd(gx_root / "does_not_exist.tif", out_path)
+            _pump_gxwin_deadline = time.time() + 15.0
+            while gxwin._capturing and time.time() < _pump_gxwin_deadline:
+                qtapp.processEvents()
+                time.sleep(0.005)
+            assert not gxwin._capturing
+            assert "failed" in gxwin.capture_status.text().lower()
+        finally:
+            gxcam.stop()
+            shutil.rmtree(gx_root, ignore_errors=True)
+        print("green-plane extraction check PASS: default output naming "
+              "matches debayer.py's own CLI convention exactly, a real "
+              "debayer.py --green subprocess call produces a real, "
+              "correctly-provenanced green-plane file, and a failed "
+              "extraction is reported rather than swallowed")
 
         # _score_capture_sharpness (section 13's post-capture QC): a real
         # FakeCamera burst, scored against its OWN written frame via
