@@ -7,6 +7,76 @@ this file is the historical record of what happened and why.
 
 ## 2026-07-24
 
+### Intent: Provenance relocation, Keep RAW, and auto-processing (Preferences-dialog plan set, Part 03)
+
+Recording the intent to build Part 03 before any code exists, per this
+project's two-phase rule. Full design in `PLAN_00_context_and_
+supersession.md` and `PLAN_03_provenance_relocation_and_keep_raw.md`
+(drafted, not checked into the repo), plus `CORRECTION_flat_dark_
+framing.md` (also not checked in), which corrects how Flat/Dark
+correction status must be recorded and displayed — as the named
+technique that ran or was skipped, never folded into a generic
+"processing complete." This entry also captures folder-layout and
+plumbing decisions settled in conversation that go beyond the plan
+files' own text.
+
+**Supersedes `casual_mode.py` in full** (see Plan 00) — its capture-and-
+save logic, format handling, and `(Exception, SystemExit)` catch around
+`hdr_from_session.process()` are reused, lifted into the main capture
+path; the module itself is deleted at the end of this part, not before.
+
+**Folder layout** (three Preferences > Advanced settings; `provenance_
+folder` already exists from Part 01, adding `capture_folder` (default
+`~/captures`) and `flat_library_folder` (default `~/flat`)):
+- `<capture_folder>/<timestamp>/` — science/hdr/snap raws + processed
+  outputs (final.tif, final_display.*, per-format exports).
+- `<capture_folder>/<timestamp>/dark/` — that session's own dark
+  sub-burst, nested under it.
+- `<capture_folder>/focal/<stack_id>/plane_N/` — z-stack, moved off the
+  direct-under-`OUT_ROOT` location it uses today.
+- `<flat_library_folder>/` — one standing set, replaced outright by each
+  new Flat capture, reused across every session. `hdr_from_session.py`'s
+  "last flat wins" changes from scanning the current session's own
+  `captures` list to reading this one fixed folder.
+- `<provenance_folder>/<timestamp>/` — `session.json` + meta sidecars
+  only, no image bytes. A new field on the session record stores the
+  capture dir's absolute path, since provenance and images no longer
+  share a folder.
+
+**Provenance is always written; only Keep RAW Images gates what
+survives.** Off means raws + the linear master (`single_master.tif`/
+`master_*.tif`/`hdr_linear.tif`) are deleted once processing succeeds,
+and the session record states the discard was deliberate — a later
+reader must be able to tell "user chose not to keep these" from "a file
+is missing," never leave that as a silent omission. `measure.py` gets a
+distinct, plain-language error for a raw-less capture, and must never
+silently fall back to the JPG display derivative (structurally excluded
+from `annotations.json` already, for the same reason).
+
+**Auto-processing replaces `_offer_process`'s Yes/No `QMessageBox`.**
+Snap, Science, and HDR all process automatically now — snap is a new
+call site, since today only science/hdr ever reach `_run_process_cmd`
+(a single frame never went through frame-averaging/debayer via this
+path before). `hdr_from_session.py`'s `process()` stops just `print()`ing
+its `ran`/`skipped` stage lists and returns them structured, so `qt_
+shell.py` can persist `"flat_correction": "applied"` / `"dark_
+correction": "skipped (not selected)"` onto the capture's own `session.
+json` entry — per the correction doc, this must name the technique, not
+report a generic "processing" status, and a capture with neither
+selected states that explicitly rather than omitting the fields. Flat
+and Dark selection stays exactly as visible in the capture UI as it is
+today — not moved to Advanced, not collapsed into one implied toggle.
+
+**Not yet built, deliberately no code changed for this entry** —
+verification and documentation only. Build order: `provenance.py`'s new
+roots + Session split, `qt_shell.py`'s Preferences additions and capture
+path re-plumbing, `hdr_from_session.py`'s structured return and
+flat-library lookup, the auto-process wiring, Keep RAW deletion,
+`measure.py`'s legible failure, `gallery.py`/`process_wizard.py` path
+resolution, then lifting casual_mode.py's format checkboxes + JPG-first
+delivery before deleting it. A completion entry follows once this lands,
+noting anything that deviated.
+
 ### Camera capability query: `sensor_modes` hardware-verified (Preferences-dialog plan set, Part 02 follow-up)
 
 Follow-up to the Part 02 completion entry below, which shipped
