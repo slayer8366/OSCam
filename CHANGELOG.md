@@ -7,6 +7,83 @@ this file is the historical record of what happened and why.
 
 ## 2026-07-24
 
+### Camera capability query: `sensor_modes` hardware-verified (Preferences-dialog plan set, Part 02 follow-up)
+
+Follow-up to the Part 02 completion entry below, which shipped
+self-check-verified only and flagged the `Picamera2Camera.get_
+capabilities()` `sensor_modes` enumeration as unconfirmed against the
+real IMX477. Closed that gap on a session that turned out to have real
+rig access: `Picamera2().sensor_modes` read directly (no Qt/GUI layer
+involved, so no dependency on the GUI issue noted below) and
+`get_capabilities()`'s exact size/format-translation logic run against
+the result. Real numbers: 5 discrete sizes ((1332,990), (2028,1080),
+(2028,1520), (4056,2160), (4056,3040)) and 3 formats (SRGGB8/10/12).
+Also confirms, on real hardware rather than by reading Picamera2's
+source, that `sensor_modes`' `"format"` field really is a non-plain
+libcamera-typed object (`SRGGB10_CSI2P` etc., not a string) — the exact
+thing Part 02's `"unpacked"`-not-`"format"` choice was guarding against.
+
+**Still not verified**: calling `get_capabilities()` through the full
+`Picamera2Camera` class construction, which embeds a `QGlPicamera2` GL
+preview widget — that failed on this rig with `EGLError: EGL_BAD_ALLOC`
+on `eglCreateWindowSurface` (confirmed no other process held the camera
+at the time, so this is an EGL/display environment issue, not resource
+contention). That's a separate, still-open gap in exercising this class
+through its normal construction path, orthogonal to the capability-query
+logic itself, which is now confirmed correct against real data. No code
+changed for this entry — verification and documentation only. Full
+project `--render-check` sweep (all 16 modules) re-run and still passes.
+
+### Preferences dialog: build complete (Preferences-dialog plan set, Part 01)
+
+`5158ff8` (intent, recorded retrospectively — see that entry below for
+why), plus this entry's commit.
+
+`PreferencesDialog` lands in `qt_shell.py` as designed in the intent
+entry: one sectioned dialog (Capture and Video Options / Appearance /
+Advanced) replacing the standalone Video resolution and Theme submenus
+and the Casual Mode action. Capture and Video Options is built entirely
+from `camera.get_capabilities()` — a capability the driver omits (e.g.
+`stream_formats` on `Picamera2Camera` today) produces no row at all, not
+an empty or disabled one. Capture/Video/Appearance settings persist only
+on OK (next-launch, same as the menus they replace); Advanced settings
+(Keep RAW Images, provenance folder location, cache auto-clean) persist
+immediately on change, independent of OK/Cancel. `CASUAL_MODE_DEFAULT`
+and the Options > Casual Mode action are removed from `qt_shell.py`;
+`casual_mode.py` itself is untouched, staying until Part 03.
+
+Two things the intent entry didn't call out, surfaced during the build:
+
+- A new `capture_resolution_kwargs()` (mirroring the existing `video_
+  resolution_kwargs()`) wires the dialog's capture-resolution choice
+  through to `Picamera2Camera`'s `full_res` constructor kwarg in
+  `main()` — the intent entry described rendering `get_capabilities()`
+  results but not this specific plumbing back to camera construction.
+- The Advanced section's controls persist their prefs for real, but
+  nothing reads them yet — there is no retention system to gate. That's
+  scaffolding ahead of Part 03 (not yet drafted), not a gap in this part.
+
+**Verified**: full project `--render-check` sweep (all 16 modules,
+including `camera_backend.py`) passes with no regressions.
+`qt_shell.py`'s own check covers the dialog directly: an omitted
+capability produces no control, a present one produces a real control,
+next-launch settings persist only on OK, Advanced settings persist
+immediately and survive Cancel, and a stale `"casual_mode"` gui_prefs key
+(left over from the superseded build) degrades gracefully rather than
+raising. **Not yet verified**: this dialog as a live GUI on-rig,
+specifically — blocked by the same `QGlPicamera2` EGL surface failure
+noted in the Part 02 follow-up above, which prevents constructing a live
+`Picamera2Camera` at all in this environment, not something specific to
+this dialog.
+
+**Process note**: this project's two-phase rule wants an intent entry
+before any code exists. Here, Part 01's intent entry was written
+*after* the code already existed (see that entry's own text below for
+why) — this completion entry follows normally, landing alongside the
+code's first commit, but the ordering that produced it was retrospective
+rather than sequential. Recording that honestly here rather than
+smoothing it over.
+
 ### Intent: camera capability query (Preferences-dialog plan set, Part 02)
 
 Recording the intent to build `camera_backend.py`'s capability query

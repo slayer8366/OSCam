@@ -183,19 +183,13 @@ PROCESSOR = Path(__file__).resolve().parent / "hdr_from_session.py"
 # path subprocess pattern PROCESSOR already uses above.
 DEBAYER_TOOL = Path(__file__).resolve().parent / "debayer.py"
 
-# --- CASUAL MODE (BUILD_LIST Tier 3 item 2) ---------------------------------
-# Same next-launch persisted-preference shape as Video resolution/Theme
-# above (see VIDEO_RESOLUTION_PRESETS' own comment for why a live toggle
-# is out of scope -- same reasoning: this app never reconfigures the
-# camera or rebuilds its window while running). Default is ON, not OFF --
-# this INVERTS the project's usual provenance-is-the-norm stance; that is
-# deliberate, confirmed by Brandon, not an oversight (see HANDOFF.md's
-# Casual Mode section). main() reads this to decide which window class to
-# build; casual_mode.py itself is imported lazily, only inside that
-# branch (see HANDOFF.md's circular-import section for why a top-level
-# import here would be the wrong shape for a module constructed once, at
-# launch).
-CASUAL_MODE_DEFAULT = True
+# CASUAL MODE (BUILD_LIST Tier 3 item 2) is superseded (Preferences-dialog
+# plan set, PLAN_00_context_and_supersession.md): there is no toggle, no
+# second window class, no launch branch, no separate layout any more --
+# CASUAL_MODE_DEFAULT and the Options > Casual Mode action are gone.
+# casual_mode.py itself is NOT deleted yet (that happens in the plan
+# set's own Part 03, not yet drafted); it is simply unreferenced from
+# here on.
 
 # --- THEMES (BUILD_LIST Tier 1 item 3) --------------------------------------
 # Deliberately open-ended, not a fixed Dark/Light pair: the user plans to
@@ -302,7 +296,9 @@ try:
     from PyQt5.QtWidgets import (QApplication, QMainWindow, QLabel, QWidget,
                                  QVBoxLayout, QPushButton, QSlider, QCheckBox,
                                  QHBoxLayout, QSplitter, QMessageBox, QInputDialog,
-                                 QDialog, QComboBox, QActionGroup, QFileDialog)
+                                 QDialog, QComboBox, QActionGroup, QFileDialog,
+                                 QFormLayout, QGroupBox, QSpinBox, QLineEdit,
+                                 QDialogButtonBox)
     from PyQt5.QtCore import QTimer, Qt, QRect, QEvent, pyqtSignal, QObject
     from PyQt5.QtGui import QImage, QPainter, QKeyEvent, QCloseEvent
     _HAVE_QT = True
@@ -336,7 +332,8 @@ NORMAL_SHUTTER_MAX_US = 50_000
 
 PREFS_PATH = Path.home() / ".zynergy" / "gui_prefs.json"
 
-# --- VIDEO RESOLUTION MENU (BUILD_LIST Tier 1 item 5) -----------------------
+# --- VIDEO/CAPTURE RESOLUTION (BUILD_LIST Tier 1 item 5; Preferences-dialog
+# plan set, Part 01/02) --------------------------------------------------
 # camera_backend.py's set_video_resolution() validates input but, as its own
 # docstring says plainly, currently has NO live effect: a recording always
 # encodes the preview config's fixed "main" stream, built once when the
@@ -344,19 +341,14 @@ PREFS_PATH = Path.home() / ".zynergy" / "gui_prefs.json"
 # CONSTRUCTION time, not calling a setter mid-session -- doing that live
 # would mean tearing down and rebuilding the camera+widget while running,
 # exactly the kind of in-session camera reconfiguration this project has
-# been burned by before (see start_recording's own history notes). So this
-# menu writes a persisted preference (gui_prefs.json, the same store/pattern
-# panel_width and the focus-aid startup options already use) that main()
-# reads at camera-construction time -- takes effect on the NEXT launch, not
-# immediately, and says so.
-# "2K" here means 2048x1080 (DCI 2K flat), not the also-common informal
-# usage for 2560x1440 -- picked because it is the more literal "2K" and
-# there is no ambiguity to inherit either way.
-VIDEO_RESOLUTION_PRESETS = [
-    ("Default ({}x{}, current preview)".format(PREVIEW_RES[0], PREVIEW_RES[1]), None),
-    ("1080p (1920x1080)", (1920, 1080)),
-    ("2K (2048x1080)", (2048, 1080)),
-]
+# been burned by before (see start_recording's own history notes). So the
+# Preferences dialog's Video resolution control (populated from
+# camera.get_capabilities(), never a hardcoded list -- see PLAN_02) writes a
+# persisted preference (gui_prefs.json, the same store/pattern panel_width
+# and the focus-aid startup options already use) that main() reads at
+# camera-construction time -- takes effect on the NEXT launch, not
+# immediately, and the dialog says so. Capture resolution is the same shape,
+# feeding Picamera2Camera's existing full_res constructor parameter.
 
 
 def video_resolution_kwargs(pref=None):
@@ -369,6 +361,17 @@ def video_resolution_kwargs(pref=None):
         return {}
     w, h = pref
     return {"preview_res": (int(w), int(h))}
+
+
+def capture_resolution_kwargs(pref=None):
+    """Camera-construction kwargs for the persisted "capture_resolution"
+    pref, same next-launch shape as video_resolution_kwargs above: {} if
+    none set (the camera's own FULL_RES default applies), else
+    {"full_res": (w, h)}."""
+    if pref is None:
+        return {}
+    w, h = pref
+    return {"full_res": (int(w), int(h))}
 
 
 # ---------------------------------------------------------------------------
@@ -1105,6 +1108,221 @@ if _HAVE_QT:
             return self._session_dirs[idx]
 
 
+    class PreferencesDialog(QDialog):
+        """Options > Preferences... (Preferences-dialog plan set, Part 01).
+        One sectioned dialog, replacing the old standalone Video
+        resolution/Theme submenus and the Casual Mode action.
+
+        Capture and Video Options is populated ENTIRELY from
+        camera.get_capabilities() (PLAN_02_camera_capability_query.md) --
+        no hardcoded resolution/format list, no Picamera2-specific value
+        anywhere in this class. A capability the driver omits from its
+        returned dict produces no control at all here, never an empty or
+        disabled one (absent vs. empty -- see get_capabilities()'s own
+        docstring).
+
+        Live versus next-launch (PLAN_01's own rule): Capture/Video/
+        Appearance settings are camera-construction-time or startup-time
+        facts, so they persist only when OK is pressed, exactly like the
+        menus they replace. Advanced (retention/cache) settings touch
+        nothing about the camera, so they persist immediately on change,
+        independent of OK/Cancel -- Cancel closes the dialog but does not
+        revert an Advanced change already written to disk.
+        """
+
+        def __init__(self, camera, parent=None):
+            super().__init__(parent)
+            self.setWindowTitle("Preferences")
+            caps = camera.get_capabilities()
+            layout = QVBoxLayout(self)
+
+            # --- Capture and Video Options ----------------------------------
+            cap_group = QGroupBox("Capture and Video Options")
+            cap_form = QFormLayout(cap_group)
+
+            self._capture_res_combo = self._resolution_combo(
+                caps.get("capture_resolutions", []), load_pref("capture_resolution", None))
+            cap_form.addRow("Capture resolution (next launch):", self._capture_res_combo)
+
+            self._capture_fmt_combo = self._choice_combo(
+                caps.get("capture_formats", []), load_pref("capture_format", None))
+            self._capture_fmt_combo.setToolTip(
+                "Persisted, not yet applied to captures -- camera_backend.py "
+                "has no format-selection hook for a still capture yet.")
+            cap_form.addRow("Capture file format (next launch):", self._capture_fmt_combo)
+
+            self._video_res_combo = self._resolution_combo(
+                caps.get("video_resolutions", []), load_pref("video_resolution", None))
+            cap_form.addRow("Video resolution (next launch):", self._video_res_combo)
+
+            self._video_fmt_combo = self._choice_combo(
+                caps.get("video_formats", []), load_pref("video_format", None))
+            self._video_fmt_combo.setToolTip(
+                "Persisted, not yet applied to recordings -- start_recording() "
+                "always uses H264Encoder today.")
+            cap_form.addRow("Video file format (next launch):", self._video_fmt_combo)
+
+            # Stream format/resolution: present only if the driver actually
+            # reports them (Picamera2Camera does not yet -- no stream server
+            # exists in this backend). Absent means no row at all, not an
+            # empty or disabled one.
+            self._stream_fmt_combo = None
+            self._stream_res_combo = None
+            if "stream_formats" in caps:
+                self._stream_fmt_combo = self._choice_combo(
+                    caps["stream_formats"], load_pref("stream_format", None))
+                cap_form.addRow("Stream format (next launch):", self._stream_fmt_combo)
+            if "stream_resolutions" in caps:
+                self._stream_res_combo = self._resolution_combo(
+                    caps["stream_resolutions"], load_pref("stream_resolution", None))
+                cap_form.addRow("Stream resolution (next launch):", self._stream_res_combo)
+
+            layout.addWidget(cap_group)
+
+            # --- Appearance ---------------------------------------------------
+            # Theme is capture-independent (not camera configuration, doesn't
+            # fit Advanced) -- its own small section, same next-launch shape
+            # as the section above, per PLAN_01's own judgment call.
+            appearance_group = QGroupBox("Appearance")
+            appearance_form = QFormLayout(appearance_group)
+            self._theme_combo = QComboBox()
+            current_theme = load_pref("theme", None)
+            theme_choices = [("Default", None)] + [
+                (name, name) for name, _qss in discover_themes()]
+            for label, theme_name in theme_choices:
+                self._theme_combo.addItem(label, theme_name)
+            idx = self._index_for_data(self._theme_combo, current_theme)
+            self._theme_combo.setCurrentIndex(idx if idx >= 0 else 0)
+            appearance_form.addRow("Theme (next launch):", self._theme_combo)
+            layout.addWidget(appearance_group)
+
+            # --- Advanced -------------------------------------------------------
+            adv_group = QGroupBox("Advanced")
+            adv_form = QFormLayout(adv_group)
+
+            # Keep RAW Images: the only setting in this dialog that changes
+            # what gets retained (PLAN_00/PLAN_03 semantics land later; this
+            # part only builds the control and persists it). Defaults ON --
+            # this project's usual provenance-by-default stance, and raws
+            # are what green-plane measurement is taken from, so silently
+            # discarding them by default would break that capability.
+            self._keep_raw_check = QCheckBox(
+                "Keep RAW Images (applies to captures from now on, not retroactively)")
+            self._keep_raw_check.setChecked(bool(load_pref("keep_raw_images", True)))
+            self._keep_raw_check.toggled.connect(
+                lambda on: save_pref("keep_raw_images", bool(on)))
+            adv_form.addRow(self._keep_raw_check)
+
+            prov_row = QHBoxLayout()
+            self._provenance_edit = QLineEdit(
+                str(load_pref("provenance_folder", str(Path.home() / "provenance"))))
+            self._provenance_edit.editingFinished.connect(
+                lambda: save_pref("provenance_folder", self._provenance_edit.text()))
+            prov_browse = QPushButton("Browse...")
+            prov_browse.clicked.connect(self._on_browse_provenance_folder)
+            prov_row.addWidget(self._provenance_edit)
+            prov_row.addWidget(prov_browse)
+            adv_form.addRow("Provenance folder location:", prov_row)
+
+            clean_now_btn = QPushButton("Clean cache now")
+            clean_now_btn.clicked.connect(self._on_clean_cache_now)
+            adv_form.addRow(clean_now_btn)
+            self._clean_cache_status = QLabel("")
+            adv_form.addRow(self._clean_cache_status)
+
+            auto_clean_row = QHBoxLayout()
+            self._auto_clean_check = QCheckBox("Automatically clean cache after")
+            self._auto_clean_check.setChecked(bool(load_pref("cache_auto_clean_enabled", False)))
+            self._auto_clean_check.toggled.connect(
+                lambda on: save_pref("cache_auto_clean_enabled", bool(on)))
+            self._auto_clean_days = QSpinBox()
+            self._auto_clean_days.setRange(1, 365)
+            self._auto_clean_days.setValue(int(load_pref("cache_auto_clean_days", 30)))
+            self._auto_clean_days.valueChanged.connect(
+                lambda v: save_pref("cache_auto_clean_days", int(v)))
+            auto_clean_row.addWidget(self._auto_clean_check)
+            auto_clean_row.addWidget(self._auto_clean_days)
+            auto_clean_row.addWidget(QLabel("days"))
+            adv_form.addRow(auto_clean_row)
+
+            layout.addWidget(adv_group)
+
+            buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+            buttons.accepted.connect(self._on_accept)
+            buttons.rejected.connect(self.reject)
+            layout.addWidget(buttons)
+
+        @staticmethod
+        def _index_for_data(combo, value):
+            # NOT combo.findData(value): PyQt5's findData does not reliably
+            # match tuple item data built at runtime against an equal-but-
+            # distinct tuple passed to findData (confirmed empirically --
+            # itemData(i) == value is True while findData(value) still
+            # returns -1 for a runtime-built tuple, though it happens to
+            # work for tuple literals the interpreter constant-folds to the
+            # same object). A plain Python == scan sidesteps whatever
+            # QVariant-level identity check findData is actually doing.
+            for i in range(combo.count()):
+                if combo.itemData(i) == value:
+                    return i
+            return -1
+
+        @staticmethod
+        def _resolution_combo(resolutions, current):
+            combo = QComboBox()
+            current = tuple(current) if current is not None else None
+            combo.addItem("Default (current preview)", None)
+            for w, h in resolutions:
+                combo.addItem("{}x{}".format(w, h), (w, h))
+            idx = PreferencesDialog._index_for_data(combo, current)
+            combo.setCurrentIndex(idx if idx >= 0 else 0)
+            return combo
+
+        @staticmethod
+        def _choice_combo(choices, current):
+            combo = QComboBox()
+            for c in choices:
+                combo.addItem(str(c), c)
+            idx = PreferencesDialog._index_for_data(combo, current)
+            combo.setCurrentIndex(idx if idx >= 0 else 0)
+            return combo
+
+        def _on_browse_provenance_folder(self):
+            chosen = QFileDialog.getExistingDirectory(
+                self, "Choose provenance folder", self._provenance_edit.text())
+            if chosen:
+                self._provenance_edit.setText(chosen)
+                save_pref("provenance_folder", chosen)
+
+        def _on_clean_cache_now(self):
+            # No green-plane cache exists yet (Part 04, not yet drafted) --
+            # report that honestly rather than guessing at a cache directory
+            # that isn't defined anywhere, or silently claiming success.
+            self._clean_cache_status.setText(
+                "no cache to clean yet (green-plane cache lands in a later part)")
+
+        def _on_accept(self):
+            # Capture/Video/Appearance are next-launch: persist here, on OK,
+            # rather than live on every combo change. Advanced settings
+            # already persisted live, above, as each control changed.
+            self._save_next_launch_prefs()
+            self.accept()
+
+        def _save_next_launch_prefs(self):
+            def _res(combo):
+                data = combo.currentData()
+                return list(data) if data is not None else None
+            save_pref("capture_resolution", _res(self._capture_res_combo))
+            save_pref("capture_format", self._capture_fmt_combo.currentData())
+            save_pref("video_resolution", _res(self._video_res_combo))
+            save_pref("video_format", self._video_fmt_combo.currentData())
+            if self._stream_fmt_combo is not None:
+                save_pref("stream_format", self._stream_fmt_combo.currentData())
+            if self._stream_res_combo is not None:
+                save_pref("stream_resolution", _res(self._stream_res_combo))
+            save_pref("theme", self._theme_combo.currentData())
+
+
     class FocusPreviewWindow(QMainWindow):
         """The live focus-aid + capture window. Embeds either the on-rig GL
         preview (camera.widget) or the off-rig _FakePreview. A QTimer tick pulls
@@ -1527,53 +1745,13 @@ if _HAVE_QT:
             self._reset_on_aid_action.setChecked(bool(load_pref("reset_field_on_aid_enable", True)))
             self._startup_action.setChecked(bool(load_pref("focus_aid_at_startup", False)))
 
-            # VIDEO RESOLUTION MENU (BUILD_LIST Tier 1 item 5): a persisted
-            # preference, not a live change -- see VIDEO_RESOLUTION_PRESETS'
-            # own comment for why. Exclusive checkable actions (QActionGroup),
-            # the standard Qt shape for "pick one of N" in a menu.
-            video_res_menu = opts.addMenu("Video resolution")
-            self._video_res_group = QActionGroup(self)
-            self._video_res_group.setExclusive(True)
-            current_video_res = load_pref("video_resolution", None)
-            current_video_res = (tuple(current_video_res)
-                                 if current_video_res is not None else None)
-            for label, res in VIDEO_RESOLUTION_PRESETS:
-                action = video_res_menu.addAction(label)
-                action.setCheckable(True)
-                action.setChecked(res == current_video_res)
-                self._video_res_group.addAction(action)
-                action.triggered.connect(
-                    lambda checked, r=res, l=label: self._on_video_resolution_chosen(r, l))
-
-            # THEME MENU (BUILD_LIST Tier 1 item 3): built by scanning
-            # THEMES_ROOT, never a hardcoded list -- see discover_themes'
-            # own comment for why. "Default" (no stylesheet) is always
-            # present even with zero themes designed yet. Same persisted,
-            # next-launch pattern as Video resolution, for consistency.
-            theme_menu = opts.addMenu("Theme")
-            self._theme_group = QActionGroup(self)
-            self._theme_group.setExclusive(True)
-            current_theme = load_pref("theme", None)
-            theme_choices = [("Default", None)] + [
-                (name, name) for name, _qss in discover_themes()]
-            for label, theme_name in theme_choices:
-                action = theme_menu.addAction(label)
-                action.setCheckable(True)
-                action.setChecked(theme_name == current_theme)
-                self._theme_group.addAction(action)
-                action.triggered.connect(
-                    lambda checked, t=theme_name, l=label: self._on_theme_chosen(t, l))
-
-            # CASUAL MODE (BUILD_LIST Tier 3 item 2): same next-launch
-            # persisted-preference shape as Video resolution/Theme just
-            # above, for consistency -- see CASUAL_MODE_DEFAULT's own
-            # comment for why the default is ON (an intentional inversion
-            # of this project's usual provenance-by-default stance).
-            self._casual_mode_action = opts.addAction("Casual Mode")
-            self._casual_mode_action.setCheckable(True)
-            self._casual_mode_action.setChecked(
-                bool(load_pref("casual_mode", CASUAL_MODE_DEFAULT)))
-            self._casual_mode_action.triggered.connect(self._on_casual_mode_toggled)
+            # PREFERENCES DIALOG (Preferences-dialog plan set, Part 01):
+            # replaces the standalone Video resolution and Theme submenus
+            # and the Casual Mode action that used to live directly on this
+            # menu -- one sectioned dialog instead of three separate menu
+            # entries. Capture/Video Options is populated from
+            # camera.get_capabilities() (PLAN_02), never a hardcoded list.
+            opts.addAction("Preferences...", self._open_preferences)
 
             # Capture submenu: each item runs a walkthrough (reshoot guard, frame
             # count, instructional message) that ARMS the Capture button rather
@@ -1700,40 +1878,14 @@ if _HAVE_QT:
                 self._last_readout = txt
 
         # --- focus aid on/off ----------------------------------------------
-        def _on_video_resolution_chosen(self, res, label):
-            # Persisted preference only -- see VIDEO_RESOLUTION_PRESETS' own
-            # comment for why this can't just call camera.set_video_resolution()
-            # and have it take effect now. Status text says so explicitly
-            # rather than silently doing nothing, the same honesty standard
-            # "processing unavailable"/"gallery unavailable" already hold.
-            save_pref("video_resolution", list(res) if res is not None else None)
-            self._set_capture_status(
-                "video resolution: {}".format(label),
-                "Video recording resolution set to {} -- takes effect on the "
-                "next launch, not this session (changing it live would mean "
-                "tearing down and rebuilding the camera while it's running)."
-                .format(label))
-
-        def _on_theme_chosen(self, theme_name, label):
-            # Persisted preference, applied by main() at startup -- same
-            # next-launch shape as video resolution, chosen for consistency
-            # rather than a live app.setStyleSheet() reload.
-            save_pref("theme", theme_name)
-            self._set_capture_status(
-                "theme: {}".format(label),
-                "Theme set to {} -- takes effect on the next launch."
-                .format(label))
-
-        def _on_casual_mode_toggled(self, checked):
-            # Persisted preference only, same next-launch shape as video
-            # resolution/theme -- see CASUAL_MODE_DEFAULT's own comment.
-            save_pref("casual_mode", bool(checked))
-            self._set_capture_status(
-                "casual mode: {}".format("on" if checked else "off"),
-                "Casual Mode set to {} -- takes effect on the next launch, "
-                "not this session (this app never rebuilds its window or "
-                "reconfigures the camera while running)."
-                .format("on" if checked else "off"))
+        def _open_preferences(self):
+            # PLAN_01_preferences_dialog.md: one dialog, sectioned, replacing
+            # the old standalone Video resolution/Theme/Casual Mode menu
+            # entries. Modal: reads self.camera.get_capabilities() once at
+            # open time, same as those old menus reading their own source
+            # once at window-construction time.
+            dlg = PreferencesDialog(self.camera, parent=self)
+            dlg.exec_()
 
         # --- FULL SCREEN MODE (BUILD_LIST Tier 2) ----------------------------
         def _toggle_fullscreen(self):
@@ -3543,27 +3695,19 @@ def main(argv=None):
             from .camera_backend import Picamera2Camera
         except ImportError:
             from camera_backend import Picamera2Camera
-        camera = Picamera2Camera(**video_resolution_kwargs(load_pref("video_resolution", None)))
+        camera = Picamera2Camera(
+            **video_resolution_kwargs(load_pref("video_resolution", None)),
+            **capture_resolution_kwargs(load_pref("capture_resolution", None)))
     else:
         camera = FakeCamera()
 
-    if bool(load_pref("casual_mode", CASUAL_MODE_DEFAULT)):
-        # CASUAL MODE (BUILD_LIST Tier 3 item 2): lazy import, INSIDE this
-        # branch -- casual_mode.py is only ever constructed once, here, so
-        # a top-level import risks closing an import cycle for no benefit
-        # (see HANDOFF.md's circular-import section / wizard_pages.py's
-        # _lazy_qt_shell precedent for why lazy-inside-the-branch is this
-        # project's standing pattern for exactly this shape).
-        try:
-            from . import casual_mode as _casual_mode
-        except ImportError:
-            import casual_mode as _casual_mode
-        win = _casual_mode.CasualModeWindow(camera)
-        win.setWindowTitle("Zynergy capture GUI (casual)" + ("" if a.camera else "  (fake)"))
-    else:
-        display_flags = build_display_flags(a)
-        win = FocusPreviewWindow(camera, FocusMeter(), display_flags=display_flags)
-        win.setWindowTitle("Zynergy capture GUI" + ("" if a.camera else "  (fake)"))
+    # One application, one window, one layout (Preferences-dialog plan set,
+    # PLAN_00_context_and_supersession.md) -- no mode, no launch branch, no
+    # second window class. Casual Mode used to pick between window classes
+    # here; that branch is gone.
+    display_flags = build_display_flags(a)
+    win = FocusPreviewWindow(camera, FocusMeter(), display_flags=display_flags)
+    win.setWindowTitle("Zynergy capture GUI" + ("" if a.camera else "  (fake)"))
     win.resize(1550, 760)          # fallback size if the window manager ever
                                     # ignores the maximize request below
     win.showMaximized()
@@ -4261,131 +4405,97 @@ def render_check():
               "closeEvent's panel_width save does not raise or misbehave "
               "while the panel is mid-float")
 
-        # Video resolution menu (BUILD_LIST Tier 1 item 5): a fresh window's
-        # menu reflects whatever preference (if any) was already on disk,
-        # and choosing an entry both persists the new preference AND updates
-        # the status text to say it takes effect next launch, not now.
+        # Preferences dialog (Preferences-dialog plan set, Part 01): replaces
+        # the old standalone Video resolution/Theme/Casual Mode menu entries
+        # with one sectioned dialog, populated from camera.get_capabilities()
+        # (PLAN_02) rather than a hardcoded list.
         global PREFS_PATH
         orig_prefs_path = PREFS_PATH
-        PREFS_PATH = Path("/tmp/zynergy_render_check_prefs.json")
+        PREFS_PATH = Path("/tmp/zynergy_render_check_prefs_dialog.json")
         PREFS_PATH.unlink(missing_ok=True)
         try:
-            save_pref("video_resolution", [1920, 1080])
-            vcam = FakeCamera(async_delay_s=0.0)
-            vwin = FocusPreviewWindow(vcam, FocusMeter())
-            checked = {a.text(): a.isChecked() for a in vwin._video_res_group.actions()}
-            assert checked["1080p (1920x1080)"] is True, \
-                "a fresh window must reflect whatever preference was already on disk"
-            assert checked["2K (2048x1080)"] is False
-            assert sum(checked.values()) == 1, \
-                "the resolution choices must be mutually exclusive"
+            # A capability the driver doesn't report produces no control at
+            # all, not an empty/disabled one -- the default FakeCamera
+            # matches Picamera2Camera's current no-stream-server behavior.
+            pcam = FakeCamera(async_delay_s=0.0)
+            dlg = PreferencesDialog(pcam)
+            assert dlg._stream_fmt_combo is None and dlg._stream_res_combo is None, \
+                "a capability the driver omits must produce no control at all"
 
-            twok_action = next(a for a in vwin._video_res_group.actions()
-                               if a.text() == "2K (2048x1080)")
-            twok_action.trigger()
-            assert load_pref("video_resolution", None) == [2048, 1080], \
-                "choosing a resolution must persist it immediately"
-            assert "2K" in vwin.capture_status.text()
-            assert "next launch" in vwin.capture_status.toolTip(), \
-                "the detail text must say this takes effect next launch, " \
-                "not silently imply it already applied"
+            # Capture/Video Options is built from get_capabilities(), never
+            # a hardcoded list -- confirm the combos hold the fake's own
+            # synthetic values.
+            caps = pcam.get_capabilities()
+            res_items = {dlg._capture_res_combo.itemData(i)
+                        for i in range(dlg._capture_res_combo.count())}
+            assert set(caps["capture_resolutions"]) <= res_items, \
+                "capture resolution combo must be built from get_capabilities()"
+            fmt_items = {dlg._capture_fmt_combo.itemData(i)
+                        for i in range(dlg._capture_fmt_combo.count())}
+            assert set(caps["capture_formats"]) == fmt_items, \
+                "capture format combo must be built from get_capabilities()"
 
-            default_action = next(a for a in vwin._video_res_group.actions()
-                                  if a.text().startswith("Default"))
-            default_action.trigger()
-            assert load_pref("video_resolution", "sentinel") is None, \
-                "choosing Default must clear the preference, not save a " \
-                "placeholder value"
+            # Next-launch settings (Capture/Video/Appearance): persist only
+            # on OK, not on every selection change.
+            idx = PreferencesDialog._index_for_data(dlg._capture_res_combo, (2028, 1520))
+            assert idx >= 0
+            dlg._capture_res_combo.setCurrentIndex(idx)
+            assert load_pref("capture_resolution", "sentinel") == "sentinel", \
+                "a next-launch setting must not persist before OK is pressed"
+            dlg._on_accept()
+            assert load_pref("capture_resolution", None) == [2028, 1520], \
+                "OK must persist every next-launch setting"
 
-            vcam.stop()
+            # Live-apply settings (Advanced): persist immediately on change,
+            # independent of OK/Cancel. Keep RAW Images defaults on.
+            dlg2 = PreferencesDialog(pcam)
+            assert dlg2._keep_raw_check.isChecked() is True, \
+                "Keep RAW Images must default on (this project's usual " \
+                "provenance-by-default stance -- raws are what green-plane " \
+                "measurement is taken from)"
+            dlg2._keep_raw_check.setChecked(False)
+            assert load_pref("keep_raw_images", "sentinel") is False, \
+                "an Advanced setting must persist immediately, before OK"
+            dlg2.reject()
+            assert load_pref("keep_raw_images", "sentinel") is False, \
+                "Cancel must not revert a live-applied Advanced setting"
+
+            pcam.stop()
         finally:
             PREFS_PATH = orig_prefs_path
-        print("video resolution menu check PASS: a fresh window's menu "
-              "reflects an on-disk preference, the three presets are "
-              "mutually exclusive, choosing one persists it immediately and "
-              "updates the status text, choosing Default clears the "
-              "preference entirely")
+        print("Preferences dialog check PASS: capture/video controls built "
+              "entirely from get_capabilities() (an omitted capability "
+              "produces no control), next-launch settings persist only on "
+              "OK, Advanced settings persist immediately regardless of "
+              "OK/Cancel, Keep RAW Images defaults on")
 
-        # Casual Mode menu (BUILD_LIST Tier 3 item 2): default ON when
-        # nothing is on disk yet (CASUAL_MODE_DEFAULT -- deliberately
-        # inverts this project's usual provenance-by-default stance, see
-        # HANDOFF.md), a fresh window's menu reflects whatever preference
-        # actually IS on disk, and toggling persists immediately and says
-        # "next launch," same shape as video resolution/theme above. This
-        # does not invoke main() itself (it calls app.exec_(), which would
-        # hang the check forever, same reason main()'s video-resolution
-        # wiring is never exercised that way either) -- main()'s branch
-        # reads this exact preference the identical way, so covering the
-        # preference's round-trip and the menu's reflection of it is what
-        # a headless check can actually prove.
-        orig_prefs_path_for_casual_check = PREFS_PATH
-        PREFS_PATH = Path("/tmp/zynergy_render_check_casual_prefs.json")
-        PREFS_PATH.unlink(missing_ok=True)
+        # Preferences dialog, part 2: stream_formats/stream_resolutions
+        # present -> real controls appear (the flip side of the omitted-
+        # capability check above); a missing gui_prefs.json and a stale
+        # "casual_mode" key left over from a superseded build both degrade
+        # gracefully rather than raising.
+        orig_prefs_path2 = PREFS_PATH
+        PREFS_PATH = Path("/tmp/zynergy_render_check_prefs_dialog2.json")
+        PREFS_PATH.unlink(missing_ok=True)   # confirms a missing file doesn't raise
         try:
-            assert load_pref("casual_mode", CASUAL_MODE_DEFAULT) is True, \
-                "with nothing on disk yet, the default must apply"
-            ccam = FakeCamera(async_delay_s=0.0)
-            cwin = FocusPreviewWindow(ccam, FocusMeter())
-            assert cwin._casual_mode_action.isChecked() is True, \
-                "a fresh window's menu must reflect the default-on preference"
-            cwin._casual_mode_action.trigger()
-            assert load_pref("casual_mode", CASUAL_MODE_DEFAULT) is False, \
-                "unchecking must persist False immediately, not just visually"
-            assert "off" in cwin.capture_status.text()
-            assert "next launch" in cwin.capture_status.toolTip(), \
-                "the detail text must say this takes effect next launch, " \
-                "not silently imply it already applied"
-            ccam.stop()
-        finally:
-            PREFS_PATH = orig_prefs_path_for_casual_check
-        print("casual mode menu check PASS: default is ON with nothing on "
-              "disk yet, a fresh window's menu reflects the persisted "
-              "preference, toggling persists immediately and says next "
-              "launch")
+            scam = FakeCamera(async_delay_s=0.0, stream_caps=True)
+            sdlg = PreferencesDialog(scam)
+            assert sdlg._stream_fmt_combo is not None and sdlg._stream_res_combo is not None, \
+                "a capability the driver DOES report must produce a real control"
+            assert sdlg._stream_fmt_combo.count() == len(scam.get_capabilities()["stream_formats"])
+            scam.stop()
 
-        # Theme menu (BUILD_LIST Tier 1 item 3): a fresh window's menu is
-        # built from whatever real theme folders exist under THEMES_ROOT
-        # (Default always present, even with zero designed) and reflects
-        # whichever one is already the persisted preference; choosing one
-        # persists it and updates the status text.
-        global THEMES_ROOT   # PREFS_PATH was already declared global above
-        orig_themes_root = THEMES_ROOT
-        orig_prefs_path_for_theme_check = PREFS_PATH
-        THEMES_ROOT = Path("/tmp/zynergy_render_check_theme_menu")
-        if THEMES_ROOT.exists():
-            shutil.rmtree(THEMES_ROOT)
-        (THEMES_ROOT / "lab_blue").mkdir(parents=True)
-        (THEMES_ROOT / "lab_blue" / "style.qss").write_text("#side_panel {}")
-        PREFS_PATH = Path("/tmp/zynergy_render_check_theme_prefs.json")
-        PREFS_PATH.unlink(missing_ok=True)
-        try:
-            save_pref("theme", None)
-            tcam2 = FakeCamera(async_delay_s=0.0)
-            twin = FocusPreviewWindow(tcam2, FocusMeter())
-            theme_labels = [a.text() for a in twin._theme_group.actions()]
-            assert theme_labels == ["Default", "lab_blue"], \
-                "the menu must be built from what's actually on disk under " \
-                "THEMES_ROOT, Default always present alongside it"
-            checked = {a.text(): a.isChecked() for a in twin._theme_group.actions()}
-            assert checked["Default"] is True and checked["lab_blue"] is False, \
-                "with no preference set yet, Default must be the checked one"
-
-            lab_blue_action = next(a for a in twin._theme_group.actions()
-                                   if a.text() == "lab_blue")
-            lab_blue_action.trigger()
-            assert load_pref("theme", "sentinel") == "lab_blue", \
-                "choosing a theme must persist it immediately"
-            assert "lab_blue" in twin.capture_status.text()
-            assert "next launch" in twin.capture_status.toolTip()
-            tcam2.stop()
+            # A gui_prefs.json carrying the superseded "casual_mode" key
+            # (from an old build) must be ignored without error.
+            save_pref("casual_mode", True)
+            stale_cam = FakeCamera(async_delay_s=0.0)
+            PreferencesDialog(stale_cam)   # must not raise
+            stale_cam.stop()
         finally:
-            THEMES_ROOT = orig_themes_root
-            PREFS_PATH = orig_prefs_path_for_theme_check
-            shutil.rmtree(Path("/tmp/zynergy_render_check_theme_menu"), ignore_errors=True)
-        print("theme menu check PASS: a fresh window's menu is built from "
-              "the real theme folders found on disk (Default always "
-              "present), reflects the persisted preference, and choosing a "
-              "theme persists it and updates the status text")
+            PREFS_PATH = orig_prefs_path2
+        print("Preferences dialog check PASS (part 2): a reported stream "
+              "capability produces a real control, a missing gui_prefs.json "
+              "and a stale casual_mode key both degrade gracefully")
 
         # Green-plane extraction utility (BUILD_LIST Tier 1 item 4): a real
         # subprocess call to debayer.py --green, driven the same way the

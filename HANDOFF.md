@@ -84,11 +84,13 @@ drafted). The design: one application, one window, one layout — every
 feature always present, nothing gated by a mode. Provenance moves to
 `~/provenance/<timestamp>/` rather than becoming conditional; the only
 setting that changes what gets kept is Keep RAW Images. `casual_mode.py`
-and its `qt_shell.py` plumbing (`CASUAL_MODE_DEFAULT`, the `"casual_mode"`
+is superseded but **not yet deleted** — that happens in Part 03, which
+hasn't been drafted, so the module itself stays in place and working for
+now; its `qt_shell.py` plumbing (`CASUAL_MODE_DEFAULT`, the `"casual_mode"`
 gui_prefs key, the Options > Casual Mode action, `main()`'s window-class
-branch) are superseded but **not yet deleted** — that happens in Part 03,
-which hasn't been drafted, so `casual_mode.py` stays in place and working
-for now. **Part 02 (camera capability query) is now done** — `Camera
+branch), however, is gone — removed as part of Part 01 below. **Both
+Part 01 (Preferences dialog) and Part 02 (camera capability query) are
+now done** — `Camera
 Backend.get_capabilities()` is a new abstract method, implemented on both
 `FakeCamera` (a small synthetic set; pass `stream_caps=True` at
 construction to exercise the stream-key-present rendering path, since the
@@ -102,31 +104,82 @@ discrete "supported list" for that the way `sensor_modes` gives one for
 capture, so the sensor-mode sizes are what's offered — real hardware
 information, not a fabricated range. `stream_formats`/
 `stream_resolutions` are omitted entirely on `Picamera2Camera` (absent,
-not empty): no stream server exists in this backend yet. Self-check-
-verified only — `FakeCamera.get_capabilities()` was exercised on real
-hardware for neither driver's numbers; **the `Picamera2Camera` path
-(`sensor_modes` enumeration) has NOT been run on the rig**, so its
-`capture_resolutions`/`capture_formats` are unverified against what the
-IMX477 actually reports. Also added: `assert_only_camera_backend_imports_
-picamera2()`, a structural self-check (runs every `python3
-camera_backend.py`) that greps every other `.py` file in the project for
-a direct `picamera2`/`libcamera` import. It found two **pre-existing**
-violations that predate this plan and are out of its scope:
-`wizard_pages.py`'s own camera-availability probe (`from picamera2
-import Picamera2`) and `test_burst_backend.py`'s direct hardware test —
-both are carved out as documented exceptions in the check itself rather
-than silently ignored or fixed as a side effect of this part. Worth
-knowing for whoever eventually tightens this: that's the concrete list of
-what "camera_backend.py is the only Picamera2-aware file" doesn't yet
-hold for. **Part 01 (Preferences dialog) — intent recorded here
-retrospectively.** Out of the normal two-phase order: Part 01 was already
-built in the same working pass as Part 02, so this entry documents intent
-after the fact rather than before, and says so plainly rather than being
-backdated to look sequential. Renders Part 02's `get_capabilities()`
-results in one sectioned dialog (Capture and Video Options / Appearance /
-Advanced), replacing the standalone Video resolution, Theme, and Casual
-Mode menu entries. Build details follow once this lands as its own
-commit.
+not empty): no stream server exists in this backend yet. **`sensor_modes`
+enumeration now hardware-verified (2026-07-24, on-rig session):** the real
+IMX477's `Picamera2().sensor_modes` was read directly (no Qt/GUI layer
+involved) and `get_capabilities()`'s exact size/format translation logic
+run against it — 5 discrete sizes ((1332,990) through (4056,3040)) and 3
+formats (SRGGB8/10/12) came back, and `"format"` was confirmed to really
+be a non-plain PixelFormat-like object (`SRGGB10_CSI2P` etc.) on real
+hardware, not just a theoretical risk — `"unpacked"` is genuinely the
+right field. **Still open**: calling `get_capabilities()` through the
+full `Picamera2Camera` class (which embeds a `QGlPicamera2` GL preview
+widget at construction) — that failed on this rig with an EGL
+`EGL_BAD_ALLOC` on `eglCreateWindowSurface` (no other process held the
+camera at the time), so the class-construction path through the GUI
+stack is a separate, still-unverified gap, unrelated to the capability
+query logic itself. `FakeCamera.get_capabilities()` has no real-hardware
+equivalent to verify against — it's the synthetic path by design.
+
+Also added: `assert_only_camera_backend_imports_picamera2()`, a
+structural self-check (runs every `python3 camera_backend.py`) that greps
+every other `.py` file in the project for a direct `picamera2`/
+`libcamera` import. It found two **pre-existing** violations that predate
+this plan and are out of its scope: `wizard_pages.py`'s own
+camera-availability probe (`from picamera2 import Picamera2`) and
+`test_burst_backend.py`'s direct hardware test — both are carved out as
+documented exceptions in the check itself rather than silently ignored or
+fixed as a side effect of this part.
+
+**Backlog item (tracked here — `BUILD_LIST.md` is a planning doc, not a
+file that exists in this repo, so this is the durable record):** fix the
+two violations above. `wizard_pages.py`'s probe is the one that actually
+matters — it's a shared UI module reaching into Picamera2 directly, which
+is the boundary this plan's "thin adapter" rule is about holding (a test
+file doing the same thing, `test_burst_backend.py`, is untidy but lower
+stakes). Fix: give `camera_backend.py` a cheap availability-probe
+function/classmethod and have `wizard_pages.py` call that instead of
+importing `picamera2` itself; revisit `test_burst_backend.py` separately
+once that's done.
+
+**Part 01 (Preferences dialog) — now built and committed.** See the
+"Preferences dialog" section below for what landed.
+
+### Preferences dialog (Preferences-dialog plan set, Part 01)
+
+`qt_shell.py`'s new `PreferencesDialog` (Options > Preferences...)
+replaces the old standalone Video resolution/Theme submenus and the
+Casual Mode action with one sectioned dialog: Capture and Video Options
+(built entirely from `camera.get_capabilities()` — an omitted capability
+like `stream_formats` produces no row at all, never an empty/disabled
+one), Appearance (Theme, same next-launch shape), and Advanced (Keep RAW
+Images, provenance folder location, cache auto-clean). Capture/Video/
+Appearance persist only on OK (next-launch settings); Advanced settings
+persist immediately on change, independent of OK/Cancel. `CASUAL_MODE_
+DEFAULT` and the Options > Casual Mode action are gone from `qt_shell.py`
+— `casual_mode.py` itself is untouched, staying until Part 03.
+
+Two things worth flagging that the intent entry didn't call out:
+- A new `capture_resolution_kwargs()` (mirroring the existing `video_
+  resolution_kwargs()`) wires the Preferences dialog's capture-resolution
+  choice through to `Picamera2Camera`'s `full_res` constructor kwarg in
+  `main()` — the intent entry only described rendering `get_capabilities()`
+  results, not this specific plumbing.
+- The Advanced section's controls (Keep RAW Images, provenance folder,
+  auto-clean) persist their prefs for real, but nothing reads them yet —
+  there is no retention system to gate: that lands in Part 03 (not yet
+  drafted, per `PLAN_00_context_and_supersession.md`). Scaffolding, not a
+  gap in this part.
+
+Verified: full project `--render-check` sweep (all 16 modules, including
+`camera_backend.py`) passes with no regressions; `qt_shell.py`'s own
+`--render-check` covers the dialog directly (absent-capability → no
+control, present-capability → real control, next-launch-vs-live-apply
+persistence split, a stale `"casual_mode"` gui_prefs key degrading
+gracefully). Not yet exercised as a live GUI on-rig (this dialog itself,
+specifically — see the note above about `QGlPicamera2`'s EGL surface
+failure in this environment, which blocks constructing a live
+`Picamera2Camera` at all here, not just this dialog).
 
 **`provenance.py` extraction plan** (read this before writing any of the
 code — it resolves a real Python gotcha that has already bitten this repo
