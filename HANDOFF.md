@@ -88,14 +88,38 @@ and its `qt_shell.py` plumbing (`CASUAL_MODE_DEFAULT`, the `"casual_mode"`
 gui_prefs key, the Options > Casual Mode action, `main()`'s window-class
 branch) are superseded but **not yet deleted** — that happens in Part 03,
 which hasn't been drafted, so `casual_mode.py` stays in place and working
-for now. Building the two parts that have no dependency on the rest
-first, sequentially: **Part 02 (camera capability query) — intent
-recorded, build starting.** Adds a generic `get_capabilities()` to
-`CameraBackend`, stricter than this project's existing "thin adapter"
-framing (README.md's "All camera-bound operations sit behind one thin
-adapter"): `camera_backend.py` becomes the only file allowed to know what
-Picamera2 or an IMX477 is. Part 01 (Preferences dialog, which renders
-Part 02's results) follows once Part 02 lands.
+for now. **Part 02 (camera capability query) is now done** — `Camera
+Backend.get_capabilities()` is a new abstract method, implemented on both
+`FakeCamera` (a small synthetic set; pass `stream_caps=True` at
+construction to exercise the stream-key-present rendering path, since the
+real driver can't yet) and `Picamera2Camera` (from `sensor_modes`,
+translated to plain dicts/lists/strings — never `sensor_modes`' own
+`"format"` field, which is a libcamera `PixelFormat` object; `"unpacked"`
+is the plain-string field used instead). `video_resolutions` reuses the
+same sensor-mode sizes as `capture_resolutions`: Picamera2's main stream
+can technically scale to an arbitrary size via the ISP, but there's no
+discrete "supported list" for that the way `sensor_modes` gives one for
+capture, so the sensor-mode sizes are what's offered — real hardware
+information, not a fabricated range. `stream_formats`/
+`stream_resolutions` are omitted entirely on `Picamera2Camera` (absent,
+not empty): no stream server exists in this backend yet. Self-check-
+verified only — `FakeCamera.get_capabilities()` was exercised on real
+hardware for neither driver's numbers; **the `Picamera2Camera` path
+(`sensor_modes` enumeration) has NOT been run on the rig**, so its
+`capture_resolutions`/`capture_formats` are unverified against what the
+IMX477 actually reports. Also added: `assert_only_camera_backend_imports_
+picamera2()`, a structural self-check (runs every `python3
+camera_backend.py`) that greps every other `.py` file in the project for
+a direct `picamera2`/`libcamera` import. It found two **pre-existing**
+violations that predate this plan and are out of its scope:
+`wizard_pages.py`'s own camera-availability probe (`from picamera2
+import Picamera2`) and `test_burst_backend.py`'s direct hardware test —
+both are carved out as documented exceptions in the check itself rather
+than silently ignored or fixed as a side effect of this part. Worth
+knowing for whoever eventually tightens this: that's the concrete list of
+what "camera_backend.py is the only Picamera2-aware file" doesn't yet
+hold for. Part 01 (Preferences dialog, which renders `get_capabilities()`'s
+results) is next.
 
 **`provenance.py` extraction plan** (read this before writing any of the
 code — it resolves a real Python gotcha that has already bitten this repo

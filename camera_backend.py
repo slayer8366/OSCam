@@ -32,6 +32,7 @@ two different sessions had to be reconciled (see the comment there).
 from __future__ import annotations
 
 import abc
+import re
 import threading
 from dataclasses import dataclass
 from datetime import datetime
@@ -267,6 +268,40 @@ class CameraBackend(abc.ABC):
     def video_resolution(self):
         """The (width, height) the next recording will use."""
 
+    # --- capability query (PLAN_02_camera_capability_query.md) -------------
+    @abc.abstractmethod
+    def get_capabilities(self) -> dict:
+        """What this driver's hardware actually offers, translated into
+        plain dicts/lists/strings/numbers/bools -- no Picamera2 or
+        libcamera type may cross this boundary. This is the ONLY method
+        in the project allowed to know sensor-specific facts; everything
+        above the seam (the future Preferences dialog included) renders
+        whatever this returns and nothing else, so a different sensor
+        with a different driver dropped in this class's place changes
+        only what this method returns.
+
+        Returns a dict with these keys:
+          "capture_resolutions": [(w, h), ...] -- still-capture sizes the
+              sensor natively supports.
+          "capture_formats":     [str, ...]    -- raw pixel formats a
+              still capture can be delivered in (e.g. "SRGGB12").
+          "video_resolutions":   [(w, h), ...] -- sizes the preview/
+              recording main stream can be configured at.
+          "video_formats":       [str, ...]    -- encoder formats a
+              recording can be written in.
+          "stream_formats":      [str, ...]    -- OPTIONAL. A raw
+              preview-stream format (e.g. "YUY2", "MJPEG"), present only
+              if this driver actually exposes one to configure.
+          "stream_resolutions":  [(w, h), ...] -- OPTIONAL, same rule as
+              stream_formats.
+
+        Absent means absent, not empty: a driver that cannot report a
+        capability OMITS that key entirely ("I don't know"); a driver
+        that knows and has zero options returns an empty list for it
+        ("I know, there are none"). The two must never be conflated --
+        the caller (the Preferences dialog) renders them differently: no
+        control at all versus an empty one."""
+
 
 class FakeCamera(CameraBackend):
     """Hardware-free backend for building and testing everything above the seam.
@@ -286,8 +321,13 @@ class FakeCamera(CameraBackend):
     def __init__(self, lores_res=LORES_RES, source: str = "green",
                  frame_source: Optional[Callable[[], np.ndarray]] = None,
                  seed: int = 0, async_delay_s: float = 0.05,
-                 fail_capture: bool = False):
+                 fail_capture: bool = False, stream_caps: bool = False):
         self._w, self._h = lores_res
+        # get_capabilities(): False (the default) matches Picamera2Camera's
+        # current behavior -- no stream server implemented, so stream_formats/
+        # stream_resolutions are omitted. Pass True to exercise the
+        # present-key rendering path off-rig, since the real driver can't.
+        self._stream_caps = bool(stream_caps)
         self._source = source
         self._frame_source = frame_source
         self._rng = np.random.default_rng(seed)
@@ -517,6 +557,22 @@ class FakeCamera(CameraBackend):
 
     def video_resolution(self):
         return self._video_res
+
+    # --- capability query ----------------------------------------------------
+    def get_capabilities(self) -> dict:
+        # A small, clearly-synthetic set -- plausible numbers, not real
+        # hardware ones, so the Preferences dialog is buildable and testable
+        # with no Pi. See __init__'s note on self._stream_caps.
+        caps = {
+            "capture_resolutions": [(4056, 3040), (2028, 1520), (1332, 990)],
+            "capture_formats": ["SRGGB12", "SRGGB10"],
+            "video_resolutions": [(1920, 1080), (1332, 990), (2048, 1080)],
+            "video_formats": ["H264"],
+        }
+        if self._stream_caps:
+            caps["stream_formats"] = ["YUY2", "MJPEG"]
+            caps["stream_resolutions"] = [(1280, 720), (640, 480)]
+        return caps
 
 
 # ---------------------------------------------------------------------------
@@ -1040,6 +1096,87 @@ class Picamera2Camera(CameraBackend):
     def video_resolution(self):
         return self._video_res
 
+    # --- capability query (PLAN_02_camera_capability_query.md) -------------
+    def get_capabilities(self) -> dict:
+        # ON-RIG: reads self._picam2.sensor_modes and translates every value
+        # to a plain Python primitive before it crosses the seam. sensor_modes'
+        # own "format" field is a libcamera PixelFormat object -- NEVER read
+        # it here; "unpacked" is already a plain string (e.g. "SRGGB12") and
+        # is what capture_formats reports instead. Do not filter this list to
+        # a "sensible" subset (Brandon's note: the existing resolution menus
+        # are already too sparse) -- whatever sensor_modes contains is what
+        # gets reported, unusual entries included.
+        modes = self._picam2.sensor_modes
+        sizes = sorted({(int(m["size"][0]), int(m["size"][1])) for m in modes})
+        formats = sorted({str(m["unpacked"]) for m in modes if "unpacked" in m})
+
+        # video_resolutions reuses the same sensor-mode sizes. Picamera2's
+        # main stream can technically be scaled to an arbitrary size via the
+        # ISP, but there is no discrete "supported list" for that the way
+        # sensor_modes gives one for capture -- offering the sizes the sensor
+        # modes themselves report is genuine hardware information, not a
+        # fabricated continuous range collapsed into a fixed list.
+        caps = {
+            "capture_resolutions": sizes,
+            "capture_formats": formats,
+            "video_resolutions": sizes,
+            "video_formats": ["H264"],   # the only encoder start_recording() uses
+        }
+        # No stream server exists in this backend yet, so stream_formats/
+        # stream_resolutions are omitted entirely -- absent, not empty. That
+        # is the honest answer today; a future streaming feature adds the
+        # keys here when it actually exists, not before.
+        return caps
+
+
+# ---------------------------------------------------------------------------
+# Structural self-check support (PLAN_02_camera_capability_query.md):
+# camera_backend.py is the only file in this project allowed to know
+# Picamera2/libcamera exist. Kept at module level (not nested in the
+# self-check block below) so any future test module can import and reuse it.
+# ---------------------------------------------------------------------------
+def _assert_plain_types(value, path="capabilities"):
+    """No Picamera2/libcamera object may cross the get_capabilities()
+    boundary -- only dicts, lists/tuples, str, bool, int, float. Recurses
+    into containers; raises AssertionError naming the offending path."""
+    if isinstance(value, dict):
+        for k, v in value.items():
+            assert isinstance(k, str), "{}: non-str key {!r}".format(path, k)
+            _assert_plain_types(v, "{}[{!r}]".format(path, k))
+    elif isinstance(value, (list, tuple)):
+        for i, v in enumerate(value):
+            _assert_plain_types(v, "{}[{}]".format(path, i))
+    else:
+        assert isinstance(value, (str, int, float, bool)), (
+            "{}: non-plain type {!r} ({!r}) crossed the get_capabilities() "
+            "boundary".format(path, type(value), value))
+
+
+def assert_only_camera_backend_imports_picamera2():
+    """Structural half of "camera_backend.py is a driver, not an adapter"
+    (PLAN_02_camera_capability_query.md): scans every other .py file in
+    this project for a direct `picamera2`/`libcamera` import.
+
+    `wizard_pages.py` (an availability probe, `from picamera2 import
+    Picamera2  # noqa`) and `test_burst_backend.py` (a direct on-rig
+    hardware test) both predate this rule and are the one documented,
+    out-of-scope exception -- rearchitecting them is a separate concern
+    from Part 01/Part 02, not touched by this plan set. Every OTHER file
+    must come up clean, so a future regression can't land silently."""
+    project_dir = Path(__file__).resolve().parent
+    forbidden = re.compile(r'^\s*(from|import)\s+(picamera2|libcamera)\b', re.MULTILINE)
+    exceptions = {"wizard_pages.py", "test_burst_backend.py"}
+    offenders = []
+    for path in sorted(project_dir.glob("*.py")):
+        if path.name == "camera_backend.py" or path.name in exceptions:
+            continue
+        if forbidden.search(path.read_text()):
+            offenders.append(path.name)
+    assert not offenders, (
+        "only camera_backend.py (and the documented exceptions {}) may "
+        "import picamera2/libcamera directly -- found a violation in: {}"
+        .format(sorted(exceptions), offenders))
+
 
 if __name__ == "__main__":
     # Self-check with no hardware: sweep the fake through focus, exercise the
@@ -1179,5 +1316,32 @@ if __name__ == "__main__":
         cam.stop_recording()
         print("video resolution check PASS: adjustable ahead of a future menu, "
               "bad-value and mid-recording guards both correct")
+
+        # Capability query (PLAN_02_camera_capability_query.md): well-formed
+        # with no hardware present, only plain types cross the boundary, and
+        # the absent-vs-empty split for stream_formats/stream_resolutions
+        # round-trips both ways.
+        caps = cam.get_capabilities()
+        _assert_plain_types(caps)
+        for key in ("capture_resolutions", "capture_formats",
+                    "video_resolutions", "video_formats"):
+            assert key in caps and len(caps[key]) > 0, \
+                "FakeCamera.get_capabilities() missing/empty required key {!r}".format(key)
+        assert "stream_formats" not in caps and "stream_resolutions" not in caps, \
+            "default FakeCamera should omit stream keys (absent, not empty), " \
+            "matching Picamera2Camera's current no-stream-server behavior"
+        print("get_capabilities (stream_caps=False) PASS:", caps)
+
+        stream_cam = FakeCamera(stream_caps=True)
+        caps2 = stream_cam.get_capabilities()
+        _assert_plain_types(caps2)
+        assert caps2.get("stream_formats") and caps2.get("stream_resolutions"), \
+            "stream_caps=True should populate both stream keys"
+        print("get_capabilities (stream_caps=True) PASS:", caps2)
+
+        assert_only_camera_backend_imports_picamera2()
+        print("assert_only_camera_backend_imports_picamera2 PASS: no other "
+              "module imports picamera2/libcamera directly (documented "
+              "exceptions aside)")
 
         print("camera_backend self-check PASS")

@@ -46,6 +46,56 @@ structural self-check that no other module imports `picamera2`/
 `libcamera` directly. A completion entry follows once the build lands,
 noting anything that deviated and why.
 
+### Camera capability query: build complete (Preferences-dialog plan set, Part 02)
+
+`baa8745` (intent), plus this entry's commit.
+
+`CameraBackend.get_capabilities()` lands as designed in the intent entry
+above, with the interface shape unchanged from the plan's sketch:
+`capture_resolutions`, `capture_formats`, `video_resolutions`,
+`video_formats` always present; `stream_formats`/`stream_resolutions`
+present only where the driver actually has them to report.
+
+`FakeCamera.get_capabilities()` returns a small, clearly-synthetic set
+and, by default, omits the stream keys — matching `Picamera2Camera`'s
+real current behavior (no stream server exists in this backend). A new
+`stream_caps=True` constructor flag makes it populate both stream keys
+instead, so the Preferences dialog's present-key rendering path has
+something to exercise off-rig even though the real driver can't drive it
+yet.
+
+`Picamera2Camera.get_capabilities()` reads `self._picam2.sensor_modes`
+and translates every value to a plain primitive before it crosses the
+seam. One deviation worth flagging: `sensor_modes` entries carry both a
+`"format"` field (a libcamera `PixelFormat` object — never read) and an
+`"unpacked"` field (already a plain string, e.g. `"SRGGB12"`) — the plan
+didn't specify which to use, and `"unpacked"` is the only one that
+doesn't leak a Picamera2 type, so `capture_formats` is built from that.
+`video_resolutions` reuses the same discrete sensor-mode sizes as
+`capture_resolutions` rather than trying to enumerate the ISP's
+continuous main-stream scaling range as a list — a design choice, not
+an oversight (see `HANDOFF.md`'s note on this part for the reasoning).
+
+Added `assert_only_camera_backend_imports_picamera2()`: a grep-style
+structural self-check, run every `python3 camera_backend.py`, scanning
+every other `.py` file in the project for a direct `picamera2`/
+`libcamera` import. It surfaced two **pre-existing** violations —
+`wizard_pages.py`'s camera-availability probe and `test_burst_backend.py`'s
+direct hardware test, both predating this plan set — which are carved
+out as documented, named exceptions in the check itself rather than
+silently ignored or "fixed" as an unplanned side effect of this part.
+Fixing them (routing the availability probe through `camera_backend.py`
+instead) is a separate, explicitly out-of-scope concern for whoever picks
+it up next.
+
+Self-check-verified only. The full `--render-check` sweep (all 15
+modules) plus `python3 camera_backend.py` all pass with no regressions.
+**Not hardware-verified**: `Picamera2Camera.get_capabilities()`'s
+`sensor_modes` enumeration has not been run on the rig, so its actual
+`capture_resolutions`/`capture_formats` values for the IMX477 are
+unconfirmed — a headless pass proves the interface holds, not that the
+reported numbers are right, per this plan set's own standing caution.
+
 ## 2026-07-23
 
 ### Intent: Casual Mode (BUILD_LIST Tier 3, item 2)
