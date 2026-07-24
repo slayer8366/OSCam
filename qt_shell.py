@@ -183,6 +183,20 @@ PROCESSOR = Path(__file__).resolve().parent / "hdr_from_session.py"
 # path subprocess pattern PROCESSOR already uses above.
 DEBAYER_TOOL = Path(__file__).resolve().parent / "debayer.py"
 
+# --- CASUAL MODE (BUILD_LIST Tier 3 item 2) ---------------------------------
+# Same next-launch persisted-preference shape as Video resolution/Theme
+# above (see VIDEO_RESOLUTION_PRESETS' own comment for why a live toggle
+# is out of scope -- same reasoning: this app never reconfigures the
+# camera or rebuilds its window while running). Default is ON, not OFF --
+# this INVERTS the project's usual provenance-is-the-norm stance; that is
+# deliberate, confirmed by Brandon, not an oversight (see HANDOFF.md's
+# Casual Mode section). main() reads this to decide which window class to
+# build; casual_mode.py itself is imported lazily, only inside that
+# branch (see HANDOFF.md's circular-import section for why a top-level
+# import here would be the wrong shape for a module constructed once, at
+# launch).
+CASUAL_MODE_DEFAULT = True
+
 # --- THEMES (BUILD_LIST Tier 1 item 3) --------------------------------------
 # Deliberately open-ended, not a fixed Dark/Light pair: the user plans to
 # design a dozen-plus side-panel aesthetics over time, so the Theme menu is
@@ -1550,6 +1564,17 @@ if _HAVE_QT:
                 action.triggered.connect(
                     lambda checked, t=theme_name, l=label: self._on_theme_chosen(t, l))
 
+            # CASUAL MODE (BUILD_LIST Tier 3 item 2): same next-launch
+            # persisted-preference shape as Video resolution/Theme just
+            # above, for consistency -- see CASUAL_MODE_DEFAULT's own
+            # comment for why the default is ON (an intentional inversion
+            # of this project's usual provenance-by-default stance).
+            self._casual_mode_action = opts.addAction("Casual Mode")
+            self._casual_mode_action.setCheckable(True)
+            self._casual_mode_action.setChecked(
+                bool(load_pref("casual_mode", CASUAL_MODE_DEFAULT)))
+            self._casual_mode_action.triggered.connect(self._on_casual_mode_toggled)
+
             # Capture submenu: each item runs a walkthrough (reshoot guard, frame
             # count, instructional message) that ARMS the Capture button rather
             # than firing immediately. The next press of Capture (button or File
@@ -1699,6 +1724,17 @@ if _HAVE_QT:
                 "Theme set to {} -- takes effect on the next launch."
                 .format(label))
 
+        def _on_casual_mode_toggled(self, checked):
+            # Persisted preference only, same next-launch shape as video
+            # resolution/theme -- see CASUAL_MODE_DEFAULT's own comment.
+            save_pref("casual_mode", bool(checked))
+            self._set_capture_status(
+                "casual mode: {}".format("on" if checked else "off"),
+                "Casual Mode set to {} -- takes effect on the next launch, "
+                "not this session (this app never rebuilds its window or "
+                "reconfigures the camera while running)."
+                .format("on" if checked else "off"))
+
         # --- FULL SCREEN MODE (BUILD_LIST Tier 2) ----------------------------
         def _toggle_fullscreen(self):
             # One method for both directions (F11 in, Ctrl+Escape or the
@@ -1784,6 +1820,22 @@ if _HAVE_QT:
                 self._pre_fullscreen_title = self.windowTitle()
                 self.setWindowTitle(self._pre_fullscreen_title + FULLSCREEN_TITLE_MARKER)
                 self.setWindowFlags(self.windowFlags() | Qt.FramelessWindowHint)
+                # The window starts real-maximized (main()'s showMaximized()),
+                # and Qt.WindowMaximized can still be set here on a later
+                # entry too (the user maximizing normally in windowed mode
+                # before pressing F11). Clear it before setGeometry below --
+                # left set, the WM can clamp the resize back to the old
+                # maximized bounds instead of the full screen geometry we're
+                # asking for (same symptom class as the two prior on-rig
+                # stuck-at-old-size bugs, see CHANGELOG.md). Needs on-rig
+                # confirmation that this also clears the underlying X11
+                # _NET_WM_STATE_MAXIMIZED_VERT|HORZ property and not just
+                # Qt's own state bit -- labwc has ignored WM-state requests
+                # from this app before (see the _NET_WM_STATE_ABOVE dead end
+                # in HANDOFF.md); if `xprop` still shows the maximized atoms
+                # after this, an explicit wmctrl/xdotool unmaximize call
+                # will be needed here too.
+                self.setWindowState(self.windowState() & ~Qt.WindowMaximized)
                 self.setGeometry(QApplication.primaryScreen().geometry())
                 self.show()   # changing windowFlags unmaps the window; re-show it
 
@@ -3494,11 +3546,26 @@ def main(argv=None):
         camera = Picamera2Camera(**video_resolution_kwargs(load_pref("video_resolution", None)))
     else:
         camera = FakeCamera()
-    display_flags = build_display_flags(a)
-    win = FocusPreviewWindow(camera, FocusMeter(), display_flags=display_flags)
+
+    if bool(load_pref("casual_mode", CASUAL_MODE_DEFAULT)):
+        # CASUAL MODE (BUILD_LIST Tier 3 item 2): lazy import, INSIDE this
+        # branch -- casual_mode.py is only ever constructed once, here, so
+        # a top-level import risks closing an import cycle for no benefit
+        # (see HANDOFF.md's circular-import section / wizard_pages.py's
+        # _lazy_qt_shell precedent for why lazy-inside-the-branch is this
+        # project's standing pattern for exactly this shape).
+        try:
+            from . import casual_mode as _casual_mode
+        except ImportError:
+            import casual_mode as _casual_mode
+        win = _casual_mode.CasualModeWindow(camera)
+        win.setWindowTitle("Zynergy capture GUI (casual)" + ("" if a.camera else "  (fake)"))
+    else:
+        display_flags = build_display_flags(a)
+        win = FocusPreviewWindow(camera, FocusMeter(), display_flags=display_flags)
+        win.setWindowTitle("Zynergy capture GUI" + ("" if a.camera else "  (fake)"))
     win.resize(1550, 760)          # fallback size if the window manager ever
                                     # ignores the maximize request below
-    win.setWindowTitle("Zynergy capture GUI" + ("" if a.camera else "  (fake)"))
     win.showMaximized()
     app.exec_()
 
@@ -4238,6 +4305,43 @@ def render_check():
               "mutually exclusive, choosing one persists it immediately and "
               "updates the status text, choosing Default clears the "
               "preference entirely")
+
+        # Casual Mode menu (BUILD_LIST Tier 3 item 2): default ON when
+        # nothing is on disk yet (CASUAL_MODE_DEFAULT -- deliberately
+        # inverts this project's usual provenance-by-default stance, see
+        # HANDOFF.md), a fresh window's menu reflects whatever preference
+        # actually IS on disk, and toggling persists immediately and says
+        # "next launch," same shape as video resolution/theme above. This
+        # does not invoke main() itself (it calls app.exec_(), which would
+        # hang the check forever, same reason main()'s video-resolution
+        # wiring is never exercised that way either) -- main()'s branch
+        # reads this exact preference the identical way, so covering the
+        # preference's round-trip and the menu's reflection of it is what
+        # a headless check can actually prove.
+        orig_prefs_path_for_casual_check = PREFS_PATH
+        PREFS_PATH = Path("/tmp/zynergy_render_check_casual_prefs.json")
+        PREFS_PATH.unlink(missing_ok=True)
+        try:
+            assert load_pref("casual_mode", CASUAL_MODE_DEFAULT) is True, \
+                "with nothing on disk yet, the default must apply"
+            ccam = FakeCamera(async_delay_s=0.0)
+            cwin = FocusPreviewWindow(ccam, FocusMeter())
+            assert cwin._casual_mode_action.isChecked() is True, \
+                "a fresh window's menu must reflect the default-on preference"
+            cwin._casual_mode_action.trigger()
+            assert load_pref("casual_mode", CASUAL_MODE_DEFAULT) is False, \
+                "unchecking must persist False immediately, not just visually"
+            assert "off" in cwin.capture_status.text()
+            assert "next launch" in cwin.capture_status.toolTip(), \
+                "the detail text must say this takes effect next launch, " \
+                "not silently imply it already applied"
+            ccam.stop()
+        finally:
+            PREFS_PATH = orig_prefs_path_for_casual_check
+        print("casual mode menu check PASS: default is ON with nothing on "
+              "disk yet, a fresh window's menu reflects the persisted "
+              "preference, toggling persists immediately and says next "
+              "launch")
 
         # Theme menu (BUILD_LIST Tier 1 item 3): a fresh window's menu is
         # built from whatever real theme folders exist under THEMES_ROOT

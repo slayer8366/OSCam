@@ -56,6 +56,57 @@ import-boundary self-check → single-shot capture with cleanup → format
 checkboxes + JPG-first → Burst/HDR. A completion entry will follow once
 the build lands, noting anything else that deviated and why.
 
+### Casual Mode: build complete
+
+All five steps landed in one pass: `gui_prefs.json`'s `"casual_mode"` key
+(default ON, `CASUAL_MODE_DEFAULT`) + the Options > Casual Mode checkable
+action + `main()`'s branch in `qt_shell.py`; the new `casual_mode.py`
+module (`CasualModeWindow`, `run_capture_and_save`,
+`assert_no_provenance_import`) covering the skeleton, single-shot
+capture, format checkboxes + JPG-first atomic replacement, and Burst/HDR.
+See `HANDOFF.md`'s Casual Mode section for the full as-built account;
+summarizing what deviated from the intent entry above and why:
+
+- **Format UI**: the plan's fixed seven-preset list became four
+  independent checkboxes (DNG/PNG/JPG/TIFF, any nonempty combination)
+  plus a "Process DNG (merge Burst/HDR frames)" checkbox, per Brandon's
+  own framing during the build ("give a checkbox option ... to select
+  which gets the process, if any, or both"). Unprocessed DNG delivers the
+  first raw frame untouched; processed delivers the pipeline's own
+  already-computed raw-domain master (`single_master.tif`/
+  `hdr_linear.tif`), honestly renamed `<stem>_raw.tif` — never a
+  mislabeled `.dng`. This also fixed a real filename collision that the
+  original one-extension-per-format naming would have hit: a Burst/HDR
+  capture with both "tiff" and merged-"dng" checked would otherwise write
+  two different images to the same `<stem>.tif`.
+- **Processing entry point**: `casual_mode.py` imports
+  `hdr_from_session.process()` directly rather than shelling out to
+  `hdr_from_session.py` the way `qt_shell.py`'s own `_run_process_cmd`
+  does — that CLI's `main()` requires a real `session.json` on disk,
+  which is exactly the artifact Casual Mode exists to avoid writing.
+  `process()` itself needed no changes; it already took plain dicts and
+  wrote nothing provenance-related.
+- One thing the build surfaced that the intent entry didn't call out:
+  `process()` calls `sys.exit(...)` directly on a couple of its own
+  error paths (missing frame files), which raises `SystemExit`, not
+  `Exception` — `run_capture_and_save`'s honest-failure handler catches
+  `(Exception, SystemExit)` explicitly for this reason; missing it would
+  have hung the capture thread silently on that specific failure shape.
+
+**Verification: self-check only, not hardware-verified.** Full project
+`--render-check` sweep (15 modules, including `provenance.py` and
+`casual_mode.py`, both newly added to the sweep list in `HANDOFF.md`)
+passes, and `casual_mode.py`'s own check drives a real end-to-end capture
+through `CasualModeWindow`'s actual worker thread and queued completion
+signal (not just the underlying pure function). None of this has run on
+the real IMX477 rig — this was built in a non-interactive session with no
+hardware access. `CaptureResult.preview` is always `None` on FakeCamera,
+so only the PIL-synthesized placeholder-JPG fallback has actually
+executed; the real free-copy path, the real `.dng`/`.jpg` pairing, and
+`camera.widget` embedding in `CasualModeWindow` all still need the
+documented on-rig workaround (drive `Picamera2` directly) before this
+ships as trusted.
+
 ## 2026-07-22
 
 ### Known limitation (not fixed): full-screen mode doesn't cover the desktop taskbar

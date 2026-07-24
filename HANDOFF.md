@@ -66,13 +66,15 @@ them as `provenance.X` (never a `from provenance import X` — see
 `--render-check` pass. Both Tier 0 investigations are also now done (see their own
 note below) — the second one (CA wizard's live-capture path still
 building its own independent camera) is what still gates the Measure-menu
-reorg (item 3). **Casual Mode (Tier 3 item 2) intent is recorded and the
-build is now in progress** — see the dedicated section below for the
-full design; it depends on `provenance.py` phase 1 above (that's the
-reason phase 1 was pulled out first) and is being built in the order
-`PLAN_casual_mode.md` laid out: preference/menu plumbing, then the
-module skeleton with its own import-boundary self-check, then single-shot
-capture, then format selection, then Burst/HDR.
+reorg (item 3). **Casual Mode (Tier 3 item 2) is now done** — see the
+dedicated section below for the full design and what actually landed;
+it depended on `provenance.py` phase 1 above (that's the reason phase 1
+was pulled out first) and was built in the order `PLAN_casual_mode.md`
+laid out: preference/menu plumbing, then the module skeleton with its
+own import-boundary self-check, then single-shot capture, then format
+selection, then Burst/HDR. All landed together in one `casual_mode.py`,
+each with its own `--render-check` coverage; self-check-verified only —
+see the section below for exactly what that does and does not cover.
 
 **`provenance.py` extraction plan** (read this before writing any of the
 code — it resolves a real Python gotcha that has already bitten this repo
@@ -129,8 +131,7 @@ If you're picking this up mid-build: check `git log` and this section
 against what's actually in the repo — this describes the plan, not
 necessarily what has landed yet.
 
-Nothing else is currently in progress beyond the `provenance.py`
-extraction and Casual Mode above.
+Nothing else is currently in progress. Casual Mode (above) is done.
 
 **Full screen mode detail worth knowing**: `F11` toggles; the interaction
 model (explicit toggle key, not auto-hide-on-idle or an always-visible
@@ -219,10 +220,11 @@ starter theme ships (`themes/dark/style.qss`, plain colors) just to prove
 the pipeline works — the real aesthetics are the user's own to design and
 drop in later.
 
-**Casual Mode intent (BUILD_LIST Tier 3, item 2) — design recorded, build
-in progress.** Full design lives in `PLAN_casual_mode.md` (drafted, not
-checked into the repo, same as `BUILD_LIST.md`); this is the durable
-summary for whoever picks the build up mid-way.
+**Casual Mode (BUILD_LIST Tier 3, item 2) — done.** Lives entirely in the
+new `casual_mode.py` (`CasualModeWindow`), plus the small preference/menu/
+`main()`-branch plumbing in `qt_shell.py` described below. Full design
+lives in `PLAN_casual_mode.md` (drafted, not checked into the repo, same
+as `BUILD_LIST.md`); this is the durable as-built summary.
 
 Casual Mode is **not** a reduced feature set — it is the *same* capture
 behavior (snap, burst frame-averaging, HDR bracket, debayer, tonemap) with
@@ -289,6 +291,97 @@ delete-then-write). If JPG was **not** checked, the placeholder is
 removed only once every checked format's file is safely on disk. On a
 processing failure, the placeholder is always kept and the failure is
 reported plainly — never silently presented as a complete result.
+FakeCamera never writes a preview JPG of its own (`CaptureResult.preview`
+is always `None` there), so the placeholder path has an off-rig fallback
+too: a quick PIL-synthesized stand-in straight off the raw frame, purely
+so the behavior stays exercisable under `--render-check` without real
+hardware — real hardware always takes the free-copy path.
+
+**What `casual_mode.py` actually contains, for whoever touches it next**:
+
+- `assert_no_provenance_import()` is the structural half of the
+  guarantee — inspects this module's own namespace for the six
+  provenance write-function names, but ALSO for the bare name
+  `provenance` itself (stricter than the plan's literal list): binding
+  the `provenance` module under any name would leave every write
+  function reachable via attribute access with no further import,
+  which defeats the guarantee just as completely. `--render-check` calls
+  it first, every run. Because of this, the module never reaches for
+  `provenance.OUT_ROOT`/`load_profile`/`save_profile` either, even though
+  none of those three are on the forbidden-name list — importing the
+  module at all to reach them would still trip the guard. `DEFAULT_OUT_ROOT`
+  is a plain literal `Path.home() / "photos"`, and exposure is fully
+  self-contained: continuous `auto_exposure`/`auto_white_balance` while
+  idle (a point-and-shoot default, unlike `FocusPreviewWindow`'s locked/
+  reproducible exposure), frozen via `apply_exposure_lock` with whatever
+  AE last metered just before each shot (mirrors `_enforce_exposure_lock`'s
+  own trick in `qt_shell.py`, reimplemented locally rather than shared),
+  resumed after. `~/imx/profile.json` is never touched.
+- `run_capture_and_save(camera, kind, out_root, formats, dng_merge, n,
+  stops)` is the Qt-free core: capture via `camera_backend.py` directly
+  (`capture_still_async` for snap, `capture_burst` for burst,
+  `enter_still_mode`/`capture_bracket_phase`(science)/
+  `capture_bracket_phase`(dark)/`exit_still_mode` for HDR — the identical
+  dance `qt_shell.py`'s own `_run_burst_kind` uses for HDR's two
+  phases), stage into `tempfile.mkdtemp(prefix="zynergy_casual_staging_")`,
+  hand-build the `session`/`cap` dicts (`snap_cap_dict`/`hdr_cap_dict`)
+  `provenance.record_capture`/`record_burst`/`record_hdr` would otherwise
+  have produced, call `hdr_from_session.process()` directly, write every
+  checked format, delete the staging dir unconditionally (`finally:`).
+  Catches `(Exception, SystemExit)` — `hdr_from_session.process()` itself
+  calls `sys.exit(...)` on a missing-frames error (inherited from being a
+  CLI script's helper function), which is a `SystemExit`, not a plain
+  `Exception`; missing that would have hung the GUI's worker thread
+  silently on a real processing failure of that specific shape.
+- Output filenames all share one collision-avoiding stem from
+  `new_output_stem()` (same shape as `provenance.new_session_dir`, for a
+  file instead of a directory): `<stem>.tif` (TIFF format, the processed/
+  display image), `<stem>.png`, `<stem>.jpg`, and `<stem>_raw.<ext>` for
+  DNG — the `_raw` prefix is load-bearing, not decoration: without it, a
+  Burst/HDR capture with both "tiff" and "dng+process-merge" checked would
+  have written the display TIFF and the raw-domain merged master to the
+  exact same `<stem>.tif` path, silently clobbering one with the other.
+  Also fixes a real collision that only shows up off-rig: FakeCamera's own
+  raw extension is `.tif` too, so an unprocessed "dng" output under
+  FakeCamera would otherwise collide with a "tiff" format request at the
+  same plain `<stem>.tif` — `_raw` avoids this in both the real (`.dng`)
+  and fake (`.tif`) environments, not just the one where it happens to
+  look necessary.
+- `CasualModeWindow`'s format checkboxes (DNG/PNG/JPG/TIFF, JPG checked by
+  default) and the "Process DNG (merge Burst/HDR frames)" checkbox are the
+  as-built form of the plan's original seven-preset list — see the
+  "Output format design deviates" paragraph above for why, and Brandon's
+  own framing that led to it ("give a checkbox option ... to select which
+  gets the process, if any, or both"). The process-DNG checkbox disables
+  itself whenever the capture kind is Snap (one frame IS the result;
+  nothing to choose between).
+- `_LivePreviewFallback` is a small, independent duplicate of
+  `qt_shell.py`'s own `_FakePreview` (paints `focus_frame()` for
+  FakeCamera, which has no `.widget`) — duplicated, not imported, so this
+  module has zero dependency on `qt_shell.py` in either direction. The
+  only place `qt_shell.py` and `casual_mode.py` touch is `main()`'s own
+  lazy, in-branch `import casual_mode`.
+
+**Verification status, stated plainly (per this project's own hard-won
+rule that a headless pass proves internal consistency, not that it works
+on the rig — video recording passed every headless check while producing
+no file at all on real hardware, three separate times)**: every claim
+above is **self-check-verified** (`casual_mode.py --render-check`,
+including a real end-to-end pass through `CasualModeWindow`'s actual
+worker thread and queued completion signal, not just the pure
+`run_capture_and_save` function directly) and via the full project
+`--render-check` sweep (all 15 modules pass). **Nothing here has been
+verified on the real IMX477 rig** — this was built in a non-interactive
+session with no hardware access. Real-hardware verification should follow
+the documented workaround (drive `Picamera2` directly, see "Real-hardware
+testing workaround" below) before this ships as trusted, especially the
+places `--render-check` cannot reach on FakeCamera alone: the real
+preview-JPG-copy path (`CaptureResult.preview` is always `None` on
+FakeCamera, so only the PIL-synthesized fallback has actually run), the
+real `.dng`/`.jpg` extension pairing end to end, and `camera.widget`
+embedding in `CasualModeWindow.__init__` (untestable off-rig for the same
+`QGlPicamera2`/EGL reason `FocusPreviewWindow`'s own embedded preview is,
+see "`QGlPicamera2` ... needs a real GL-capable X session" below).
 
 **Video resolution menu detail worth knowing**: `camera_backend.py`'s
 `Picamera2Camera.set_video_resolution()` has never had a live effect —
@@ -413,17 +506,18 @@ anything:
 
 ```bash
 for m in pixel_hash annotations export publish calibrate measure ca_measure \
-        wizard_pages qt_shell stacks focus gallery process_wizard; do
+        wizard_pages qt_shell stacks focus gallery process_wizard \
+        provenance casual_mode; do
   DISPLAY=:0 python3 $m.py --render-check || echo "FAILED: $m"
 done
 ```
 
-All 11 currently pass (some — `stacks.py`, `focus.py` — only gained a
+All 15 currently pass (some — `stacks.py`, `focus.py` — only gained a
 `--render-check` this session; they didn't have one before). `stacks.py`
 and `focus.py` and `calibrate.py`'s new pure functions run fine without
-PyQt5 or a display; `qt_shell.py`/`measure.py` have PyQt5-gated checks that
-print `SKIPPED` (not `FAILED`) when PyQt5 isn't importable — that's
-correct, expected behavior, not a bug to chase.
+PyQt5 or a display; `qt_shell.py`/`measure.py`/`casual_mode.py` have
+PyQt5-gated checks that print `SKIPPED` (not `FAILED`) when PyQt5 isn't
+importable — that's correct, expected behavior, not a bug to chase.
 
 ## Things that will bite you if you don't know them
 
