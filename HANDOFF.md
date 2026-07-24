@@ -118,8 +118,15 @@ both are carved out as documented exceptions in the check itself rather
 than silently ignored or fixed as a side effect of this part. Worth
 knowing for whoever eventually tightens this: that's the concrete list of
 what "camera_backend.py is the only Picamera2-aware file" doesn't yet
-hold for. Part 01 (Preferences dialog, which renders `get_capabilities()`'s
-results) is next.
+hold for. **Part 01 (Preferences dialog) — intent recorded here
+retrospectively.** Out of the normal two-phase order: Part 01 was already
+built in the same working pass as Part 02, so this entry documents intent
+after the fact rather than before, and says so plainly rather than being
+backdated to look sequential. Renders Part 02's `get_capabilities()`
+results in one sectioned dialog (Capture and Video Options / Appearance /
+Advanced), replacing the standalone Video resolution, Theme, and Casual
+Mode menu entries. Build details follow once this lands as its own
+commit.
 
 **`provenance.py` extraction plan** (read this before writing any of the
 code — it resolves a real Python gotcha that has already bitten this repo

@@ -96,6 +96,24 @@ modules) plus `python3 camera_backend.py` all pass with no regressions.
 unconfirmed — a headless pass proves the interface holds, not that the
 reported numbers are right, per this plan set's own standing caution.
 
+### Intent: Preferences dialog (Preferences-dialog plan set, Part 01)
+
+Recording the intent to build the Preferences dialog — retrospectively.
+This project's two-phase rule wants an intent entry before any code
+exists; here it's being written after Part 01 was already built, in the
+same working pass as Part 02 above. Recording that honestly rather than
+backdating this entry to look sequential: the code sits in the working
+tree, uncommitted, as of this entry. A completion entry follows once it
+lands as its own commit, noting anything that deviated.
+
+Full design in `PLAN_01_preferences_dialog.md` (drafted, not checked into
+the repo). Part 01 renders Part 02's `get_capabilities()` results in one
+sectioned dialog (Capture and Video Options / Appearance / Advanced),
+replacing the standalone Video resolution, Theme, and Casual Mode menu
+entries — Casual Mode's `qt_shell.py` plumbing (`CASUAL_MODE_DEFAULT`,
+the `"casual_mode"` pref, the menu action, `main()`'s window-class
+branch) goes with it, though `casual_mode.py` itself stays until Part 03.
+
 ## 2026-07-23
 
 ### Intent: Casual Mode (BUILD_LIST Tier 3, item 2)
