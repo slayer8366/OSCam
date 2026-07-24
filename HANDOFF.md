@@ -76,6 +76,27 @@ selection, then Burst/HDR. All landed together in one `casual_mode.py`,
 each with its own `--render-check` coverage; self-check-verified only —
 see the section below for exactly what that does and does not cover.
 
+**A new plan set (2026-07-24) supersedes Casual Mode in full.** See
+`PLAN_00_context_and_supersession.md` through `PLAN_02_camera_capability_
+query.md` (drafted, not checked into the repo; Parts 03-05 — provenance
+relocation/Keep RAW, green-plane cache, live measure panel — not yet
+drafted). The design: one application, one window, one layout — every
+feature always present, nothing gated by a mode. Provenance moves to
+`~/provenance/<timestamp>/` rather than becoming conditional; the only
+setting that changes what gets kept is Keep RAW Images. `casual_mode.py`
+and its `qt_shell.py` plumbing (`CASUAL_MODE_DEFAULT`, the `"casual_mode"`
+gui_prefs key, the Options > Casual Mode action, `main()`'s window-class
+branch) are superseded but **not yet deleted** — that happens in Part 03,
+which hasn't been drafted, so `casual_mode.py` stays in place and working
+for now. Building the two parts that have no dependency on the rest
+first, sequentially: **Part 02 (camera capability query) — intent
+recorded, build starting.** Adds a generic `get_capabilities()` to
+`CameraBackend`, stricter than this project's existing "thin adapter"
+framing (README.md's "All camera-bound operations sit behind one thin
+adapter"): `camera_backend.py` becomes the only file allowed to know what
+Picamera2 or an IMX477 is. Part 01 (Preferences dialog, which renders
+Part 02's results) follows once Part 02 lands.
+
 **`provenance.py` extraction plan** (read this before writing any of the
 code — it resolves a real Python gotcha that has already bitten this repo
 twice via a different mechanism):

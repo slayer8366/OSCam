@@ -5,6 +5,47 @@ dump — each entry names the commit(s) it corresponds to for traceability.
 See `HANDOFF.md` for what a fresh agent needs to know before working here;
 this file is the historical record of what happened and why.
 
+## 2026-07-24
+
+### Intent: camera capability query (Preferences-dialog plan set, Part 02)
+
+Recording the intent to build `camera_backend.py`'s capability query
+before any code, per this project's two-phase documentation rule. Full
+design in `PLAN_02_camera_capability_query.md` (drafted, not checked into
+the repo; see `PLAN_00_context_and_supersession.md` for how this plan set
+relates to the rest of the project). Condensed version now in
+`HANDOFF.md`'s own "Current state" section, since that's what a fresh
+agent reads first.
+
+This is Part 02 of a five-part plan superseding Casual Mode (2026-07-23
+entries below) with a single always-on window: one layout, provenance
+always written (relocated rather than made conditional), and exactly one
+retention setting (Keep RAW Images). Part 02 has no dependency on the
+rest of the set and is being built first, sequentially ahead of Part 01
+(Preferences dialog), which renders its results — the interface shape
+alone, not its implementation.
+
+Adds `get_capabilities()` to `CameraBackend`: a generic capability query
+(`capture_resolutions`, `capture_formats`, `video_resolutions`,
+`video_formats`, plus `stream_formats`/`stream_resolutions` only where
+the driver actually reports them — absent means absent, not empty) so
+the future Preferences dialog is populated from what the hardware
+actually offers rather than a hardcoded list. Enforces the plan's
+stricter reading of this project's existing "thin adapter" framing
+(README.md's "All camera-bound operations sit behind one thin adapter"):
+`camera_backend.py` becomes the only file allowed to know what Picamera2
+or an IMX477 is; every other module must run unchanged against a
+different sensor with a different driver in its place.
+
+Build order: agree the interface shape → implement on `FakeCamera` (a
+small, clearly-synthetic set, including a way to exercise the
+stream-format-present path even though the real driver doesn't have one
+yet) → implement on `Picamera2Camera` from `sensor_modes`/
+`camera_controls`, translated to plain dicts/lists/strings/numbers → a
+structural self-check that no other module imports `picamera2`/
+`libcamera` directly. A completion entry follows once the build lands,
+noting anything that deviated and why.
+
 ## 2026-07-23
 
 ### Intent: Casual Mode (BUILD_LIST Tier 3, item 2)
