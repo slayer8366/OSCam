@@ -5,6 +5,57 @@ dump — each entry names the commit(s) it corresponds to for traceability.
 See `HANDOFF.md` for what a fresh agent needs to know before working here;
 this file is the historical record of what happened and why.
 
+## 2026-07-23
+
+### Intent: Casual Mode (BUILD_LIST Tier 3, item 2)
+
+Recording the intent to build Casual Mode before any code, per this
+project's two-phase documentation rule. Full design in
+`PLAN_casual_mode.md` (drafted, not checked into the repo); condensed
+version now in `HANDOFF.md`'s own dedicated section, since that's what a
+fresh agent reads first. Depends on `provenance.py` phase 1
+(2026-07-22 entry below) — that extraction is the reason Casual Mode is
+buildable at all: "no provenance" becomes *a module this path never
+imports*, not a flag threaded through capture code.
+
+Casual Mode is the same capture behavior (snap, burst frame-averaging,
+HDR bracket, debayer, tonemap) with a different retention policy: no
+session folder, no `session.json`, no sidecars, no `pixel_sha256`, no
+`calibration_ref` — only the final image survives, intermediates cleaned
+up automatically. The separation is structural: `casual_mode.py` never
+imports `provenance.py`'s write functions, asserted by the module's own
+`--render-check`, not just tested behaviorally.
+
+Two things resolved during design that the plan itself flagged as open:
+
+1. **Provenance entanglement in the "existing pipeline."** `qt_shell.py`'s
+   normal capture path calls `hdr_from_session.py` as a subprocess, and
+   that CLI's `main()` requires a real `session.json` on disk to run at
+   all. `hdr_from_session.py`'s own `process()` function, underneath
+   `main()`, has no such requirement — it takes plain `session`/`cap`
+   dicts and writes nothing provenance-related. `casual_mode.py` will
+   import `process()` directly and hand-build those dicts in memory,
+   never touching `session.json`. Same image operations, no CLI
+   entanglement.
+2. **What "dng" means for a merged Burst/HDR result.** A real DNG is a
+   raw Bayer-mosaic container; Burst/HDR's frame-averaged/HDR-merged
+   result is a single TIFF master with no valid DNG to land in, and
+   writing it under a `.dng` extension would misrepresent the file (this
+   project's own rule against mislabeling derivatives — see `publish.py`'s
+   `"NOT a measurement"` labeling). Brandon's call: drop the plan's fixed
+   seven-preset format list in favor of independent format checkboxes
+   (DNG/PNG/JPG/TIFF, any combination) plus a dedicated checkbox, active
+   only for Burst/HDR, for what DNG means there — first raw frame
+   untouched (default) or the merged master honestly saved as `.tif`
+   instead of `.dng`. JPG-first UX (placeholder JPG immediate, atomic
+   replace, honest failure) is unchanged from the plan.
+
+Build order (each step lands with its own `--render-check` before the
+next begins): preference/menu plumbing → module skeleton with the
+import-boundary self-check → single-shot capture with cleanup → format
+checkboxes + JPG-first → Burst/HDR. A completion entry will follow once
+the build lands, noting anything else that deviated and why.
+
 ## 2026-07-22
 
 ### Known limitation (not fixed): full-screen mode doesn't cover the desktop taskbar

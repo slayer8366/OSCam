@@ -66,7 +66,13 @@ them as `provenance.X` (never a `from provenance import X` — see
 `--render-check` pass. Both Tier 0 investigations are also now done (see their own
 note below) — the second one (CA wizard's live-capture path still
 building its own independent camera) is what still gates the Measure-menu
-reorg (item 3).
+reorg (item 3). **Casual Mode (Tier 3 item 2) intent is recorded and the
+build is now in progress** — see the dedicated section below for the
+full design; it depends on `provenance.py` phase 1 above (that's the
+reason phase 1 was pulled out first) and is being built in the order
+`PLAN_casual_mode.md` laid out: preference/menu plumbing, then the
+module skeleton with its own import-boundary self-check, then single-shot
+capture, then format selection, then Burst/HDR.
 
 **`provenance.py` extraction plan** (read this before writing any of the
 code — it resolves a real Python gotcha that has already bitten this repo
@@ -124,7 +130,7 @@ against what's actually in the repo — this describes the plan, not
 necessarily what has landed yet.
 
 Nothing else is currently in progress beyond the `provenance.py`
-extraction above.
+extraction and Casual Mode above.
 
 **Full screen mode detail worth knowing**: `F11` toggles; the interaction
 model (explicit toggle key, not auto-hide-on-idle or an always-visible
@@ -212,6 +218,77 @@ preference to the stock look, never raises in `main()`). One minimal
 starter theme ships (`themes/dark/style.qss`, plain colors) just to prove
 the pipeline works — the real aesthetics are the user's own to design and
 drop in later.
+
+**Casual Mode intent (BUILD_LIST Tier 3, item 2) — design recorded, build
+in progress.** Full design lives in `PLAN_casual_mode.md` (drafted, not
+checked into the repo, same as `BUILD_LIST.md`); this is the durable
+summary for whoever picks the build up mid-way.
+
+Casual Mode is **not** a reduced feature set — it is the *same* capture
+behavior (snap, burst frame-averaging, HDR bracket, debayer, tonemap) with
+a different file-retention policy: no session folder, no `session.json`,
+no `.meta.json` sidecars, no `pixel_sha256`, no `calibration_ref`. Only
+the final image survives; intermediates are cleaned up automatically, no
+prompt.
+
+*The separation mechanism is by construction, not a flag*: `casual_mode.py`
+never imports `provenance.py`'s write functions (`Session`,
+`record_capture`, `record_burst`, `record_hdr`, `_dump_meta`,
+`new_session_dir`, `new_zstack_root_dir`) — so no code path through it can
+write a provenance record, and no future edit can silently reintroduce one
+without an import that's visible in review. `casual_mode.py`'s own
+`--render-check` asserts this structurally (inspects the module's own
+namespace/imports for those names), not just behaviorally.
+
+**The one real wrinkle this surfaced, worth understanding before touching
+either module**: `qt_shell.py`'s normal capture path invokes
+`hdr_from_session.py` as a **subprocess** CLI (`_run_process_cmd`), and
+that CLI's `main()` *requires* a real `session.json` on disk (`sj =
+session_dir / "session.json"; if not sj.is_file(): sys.exit(...)`) — so
+Casual Mode cannot reuse that entry point without writing exactly the
+provenance artifact it exists to avoid. `hdr_from_session.py`'s `process()`
+function itself, underneath `main()`, is provenance-free: it takes plain
+`session`/`cap` **dicts** (never touches disk for them, never writes
+`session.json` or any sidecar) and does the real work (frame averaging,
+HDR merge, debayer, tonemap) against a `session_dir` passed in explicitly.
+So `casual_mode.py` imports `hdr_from_session.process` directly and hand-
+builds the minimal `session`/`cap` dicts `record_capture`/`record_burst`/
+`record_hdr` would otherwise have produced — same pipeline, zero
+provenance i/o, and the entanglement never reaches disk. This is a
+deliberate deviation from the plan's "same pipeline" phrasing being a
+literal subprocess call; the underlying image operations and results are
+identical either way.
+
+**Output format design deviates from the original plan**, per Brandon's
+own call made during the build (the plan's fixed seven-preset list
+`dng, png, jpg, tiff, tiff+jpg, dng+jpg, png+jpg` did not resolve cleanly:
+a real DNG is a raw Bayer-mosaic container, and Burst/HDR's "same pipeline"
+merges multiple raw frames into one TIFF master via `frame_average.py`/
+`hdr_merge.py` — there is no valid single DNG for that merged result, and
+writing merged data under a `.dng` extension would misrepresent the file's
+actual format, directly against this project's honesty-about-derivatives
+principle (`publish.py`'s explicit `"NOT a measurement"` labeling is the
+same rule applied elsewhere)). Resolved as independent format checkboxes
+(DNG / PNG / JPG / TIFF, any nonempty combination — a generalization of
+the plan's seven fixed presets, not a subset of them) plus a dedicated
+checkbox, enabled only for Burst/HDR, choosing what "DNG" means for a
+multi-frame capture: unchecked delivers the first captured frame's own
+real, untouched `.dng`; checked delivers the merged raw-domain master
+*honestly saved with a `.tif` extension* (never `.dng`), with status text
+explaining why the extension differs from what was requested. For a
+single Snap this checkbox is moot (one frame IS the result) and stays
+disabled.
+
+The JPG-first UX itself is unchanged from the plan: a placeholder JPG
+(the camera's own preview JPG, already written at capture time by
+`camera_backend.py` — free, no extra encode) lands in the destination
+folder immediately, before the debayer/tonemap chain finishes. If JPG
+was one of the checked formats, the real processed JPG atomically
+replaces that placeholder in place (`os.replace`, temp name first — never
+delete-then-write). If JPG was **not** checked, the placeholder is
+removed only once every checked format's file is safely on disk. On a
+processing failure, the placeholder is always kept and the failure is
+reported plainly — never silently presented as a complete result.
 
 **Video resolution menu detail worth knowing**: `camera_backend.py`'s
 `Picamera2Camera.set_video_resolution()` has never had a live effect —
