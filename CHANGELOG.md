@@ -7,6 +7,26 @@ this file is the historical record of what happened and why.
 
 ## 2026-07-24
 
+### Intent: Green-plane cache (Preferences-dialog plan set, Part 04)
+
+Recording intent before building, per the project's two-phase
+documentation rule. Full design in `PLAN_00_context_and_supersession.md`
+and `PLAN_04_green_plane_cache.md` (drafted, not checked into the repo).
+Depends on Part 01 (built) for the Advanced-tab controls it wires up;
+blocks Part 05 (live measure panel, undrafted), which needs this cache to
+have somewhere to pull a plane into and point a committed mark at.
+
+Plan: a new `plane_cache.py`, keyed by `pixel_sha256` so pruning is
+mechanical (referenced in `annotations.json` == never pruned) and so
+`measure.py` can open a cached plane with its marks resolving via no
+external index. Location under the Part 03 provenance root, not the
+capture output folder. Two controls, already stubbed in Part 01's
+Preferences > Advanced: "Clean cache now" (immediate) and "Automatically
+clean after N days" (off by default). Extraction timing to be measured on
+real hardware before trusting the plan's own size-based estimate, since
+Part 05's interaction design assumes the pull is fast enough to be
+imperceptible on first click — report a real number, not an assumption.
+
 ### Build: Debayer.py tonemap/write split (Part 03 follow-up)
 
 Part 03 (below) shipped with TIFF locked checked in Preferences >

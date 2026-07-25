@@ -77,9 +77,8 @@ each with its own `--render-check` coverage; self-check-verified only —
 see the section below for exactly what that does and does not cover.
 
 **A new plan set (2026-07-24) supersedes Casual Mode in full.** See
-`PLAN_00_context_and_supersession.md` through `PLAN_02_camera_capability_
-query.md` (drafted, not checked into the repo; Parts 03-05 — provenance
-relocation/Keep RAW, green-plane cache, live measure panel — not yet
+`PLAN_00_context_and_supersession.md` through `PLAN_04_green_plane_cache.md`
+(drafted, not checked into the repo; Part 05 — live measure panel — not yet
 drafted). The design: one application, one window, one layout — every
 feature always present, nothing gated by a mode. Provenance moves to
 `~/provenance/<timestamp>/` rather than becoming conditional; the only
@@ -450,11 +449,16 @@ twice via a different mechanism):
    (Tier 3 item 3) — that reorg needs this fixed first, or needs to ship
    with CA's live-capture path explicitly disabled/flagged.
 
+**Part 04 (green-plane cache) — intent recorded, not yet built.** See the
+dedicated section below (after the Debayer.py follow-up) for the full
+design. Depends on Part 01 for its Advanced-tab controls, per
+`PLAN_00_context_and_supersession.md`'s own dependency order.
+
 Nothing is currently in progress. Provenance relocation/Keep RAW/
 auto-processing (Part 03, above) is done — verified with a full
 `--render-check` sweep across all 15 remaining modules (`casual_mode.py`
 is deleted, so the 16-module baseline this file used to cite is now 15).
-Parts 04-05 (green-plane cache, live measure panel) remain undrafted.
+Part 05 (live measure panel) remains undrafted; it depends on Part 04.
 
 ### Debayer.py tonemap/write split (Part 03 follow-up, same day) — BUILT
 
@@ -523,6 +527,59 @@ omits the TIFF and writes only the JPG) before touching any caller. Full
 `--render-check` sweep, all 15 modules, including `process_wizard.py`
 exercising the real `--tonemap-out` contract through its own subprocess
 call — confirms the split didn't disturb that third, independent caller.
+
+### Green-plane cache (Preferences-dialog plan set, Part 04) — DESIGN, NOT YET BUILT
+
+Intent recorded (`CHANGELOG.md`'s matching entry); no code has landed for
+this part yet. Full design in `PLAN_00_context_and_supersession.md` and
+`PLAN_04_green_plane_cache.md` (drafted, not checked into the repo).
+
+**Not a performance cache — the substrate a committed measurement points
+at**, per the plan's own framing: Part 05's live measure panel will pull a
+green plane on first click and measure against it, and once a mark is
+committed against that plane, the plane has to keep existing on disk for
+as long as the mark does, or the mark is stranded (it still says what it
+measured, but nothing can re-derive or verify the number). Keyed by
+`pixel_sha256`, never timestamp or sequence, so pruning stays mechanical
+(referenced in `annotations.json` == never pruned) and `measure.py`
+opening a cached plane can have its marks resolve with no external index.
+
+**Planned location**: `<provenance_folder>/plane_cache/<pixel_sha256>.tif`
+— a subfolder of `provenance.PROVENANCE_ROOT` (Part 03), same "out of
+sight, not out of existence" placement as `session.json`'s own sidecars,
+never the capture output folder. New module `plane_cache.py`, Qt-free and
+camera-free, imported from `qt_shell.py` the same guarded-optional way
+`stacks`/`calibrate`/`measure`/`gallery`/`process_wizard` already are.
+
+**Planned mechanics**: `store_plane`/`load_cached_plane`, atomic (temp
+file + `os.replace`, same pattern every other store in this project uses)
+and idempotent; `clean_cache(referenced=None, older_than_days=None)`
+defaulting `referenced` to a fresh `annotations.json` read so a plane that
+gains a mark since the last clean is automatically ineligible with no
+extra bookkeeping; `older_than_days=None` for "Clean cache now" (every
+unreferenced plane, any age), a number for auto-clean (only unreferenced
+planes at least that old). Reports what a clean actually did (counts
+removed vs. retained-and-why), per the plan's own instruction — silent
+housekeeping on a directory the user can't see is exactly the kind of
+thing that becomes untrustworthy the moment it surprises anyone. Wires
+into the two Advanced-tab stubs Part 01 already built ("Clean cache now",
+"Automatically clean after N days").
+
+**To be measured on real hardware before trusting the plan's own
+estimate, not assumed**: extraction/store timing. The plan's own weight
+section estimates well under a second, but flags that this needs
+confirming on the Pi 5 rather than trusted, since Part 05's whole
+interaction design assumes the pull-to-cache step is imperceptible on
+first click — if it turns out slow, Part 05 needs to know before it's
+built. Report a real number, not an assumption.
+
+**To be checked early, per the plan's explicit instruction, not deferred
+to the end**: whether `measure.py` can actually open a cached plane and
+have its annotations resolve. If `measure.py`'s loader expects a session
+directory or a sidecar rather than a bare TIFF plus a hash, that's a
+small adaptation and the one place the live path and the existing path
+actually have to meet — if it doesn't hold, committed marks would be
+stranded in a store nothing can open, which makes Part 05 pointless.
 
 **Full screen mode detail worth knowing**: `F11` toggles; the interaction
 model (explicit toggle key, not auto-hide-on-idle or an always-visible
@@ -898,17 +955,16 @@ anything:
 ```bash
 for m in pixel_hash annotations export publish calibrate measure ca_measure \
         wizard_pages qt_shell stacks focus gallery process_wizard \
-        provenance casual_mode; do
+        provenance; do
   DISPLAY=:0 python3 $m.py --render-check || echo "FAILED: $m"
 done
 ```
 
-All 15 currently pass (some — `stacks.py`, `focus.py` — only gained a
-`--render-check` this session; they didn't have one before). `stacks.py`
-and `focus.py` and `calibrate.py`'s new pure functions run fine without
-PyQt5 or a display; `qt_shell.py`/`measure.py`/`casual_mode.py` have
-PyQt5-gated checks that print `SKIPPED` (not `FAILED`) when PyQt5 isn't
-importable — that's correct, expected behavior, not a bug to chase.
+All 15 currently pass (`casual_mode.py` is deleted, Part 03 — no longer in
+this list). `stacks.py`, `focus.py`, and `calibrate.py`'s own pure
+functions run fine without PyQt5 or a display; `qt_shell.py`/`measure.py`
+have PyQt5-gated checks that print `SKIPPED` (not `FAILED`) when PyQt5
+isn't importable — that's correct, expected behavior, not a bug to chase.
 
 ## Things that will bite you if you don't know them
 
@@ -1017,13 +1073,21 @@ move, or delete it. It's untracked in git (large binaries) and that's
 correct — don't `git add` it.
 
 **Central store paths** (all under `~/.zynergy/` except profile, which sits
-in the repo root because the repo happens to live at `~/imx`):
+in the repo root because the repo happens to live at `~/imx`; the
+folder-location ones — provenance/capture/flat — are each a Preferences >
+Advanced pref, defaults shown here, see Part 03's folder-layout note above
+for the full split):
 - `~/.zynergy/calibration.json` — spatial (µm/px), keyed by objective
 - `~/.zynergy/ca_calibration.json` — chromatic aberration, keyed by objective
 - `~/.zynergy/annotations.json` — measurement marks, keyed by `pixel_sha256`
 - `~/imx/profile.json` — camera exposure/gain/WB (this repo IS `~/imx`)
-- `~/captures/<timestamp>/` — session folders (`session.json` + raw frames)
-- `~/captures/adhoc/` — ad hoc wizard-shot images (not full sessions)
+- `~/provenance/<timestamp>/` — `session.json` + `.meta.json` sidecars only
+  (Part 03) — no image bytes
+- `~/captures/<timestamp>/` — session image bytes only, no `session.json`
+  (Part 03); `~/captures/focal/<stack_id>/plane_N/` — z-stack captures;
+  `~/captures/adhoc/` — ad hoc wizard-shot images (not full sessions)
+- `~/flat/` — the standing flat-field library, replaced outright by each
+  new Flat capture (Part 03), not a per-session capture
 
 All three JSON stores are append-only with a `supersedes` chain — **never**
 edit or delete an existing entry when you need a store operation; add a new
