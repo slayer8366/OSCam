@@ -159,6 +159,18 @@ except ImportError:
     except ImportError:
         _process_wizard = None
 
+# plane_cache.py's green-plane cache (Preferences-dialog plan set, Part 04):
+# the substrate a committed live measurement (Part 05) points at. None (the
+# Advanced tab's clean-now/auto-clean controls report unavailable rather
+# than crashing) if plane_cache.py is not alongside this file.
+try:
+    from . import plane_cache as _plane_cache
+except ImportError:
+    try:
+        import plane_cache as _plane_cache
+    except ImportError:
+        _plane_cache = None
+
 # The green plane calibrate.py measures on: half the sensor's resolution each
 # axis (see debayer.py's extract_green / the build checklist's own invariant).
 # The ruler's field-of-view-in-microns is derived from THIS width/height, not
@@ -1421,11 +1433,21 @@ if _HAVE_QT:
                 save_pref(pref_key, chosen)
 
         def _on_clean_cache_now(self):
-            # No green-plane cache exists yet (Part 04, not yet drafted) --
-            # report that honestly rather than guessing at a cache directory
-            # that isn't defined anywhere, or silently claiming success.
+            # Part 04: real green-plane cache. "Clean cache now" is always
+            # older_than_days=None -- remove every unreferenced plane right
+            # now, regardless of age; the day threshold only governs
+            # auto-clean (see main()). Report what actually happened --
+            # silent housekeeping on a directory the user can't see is
+            # exactly the kind of thing that becomes untrustworthy the
+            # moment it surprises anyone (PLAN_04's own words).
+            if _plane_cache is None:
+                self._clean_cache_status.setText(
+                    "cache unavailable (plane_cache.py not importable)")
+                return
+            result = _plane_cache.clean_cache(older_than_days=None)
             self._clean_cache_status.setText(
-                "no cache to clean yet (green-plane cache lands in a later part)")
+                "removed {removed}, kept {retained_referenced} "
+                "(referenced by a saved measurement)".format(**result))
 
         def _on_accept(self):
             # Capture/Video/Appearance are next-launch: persist here, on OK,
@@ -3955,6 +3977,16 @@ def main(argv=None):
     provenance.OUT_ROOT = Path(load_pref("capture_folder", str(Path.home() / "captures")))
     provenance.FLAT_ROOT = Path(load_pref("flat_library_folder", str(Path.home() / "flat")))
 
+    # Green-plane cache auto-clean (Part 04): runs once here, at launch, not
+    # on a recurring in-app timer -- this app has no other background
+    # housekeeping timer to hang it off, sessions are typically short-lived
+    # (started and closed, not left running for days), and startup is
+    # already where every other "apply a persisted setting" step in main()
+    # happens. A settled placement call, not a silently guessed one --
+    # revisit if a long-running session ever turns out to need it mid-run.
+    if _plane_cache is not None and load_pref("cache_auto_clean_enabled", False):
+        _plane_cache.clean_cache(older_than_days=load_pref("cache_auto_clean_days", 30))
+
     if a.camera:
         try:
             from .camera_backend import Picamera2Camera
@@ -4863,6 +4895,61 @@ def render_check():
         print("Preferences dialog check PASS (part 2): a reported stream "
               "capability produces a real control, a missing gui_prefs.json "
               "and a stale casual_mode key both degrade gracefully")
+
+        # "Clean cache now" (Preferences-dialog plan set, Part 04): a real
+        # plane_cache.clean_cache() call driven through the actual button
+        # handler, reporting real counts -- no longer the "no cache to
+        # clean yet" stub Part 01 shipped with. Lands under
+        # provenance.PROVENANCE_ROOT, already redirected to a disposable
+        # temp dir for this whole render_check() run (see near the top of
+        # this function), so plane_cache.cache_root()'s live attribute read
+        # picks it up with no extra redirect needed here. annotations.json
+        # gets the same redirect treatment (temp path, swapped back in
+        # finally) so this exercises the button's real referenced=None ->
+        # plane_cache.referenced_hashes() -> annotations.load_annotations()
+        # chain end to end, deterministically, never the real
+        # ~/.zynergy/annotations.json.
+        if _plane_cache is not None and _plane_cache._annotations is not None:
+            orig_prefs_path3 = PREFS_PATH
+            PREFS_PATH = Path("/tmp/zynergy_render_check_prefs_dialog3.json")
+            PREFS_PATH.unlink(missing_ok=True)
+            orig_annotation_path = _plane_cache._annotations.ANNOTATION_PATH
+            _plane_cache._annotations.ANNOTATION_PATH = Path(
+                "/tmp/zynergy_render_check_prefs_dialog3_annotations.json")
+            _plane_cache._annotations.ANNOTATION_PATH.unlink(missing_ok=True)
+            try:
+                ccam = FakeCamera(async_delay_s=0.0)
+                cache_dlg = PreferencesDialog(ccam)
+                referenced_plane = np.zeros((4, 4), dtype=np.uint16)
+                unreferenced_plane = np.ones((4, 4), dtype=np.uint16)
+                ref_path, ref_hash = _plane_cache.store_plane(referenced_plane)
+                unref_path, _unref_hash = _plane_cache.store_plane(unreferenced_plane)
+                # A real committed mark under ref_hash -- the same call
+                # measure.py's own mark-commit path makes -- is what the
+                # button's live annotations lookup must actually find.
+                _plane_cache._annotations.save_mark(
+                    ref_hash, {"type": "distance", "note": "render_check"},
+                    record_defaults={"shape": [4, 4], "dtype": "uint16", "kind": "green"})
+                cache_dlg._on_clean_cache_now()
+                assert ref_path.is_file(), \
+                    "a plane with a real committed mark must survive the real button click"
+                assert not unref_path.is_file(), \
+                    "an unmarked plane must be removed by the real button click"
+                status_text = cache_dlg._clean_cache_status.text()
+                assert "no cache to clean yet" not in status_text, \
+                    "the stub message must be gone now that a real cache exists"
+                assert "removed 1" in status_text and "kept 1" in status_text, \
+                    "the status label must report the real removed/kept counts"
+                ccam.stop()
+            finally:
+                PREFS_PATH = orig_prefs_path3
+                _plane_cache._annotations.ANNOTATION_PATH = orig_annotation_path
+            print("Clean cache now check PASS: the real button handler "
+                  "removes an unmarked cached plane and retains one with a "
+                  "real committed mark, driven through the actual live "
+                  "annotations lookup (not a hand-fed referenced set), and "
+                  "the status label reports the real result, not the "
+                  "Part 01 stub")
 
         # Green-plane extraction utility (BUILD_LIST Tier 1 item 4): a real
         # subprocess call to debayer.py --green, driven the same way the

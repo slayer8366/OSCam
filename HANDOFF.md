@@ -449,16 +449,18 @@ twice via a different mechanism):
    (Tier 3 item 3) — that reorg needs this fixed first, or needs to ship
    with CA's live-capture path explicitly disabled/flagged.
 
-**Part 04 (green-plane cache) — intent recorded, not yet built.** See the
+**Part 04 (green-plane cache) — now built and committed.** See the
 dedicated section below (after the Debayer.py follow-up) for the full
-design. Depends on Part 01 for its Advanced-tab controls, per
+design, the real-hardware timing finding that changed a default, and what
+landed. Depended on Part 01 for its Advanced-tab controls, per
 `PLAN_00_context_and_supersession.md`'s own dependency order.
 
 Nothing is currently in progress. Provenance relocation/Keep RAW/
-auto-processing (Part 03, above) is done — verified with a full
-`--render-check` sweep across all 15 remaining modules (`casual_mode.py`
-is deleted, so the 16-module baseline this file used to cite is now 15).
-Part 05 (live measure panel) remains undrafted; it depends on Part 04.
+auto-processing (Part 03) and the green-plane cache (Part 04) are both
+done — verified with a full `--render-check` sweep across all 16 modules
+(`casual_mode.py` stays deleted; `plane_cache.py`, Part 04's new module,
+is the 16th). Part 05 (live measure panel) remains undrafted; it depends
+on Part 04's cache, now in place.
 
 ### Debayer.py tonemap/write split (Part 03 follow-up, same day) — BUILT
 
@@ -528,11 +530,14 @@ omits the TIFF and writes only the JPG) before touching any caller. Full
 exercising the real `--tonemap-out` contract through its own subprocess
 call — confirms the split didn't disturb that third, independent caller.
 
-### Green-plane cache (Preferences-dialog plan set, Part 04) — DESIGN, NOT YET BUILT
+### Green-plane cache (Preferences-dialog plan set, Part 04) — BUILT
 
-Intent recorded (`CHANGELOG.md`'s matching entry); no code has landed for
-this part yet. Full design in `PLAN_00_context_and_supersession.md` and
-`PLAN_04_green_plane_cache.md` (drafted, not checked into the repo).
+Full design in `PLAN_00_context_and_supersession.md` and
+`PLAN_04_green_plane_cache.md` (drafted, not checked into the repo). New
+module: `plane_cache.py` — Qt-free, camera-free, importable from
+`qt_shell.py` the same guarded-optional way `stacks`/`calibrate`/`measure`/
+`gallery`/`process_wizard` already are (`_plane_cache = None` on a missing
+file, degrading rather than crashing).
 
 **Not a performance cache — the substrate a committed measurement points
 at**, per the plan's own framing: Part 05's live measure panel will pull a
@@ -540,46 +545,112 @@ green plane on first click and measure against it, and once a mark is
 committed against that plane, the plane has to keep existing on disk for
 as long as the mark does, or the mark is stranded (it still says what it
 measured, but nothing can re-derive or verify the number). Keyed by
-`pixel_sha256`, never timestamp or sequence, so pruning stays mechanical
-(referenced in `annotations.json` == never pruned) and `measure.py`
-opening a cached plane can have its marks resolve with no external index.
+`pixel_sha256`, never timestamp or sequence: `plane_cache.plane_path(hash)`
+resolves a cached plane's filename from the hash alone, no index or
+mapping table anywhere — the same key `annotations.json` uses, so
+`measure.py` opening a cached plane and this store's marks find each other
+automatically.
 
-**Planned location**: `<provenance_folder>/plane_cache/<pixel_sha256>.tif`
-— a subfolder of `provenance.PROVENANCE_ROOT` (Part 03), same "out of
-sight, not out of existence" placement as `session.json`'s own sidecars,
-never the capture output folder. New module `plane_cache.py`, Qt-free and
-camera-free, imported from `qt_shell.py` the same guarded-optional way
-`stacks`/`calibrate`/`measure`/`gallery`/`process_wizard` already are.
+**Location**: `<provenance_folder>/plane_cache/<pixel_sha256>.tif` — a
+subfolder of `provenance.PROVENANCE_ROOT` (Part 03), same "out of sight,
+not out of existence" placement as `session.json`'s own sidecars, never
+the capture output folder. Read live via `provenance.PROVENANCE_ROOT`
+(attribute access, at call time, not import time) — same rule
+`provenance.py`'s own `OUT_ROOT`/`PROFILE_PATH` comment documents, and
+what lets both `plane_cache.py`'s own `--render-check` and `qt_shell.py`'s
+redirect the whole cache to a disposable temp dir just by reassigning that
+one attribute.
 
-**Planned mechanics**: `store_plane`/`load_cached_plane`, atomic (temp
-file + `os.replace`, same pattern every other store in this project uses)
-and idempotent; `clean_cache(referenced=None, older_than_days=None)`
-defaulting `referenced` to a fresh `annotations.json` read so a plane that
-gains a mark since the last clean is automatically ineligible with no
-extra bookkeeping; `older_than_days=None` for "Clean cache now" (every
-unreferenced plane, any age), a number for auto-clean (only unreferenced
-planes at least that old). Reports what a clean actually did (counts
-removed vs. retained-and-why), per the plan's own instruction — silent
-housekeeping on a directory the user can't see is exactly the kind of
-thing that becomes untrustworthy the moment it surprises anyone. Wires
-into the two Advanced-tab stubs Part 01 already built ("Clean cache now",
-"Automatically clean after N days").
+**Real-hardware finding that changed a default, not just informed one**:
+the plan asked for extraction timing to be measured on the Pi 5 rather
+than trusted from a size estimate, since Part 05's whole interaction
+design assumes the pull-to-cache step is imperceptible on first click.
+Driving `Picamera2` directly (the documented on-rig workaround — real
+IMX477, `capture_request()` → `save_dng()` → `calibrate.load_mosaic_array`
+→ `debayer.extract_green`, the exact chain the app's own capture path
+uses), on this rig: `extract_green` itself is negligible (~0.03 ms,
+confirming the plan's own claim that this is a slice, not a de-mosaic);
+`pixel_sha256` hashing is ~9 ms; an uncompressed `tifffile.imwrite` is
+~6 ms — but a **deflate-compressed** write of that same real captured
+plane is **~570-600 ms**, almost two orders of magnitude slower, because
+real sensor noise compresses far more slowly than the synthetic random
+data an estimate would reach for (deflate on synthetic random data of the
+same shape/dtype ran in ~90 ms on this same rig — still not representative
+of the real cost). Compression does shrink the file meaningfully (~3.9MB
+vs ~6.2MB for one plane), but 600 ms is not imperceptible, so
+`plane_cache.store_plane` writes **uncompressed**, keeping the whole
+extract+hash+store pipeline at ~15 ms end to end. Disk space stays "a few
+MB" either way, which the plan's own weight section already accepted as
+fine. This is called out with the real numbers in `plane_cache.py`'s own
+module docstring so a future reader doesn't quietly flip it back to
+deflate without re-measuring against real sensor data first. Separately
+worth knowing for Part 05's own design: the DNG capture-and-write step
+itself (`save_dng`) measured ~530 ms on its own in this same test — that
+dwarfs anything Part 04 adds, and it's an existing cost of the capture
+path itself, not something the cache introduces; Part 05 will need to
+reckon with it directly (e.g. capturing in-memory rather than a full DNG
+round-trip) if a live first-click pull is to feel instant.
 
-**To be measured on real hardware before trusting the plan's own
-estimate, not assumed**: extraction/store timing. The plan's own weight
-section estimates well under a second, but flags that this needs
-confirming on the Pi 5 rather than trusted, since Part 05's whole
-interaction design assumes the pull-to-cache step is imperceptible on
-first click — if it turns out slow, Part 05 needs to know before it's
-built. Report a real number, not an assumption.
+**Mechanics** (`plane_cache.py`): `store_plane`/`load_cached_plane` are
+atomic (temp file + `os.replace`, same pattern every other store in this
+project uses) and idempotent (an already-cached hash is left untouched,
+never rewritten). `clean_cache(referenced=None, older_than_days=None)` —
+`referenced` defaults to a fresh `annotations.load_annotations().keys()`
+read (so a plane that gains a mark since the last clean is automatically
+ineligible, no bookkeeping needed); `older_than_days=None` is "Clean cache
+now" semantics (every unreferenced plane goes, regardless of age); a
+number is "auto-clean" semantics (only unreferenced planes at least that
+old by mtime go). Returns
+`{"removed", "retained_referenced", "retained_too_new"}` so a caller can
+report the real reason a plane survived, not just a single kept/removed
+split — per the plan's own "report what a clean actually did" instruction.
 
-**To be checked early, per the plan's explicit instruction, not deferred
-to the end**: whether `measure.py` can actually open a cached plane and
-have its annotations resolve. If `measure.py`'s loader expects a session
-directory or a sidecar rather than a bare TIFF plus a hash, that's a
-small adaptation and the one place the live path and the existing path
-actually have to meet — if it doesn't hold, committed marks would be
-stranded in a store nothing can open, which makes Part 05 pointless.
+**`measure.py` integration — checked early, per the plan's explicit
+instruction, not deferred to the end.** It turned out to need zero
+adaptation: `measure.load_measurement_plane` already treats a bare
+green-shaped TIFF as a pass-through substrate (no re-extraction, no
+description-tag requirement beyond "not flagged as a display-referred
+derivative"), which is exactly what a cached plane is. `plane_cache.py`'s
+own `--render-check` proves the full loop: store a plane → open it through
+`measure.load_measurement_plane` → confirm the hash matches the cache key
+exactly → save a mark under that hash via `annotations.save_mark` →
+confirm `annotations.image_record_for` resolves it straight back. No
+index, no mapping table, nothing to keep in sync — the plane and its
+marks share one key by construction.
+
+**`qt_shell.py` wiring**: the Advanced tab's "Clean cache now" button
+(built in Part 01 as a stub) now calls `plane_cache.clean_cache(
+older_than_days=None)` for real and reports the real counts
+("removed N, kept M (referenced by a saved measurement)") instead of the
+old "no cache to clean yet" placeholder. Auto-clean
+(`cache_auto_clean_enabled`/`cache_auto_clean_days`, also Part 01 stubs)
+runs once in `main()`, right after the Part 03 folder-layout prefs are
+applied to `provenance.PROVENANCE_ROOT` — a settled placement call, not a
+silently guessed one: this app has no other recurring background-timer
+mechanism to hang periodic housekeeping off, sessions are typically
+started and closed rather than left running for days, and startup is
+already where every other "apply a persisted setting" step in `main()`
+happens. Revisit if a long-running session ever turns out to need a
+mid-run re-clean.
+
+Verified: `plane_cache.py`'s own `--render-check` covers hash-only
+resolution, atomic write, idempotent store, the live `PROVENANCE_ROOT`
+read, the `measure.py`/`annotations.py` integration above, clean-now,
+auto-clean's day threshold, and — via two identically-aged twin fixtures
+in separate roots, since `clean_cache` has no dry-run mode to test
+eligibility without side effects — that gaining a reference after aging
+past the threshold flips a plane from prune-eligible to retained.
+`qt_shell.py`'s own `--render-check` drives the real "Clean cache now"
+button handler end to end (not a hand-fed `referenced` set): a plane with
+a real `annotations.save_mark` committed against it survives the click, an
+unmarked sibling doesn't, against `annotations.json` redirected to a temp
+path for the check's duration (same isolation rule as
+`provenance.PROFILE_PATH`/`PROVENANCE_ROOT`, never the real
+`~/.zynergy/annotations.json`). Full `--render-check` sweep, all 16
+modules, passes. Extraction/store timing above is real-hardware-verified
+(see the caveat elsewhere in this file: a headless pass proves internal
+consistency, not that it works on the rig — the timing numbers here are
+the hardware half, run separately, not inferred from the self-check).
 
 **Full screen mode detail worth knowing**: `F11` toggles; the interaction
 model (explicit toggle key, not auto-hide-on-idle or an always-visible
@@ -955,16 +1026,18 @@ anything:
 ```bash
 for m in pixel_hash annotations export publish calibrate measure ca_measure \
         wizard_pages qt_shell stacks focus gallery process_wizard \
-        provenance; do
+        provenance plane_cache; do
   DISPLAY=:0 python3 $m.py --render-check || echo "FAILED: $m"
 done
 ```
 
-All 15 currently pass (`casual_mode.py` is deleted, Part 03 — no longer in
-this list). `stacks.py`, `focus.py`, and `calibrate.py`'s own pure
-functions run fine without PyQt5 or a display; `qt_shell.py`/`measure.py`
-have PyQt5-gated checks that print `SKIPPED` (not `FAILED`) when PyQt5
-isn't importable — that's correct, expected behavior, not a bug to chase.
+All 16 currently pass (`casual_mode.py` is deleted, Part 03 — no longer in
+this list; `plane_cache.py`, Part 04's new green-plane cache module, is
+now in it). `stacks.py`, `focus.py`, `plane_cache.py`, and `calibrate.py`'s
+own pure functions run fine without PyQt5 or a display; `qt_shell.py`/
+`measure.py` have PyQt5-gated checks that print `SKIPPED` (not `FAILED`)
+when PyQt5 isn't importable — that's correct, expected behavior, not a bug
+to chase.
 
 ## Things that will bite you if you don't know them
 
@@ -1082,7 +1155,8 @@ for the full split):
 - `~/.zynergy/annotations.json` — measurement marks, keyed by `pixel_sha256`
 - `~/imx/profile.json` — camera exposure/gain/WB (this repo IS `~/imx`)
 - `~/provenance/<timestamp>/` — `session.json` + `.meta.json` sidecars only
-  (Part 03) — no image bytes
+  (Part 03) — no image bytes; `~/provenance/plane_cache/<pixel_sha256>.tif`
+  — the green-plane cache (Part 04), a subfolder of this same root
 - `~/captures/<timestamp>/` — session image bytes only, no `session.json`
   (Part 03); `~/captures/focal/<stack_id>/plane_N/` — z-stack captures;
   `~/captures/adhoc/` — ad hoc wizard-shot images (not full sessions)

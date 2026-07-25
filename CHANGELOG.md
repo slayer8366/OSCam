@@ -7,6 +7,57 @@ this file is the historical record of what happened and why.
 
 ## 2026-07-24
 
+### Build: Green-plane cache (Preferences-dialog plan set, Part 04)
+
+Builds the intent recorded below. Full `--render-check` sweep passes
+across all 16 modules (`plane_cache.py`, new this entry, brings the
+15-module Part 03 baseline back up by one). See `HANDOFF.md`'s own Part 04
+section for the complete account — this entry summarizes.
+
+**Landed as designed:** `plane_cache.py` — `store_plane`/`load_cached_plane`
+keyed by `pixel_sha256` alone (no index, no mapping table), atomic writes,
+idempotent stores; `clean_cache(referenced=None, older_than_days=None)`
+defaulting `referenced` to a fresh `annotations.json` read (so a plane
+that gains a mark since the last clean is automatically ineligible) and
+reporting `{removed, retained_referenced, retained_too_new}` so a caller
+can say why a plane survived, not just that it did. Lives at
+`<provenance_folder>/plane_cache/`, read live off
+`provenance.PROVENANCE_ROOT` the same attribute-access way `OUT_ROOT`/
+`PROFILE_PATH` already are. Preferences > Advanced's "Clean cache now"
+button and "Automatically clean after N days" checkbox (both built as
+stubs in Part 01) are now real: the button calls `clean_cache` and reports
+real counts; auto-clean runs once at `main()` startup, alongside the
+other Part 03 folder-layout prefs.
+
+**Checked early, per the plan's explicit instruction:** whether
+`measure.py` can open a cached plane and have its annotations resolve.
+Needed zero adaptation — `measure.load_measurement_plane` already passes
+a bare green-shaped TIFF through as-is, which is exactly what a cached
+plane is. `plane_cache.py`'s own `--render-check` proves the full loop
+(store → open via `measure.load_measurement_plane` → hash matches the
+cache key → `annotations.save_mark` under that hash → resolves back via
+`image_record_for`), and `qt_shell.py`'s own check drives the real button
+handler against a real committed mark, not a hand-fed referenced set.
+
+**A real-hardware finding changed a default, not just informed one.** The
+plan asked for extraction timing to be measured on the Pi 5 rather than
+trusted from a size estimate. Driving `Picamera2` directly (the
+documented on-rig workaround) through the app's own real capture chain:
+`extract_green` is negligible (~0.03 ms); hashing is ~9 ms; an
+uncompressed TIFF write is ~6 ms — but a deflate-compressed write of that
+same real captured plane is ~570-600 ms, nearly two orders of magnitude
+slower, because real sensor noise compresses far more slowly than
+synthetic random data of the same shape/dtype (~90 ms on the same rig).
+600 ms is not the "imperceptible on first click" Part 05's design assumes,
+so `store_plane` writes uncompressed by default — a deliberate, measured
+departure from this project's usual deflate-TIFF convention, documented
+with the real numbers in `plane_cache.py`'s own module docstring so it
+isn't quietly reverted without re-measuring. Also worth carrying into Part
+05: the DNG capture-and-write step itself measured ~530 ms on its own in
+the same test, dwarfing anything the cache adds — an existing cost of the
+capture path, not something Part 04 introduces, but one Part 05 will need
+to reckon with directly for a first-click pull to feel instant.
+
 ### Intent: Green-plane cache (Preferences-dialog plan set, Part 04)
 
 Recording intent before building, per the project's two-phase
