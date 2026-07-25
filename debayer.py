@@ -377,11 +377,29 @@ def main():
                          "encoding, brighter midtones). Off by default, which "
                          "matches a preview that tone-maps without re-encoding.")
     ap.add_argument("--tonemap-out", default=None, metavar="PATH",
-                    help="path for the tone-mapped TIFF (default: the RGB output "
-                         "stem + '_display.tif').")
+                    help="path for the tone-mapped TIFF, WHEN written (default: the "
+                         "RGB output stem + '_display.tif'). Used to derive the PNG/"
+                         "JPG sibling names too, even when --no-tonemap-tiff means "
+                         "the TIFF itself is never written -- the tone-mapped result "
+                         "is always computed once --tonemap is on; --tonemap-tiff/"
+                         "--tonemap-8bit/--tonemap-jpg each independently control "
+                         "which file(s) that one computation gets written to.")
+    ap.add_argument("--tonemap-tiff", dest="tonemap_tiff", action="store_true",
+                    default=True, help="write the tone-mapped 16-bit TIFF (default: on).")
+    ap.add_argument("--no-tonemap-tiff", dest="tonemap_tiff", action="store_false",
+                    help="skip writing the tone-mapped TIFF -- the PNG/JPG paths "
+                         "below are unaffected, since both already write from the "
+                         "same in-memory tone-mapped array, never by reading the "
+                         "TIFF back off disk.")
     ap.add_argument("--tonemap-8bit", action="store_true",
                     help="also write an 8-bit PNG next to the tone-mapped TIFF "
-                         "(needs Pillow).")
+                         "(needs Pillow). Independent of --tonemap-tiff.")
+    ap.add_argument("--tonemap-jpg", action="store_true",
+                    help="also write an 8-bit JPG next to the tone-mapped TIFF "
+                         "(needs Pillow; quality 92). Independent of --tonemap-tiff "
+                         "and --tonemap-8bit -- written straight from the same "
+                         "in-memory tone-mapped array, never a disk round-trip "
+                         "through the TIFF or PNG.")
     ap.add_argument("--colour-gains", "--color-gains", nargs=2, type=float,
                     default=None, metavar=("RED", "BLUE"), dest="colour_gains",
                     help="libcamera-style ColourGains white balance on the DISPLAY "
@@ -659,9 +677,14 @@ def main():
                 disp = srgb_oetf(disp)
             disp = np.clip(disp, 0.0, 1.0)
 
+            # tm_path/tm16 are always computed -- this is the ONE tone-mapped
+            # result every write-format below shares. --tonemap-tiff/
+            # --tonemap-8bit/--tonemap-jpg each independently decide whether
+            # THEIR file gets written; none of them read another format's
+            # file back off disk to get here, so none can go stale or
+            # missing relative to what was actually computed.
             tm_path = Path(args.tonemap_out) if args.tonemap_out \
                       else out.with_name(out.stem + "_display.tif")
-
             tm16 = np.clip(np.rint(disp * 65535.0), 0, 65535).astype(np.uint16)
             wb_tag = (f"WB(R={args.colour_gains[0]:g},B={args.colour_gains[1]:g}) + "
                       if args.colour_gains is not None else "")
@@ -673,43 +696,55 @@ def main():
                          + (" + colour_gains" if args.colour_gains is not None else "")
                          + f" + tonemap_{args.tonemap}"
                          + "".join(" + " + fx["effect"] for fx in fx_prov))
-            write(tm_path, tm16, "rgb", base_prov, {
-                "kind": "display-referred derivative (NOT a measurement)",
-                "transform": transform,
-                "interpolation": interp,
-                "derived_from_rgb": str(out),
-                "input_linearisation": lin_note,
-                "ca_correction": ca_prov,
-                "white_balance": wb_prov,
-                "display_effects": fx_prov or None,
-                "tonemap": {
-                    "operator": op_name,
-                    "formula": op_formula,
-                    "white_point_Lw": lw,
-                    "srgb_oetf": bool(args.tonemap_srgb),
-                    "operates_on": ("white-balanced linear RGB" if args.colour_gains is not None
-                                    else "demosaiced linear RGB (same scale as the linear master)"),
-                    "values_above_Lw_clipped_px": above_wp,
-                    "reversible": ("yes given Lw"
-                                   + (", the ColourGains" if args.colour_gains is not None else "")
-                                   + (" and the sRGB OETF" if args.tonemap_srgb else "")
-                                   + "; the linear RGB / master is the source of truth"),
-                },
-            })
+            if args.tonemap_tiff:
+                write(tm_path, tm16, "rgb", base_prov, {
+                    "kind": "display-referred derivative (NOT a measurement)",
+                    "transform": transform,
+                    "interpolation": interp,
+                    "derived_from_rgb": str(out),
+                    "input_linearisation": lin_note,
+                    "ca_correction": ca_prov,
+                    "white_balance": wb_prov,
+                    "display_effects": fx_prov or None,
+                    "tonemap": {
+                        "operator": op_name,
+                        "formula": op_formula,
+                        "white_point_Lw": lw,
+                        "srgb_oetf": bool(args.tonemap_srgb),
+                        "operates_on": ("white-balanced linear RGB" if args.colour_gains is not None
+                                        else "demosaiced linear RGB (same scale as the linear master)"),
+                        "values_above_Lw_clipped_px": above_wp,
+                        "reversible": ("yes given Lw"
+                                       + (", the ColourGains" if args.colour_gains is not None else "")
+                                       + (" and the sRGB OETF" if args.tonemap_srgb else "")
+                                       + "; the linear RGB / master is the source of truth"),
+                    },
+                })
+            else:
+                print(f"  --no-tonemap-tiff: {tm_path} NOT written "
+                      f"(tone-mapped result still computed, for PNG/JPG below)")
             if above_wp:
                 print(f"  {above_wp} px exceeded white point Lw={lw:g} and were "
                       f"clipped to 1.0 (raise --tonemap-white to keep them).")
 
-            if args.tonemap_8bit:
-                tm_png = tm_path.with_suffix(".png")
+            if args.tonemap_8bit or args.tonemap_jpg:
+                # Same 8-bit conversion feeds both formats -- computed once,
+                # from the in-memory `disp` array, never from a file (the
+                # TIFF may not even exist if --no-tonemap-tiff was given).
                 if _PILImage is None:
-                    print("  8-bit PNG skipped: Pillow not installed "
-                          "(pip install pillow). 16-bit TIFF written; convert later.",
-                          file=sys.stderr)
+                    print("  8-bit PNG/JPG skipped: Pillow not installed "
+                          "(pip install pillow). Tone-mapped TIFF/data still "
+                          "computed; convert later.", file=sys.stderr)
                 else:
                     tm8 = np.clip(np.rint(disp * 255.0), 0, 255).astype(np.uint8)
-                    _PILImage.fromarray(tm8).save(tm_png)
-                    print(f"  wrote {tm_png}  {tm8.shape} uint8")
+                    if args.tonemap_8bit:
+                        tm_png = tm_path.with_suffix(".png")
+                        _PILImage.fromarray(tm8).save(tm_png)
+                        print(f"  wrote {tm_png}  {tm8.shape} uint8")
+                    if args.tonemap_jpg:
+                        tm_jpg = tm_path.with_suffix(".jpg")
+                        _PILImage.fromarray(tm8).save(tm_jpg, "JPEG", quality=92)
+                        print(f"  wrote {tm_jpg}  {tm8.shape} uint8")
 
     print("done.")
 

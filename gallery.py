@@ -112,7 +112,24 @@ def _capture_file_prefix(cap):
     return cap.get("file_prefix")
 
 
-def _first_frame_paths(session_dir, prefix):
+def _capture_base_dir(session_dir, cap):
+    """Where this capture's own frames actually live (Part 03, provenance
+    relocation) -- mirrors qt_shell.py's own capture_correction_status
+    split exactly: flat lives in the standing provenance.FLAT_ROOT library
+    (replaced outright by each new Flat capture, never session-scoped),
+    standalone dark nests under session_dir/"dark", every other kind
+    (science/snap/hdr -- an hdr entry's OWN frames here are always its
+    science levels, see _capture_file_prefix) sits directly in
+    session_dir."""
+    kind = cap.get("kind")
+    if kind == "flat":
+        return provenance.FLAT_ROOT
+    if kind == "dark":
+        return Path(session_dir) / "dark"
+    return Path(session_dir)
+
+
+def _first_frame_paths(base_dir, prefix):
     """(raw_path, preview_path) for a capture's first frame, or (None, None)
     if nothing is found -- checks both raw extensions in use across the
     project (dng on-rig, tif off-rig), same as capture_correction_status's
@@ -122,11 +139,11 @@ def _first_frame_paths(session_dir, prefix):
     never the cosmetic proxy used to browse."""
     if not prefix:
         return None, None
-    session_dir = Path(session_dir)
+    base_dir = Path(base_dir)
     for ext in ("dng", "tif"):
-        raw = session_dir / "{}frame_0000.{}".format(prefix, ext)
+        raw = base_dir / "{}frame_0000.{}".format(prefix, ext)
         if raw.is_file():
-            preview = session_dir / "{}frame_0000.jpg".format(prefix)
+            preview = base_dir / "{}frame_0000.jpg".format(prefix)
             return raw, (preview if preview.is_file() else None)
     return None, None
 
@@ -150,7 +167,8 @@ def list_gallery_entries(out_root=None):
         session_json = qt_shell.load_session_json(session_dir)
         for cap in session_json.get("captures", []):
             prefix = _capture_file_prefix(cap)
-            raw_path, preview_path = _first_frame_paths(session_dir, prefix)
+            base_dir = _capture_base_dir(session_dir, cap)
+            raw_path, preview_path = _first_frame_paths(base_dir, prefix)
             stack_id, stack_plane = _stack_id_plane_of(cap)
             entries.append(GalleryEntry(
                 session_dir=session_dir,
@@ -179,9 +197,9 @@ def capture_frame_paths(entry):
         return []
     if not entry.file_prefix:
         return [entry.raw_path]
-    session_dir = Path(entry.session_dir)
+    base_dir = _capture_base_dir(entry.session_dir, {"kind": entry.kind})
     ext = entry.raw_path.suffix.lstrip(".")
-    return sorted(session_dir.glob("{}frame_*.{}".format(entry.file_prefix, ext)))
+    return sorted(base_dir.glob("{}frame_*.{}".format(entry.file_prefix, ext)))
 
 
 def capture_has_annotation(raw_path):
@@ -443,64 +461,83 @@ def render_check():
     import numpy as np
     import tifffile
 
-    tmp_root = Path(tempfile.mkdtemp()) / "gallery_check"
-    tmp_root.mkdir(parents=True)
-
-    # Session 1: untagged snap, with a preview jpg.
-    s1 = tmp_root / "2024-01-01_000001"
-    s1.mkdir()
-    cap1 = {"index": 0, "kind": "snap", "file_prefix": "snap_",
-            "frame_count": 1, "timestamp": "2024-01-01T00:00:01+00:00"}
-    (s1 / "session.json").write_text(json.dumps({"captures": [cap1]}))
-    tifffile.imwrite(str(s1 / "snap_frame_0000.tif"),
-                      np.zeros((10, 10), dtype=np.uint16))
-    (s1 / "snap_frame_0000.jpg").write_bytes(b"\xff\xd8\xff\xd9")
-
-    # Session 2: stack-tagged science capture, a real 3-frame burst, no
-    # preview written for any frame.
-    s2 = tmp_root / "2024-01-01_000002"
-    s2.mkdir()
-    cap2 = {"index": 0, "kind": "science", "file_prefix": "science_",
-            "frame_count": 3, "timestamp": "2024-01-01T00:00:02+00:00",
-            "stack": "T4", "plane": 2}
-    (s2 / "session.json").write_text(json.dumps({"captures": [cap2]}))
-    for i in range(3):
-        tifffile.imwrite(str(s2 / "science_frame_{:04d}.tif".format(i)),
+    # Part 03 (provenance relocation): session.json now lives in a separate
+    # provenance root, mirrored by relative path against the capture root
+    # (see qt_shell.py's own _provenance_dir_for). Patched here, restored in
+    # the finally below, same shape provenance.py's own render_check uses --
+    # list_gallery_entries goes through qt_shell.list_sessions, which reads
+    # these two globals, not whatever root a caller happens to pass in.
+    tmp_root = Path(tempfile.mkdtemp())
+    cap_root = tmp_root / "captures"
+    prov_root = tmp_root / "provenance"
+    cap_root.mkdir()
+    prov_root.mkdir()
+    _orig_out_root, _orig_prov_root = provenance.OUT_ROOT, provenance.PROVENANCE_ROOT
+    provenance.OUT_ROOT, provenance.PROVENANCE_ROOT = cap_root, prov_root
+    try:
+        # Session 1: untagged snap, with a preview jpg.
+        s1 = cap_root / "2024-01-01_000001"
+        s1.mkdir()
+        p1 = prov_root / "2024-01-01_000001"
+        p1.mkdir()
+        cap1 = {"index": 0, "kind": "snap", "file_prefix": "snap_",
+                "frame_count": 1, "timestamp": "2024-01-01T00:00:01+00:00"}
+        (p1 / "session.json").write_text(
+            json.dumps({"capture_dir": str(s1), "captures": [cap1]}))
+        tifffile.imwrite(str(s1 / "snap_frame_0000.tif"),
                           np.zeros((10, 10), dtype=np.uint16))
+        (s1 / "snap_frame_0000.jpg").write_bytes(b"\xff\xd8\xff\xd9")
 
-    entries = list_gallery_entries(tmp_root)
-    assert len(entries) == 2, "one entry per capture across both sessions"
-    by_kind = {e.kind: e for e in entries}
-    assert by_kind["snap"].stack_id is None, \
-        "an untagged capture must report no stack id"
-    assert by_kind["snap"].preview_path is not None, \
-        "session 1's jpg must resolve as this capture's preview"
-    assert by_kind["snap"].raw_path.name == "snap_frame_0000.tif"
-    assert (by_kind["science"].stack_id, by_kind["science"].stack_plane) == ("T4", 2), \
-        "a tagged capture's stack id/plane must be surfaced, no raw decode needed"
-    assert by_kind["science"].preview_path is None, \
-        "no jpg was written for session 2; must not fabricate one"
-    print("list_gallery_entries check PASS: one entry per capture, stack "
-          "id/plane and preview resolved from session.json + filesystem "
-          "alone, no raw decode performed")
+        # Session 2: stack-tagged science capture, a real 3-frame burst, no
+        # preview written for any frame.
+        s2 = cap_root / "2024-01-01_000002"
+        s2.mkdir()
+        p2 = prov_root / "2024-01-01_000002"
+        p2.mkdir()
+        cap2 = {"index": 0, "kind": "science", "file_prefix": "science_",
+                "frame_count": 3, "timestamp": "2024-01-01T00:00:02+00:00",
+                "stack": "T4", "plane": 2}
+        (p2 / "session.json").write_text(
+            json.dumps({"capture_dir": str(s2), "captures": [cap2]}))
+        for i in range(3):
+            tifffile.imwrite(str(s2 / "science_frame_{:04d}.tif".format(i)),
+                              np.zeros((10, 10), dtype=np.uint16))
 
-    snap_frames = capture_frame_paths(by_kind["snap"])
-    assert [p.name for p in snap_frames] == ["snap_frame_0000.tif"], \
-        "a 1-frame capture's burst is just its own single frame"
-    science_frames = capture_frame_paths(by_kind["science"])
-    assert [p.name for p in science_frames] == [
-        "science_frame_0000.tif", "science_frame_0001.tif", "science_frame_0002.tif"
-    ], "capture_frame_paths must return EVERY frame of a multi-frame burst, not just frame 0"
+        entries = list_gallery_entries(cap_root)
+        assert len(entries) == 2, "one entry per capture across both sessions"
+        by_kind = {e.kind: e for e in entries}
+        assert by_kind["snap"].stack_id is None, \
+            "an untagged capture must report no stack id"
+        assert by_kind["snap"].preview_path is not None, \
+            "session 1's jpg must resolve as this capture's preview"
+        assert by_kind["snap"].raw_path.name == "snap_frame_0000.tif"
+        assert (by_kind["science"].stack_id, by_kind["science"].stack_plane) == ("T4", 2), \
+            "a tagged capture's stack id/plane must be surfaced, no raw decode needed"
+        assert by_kind["science"].preview_path is None, \
+            "no jpg was written for session 2; must not fabricate one"
+        print("list_gallery_entries check PASS: one entry per capture, stack "
+              "id/plane and preview resolved from session.json + filesystem "
+              "alone, no raw decode performed")
 
-    no_prefix_entry = by_kind["snap"]._replace(file_prefix=None)
-    assert capture_frame_paths(no_prefix_entry) == [no_prefix_entry.raw_path], \
-        "no file_prefix but a known raw_path should degrade to that one frame"
-    no_raw_entry = by_kind["snap"]._replace(raw_path=None)
-    assert capture_frame_paths(no_raw_entry) == [], \
-        "no raw_path at all means no frames to find"
-    print("capture_frame_paths check PASS: full burst recovered for a "
-          "multi-frame capture, sane degradation with no file_prefix or no "
-          "raw_path")
+        snap_frames = capture_frame_paths(by_kind["snap"])
+        assert [p.name for p in snap_frames] == ["snap_frame_0000.tif"], \
+            "a 1-frame capture's burst is just its own single frame"
+        science_frames = capture_frame_paths(by_kind["science"])
+        assert [p.name for p in science_frames] == [
+            "science_frame_0000.tif", "science_frame_0001.tif", "science_frame_0002.tif"
+        ], "capture_frame_paths must return EVERY frame of a multi-frame burst, not just frame 0"
+
+        no_prefix_entry = by_kind["snap"]._replace(file_prefix=None)
+        assert capture_frame_paths(no_prefix_entry) == [no_prefix_entry.raw_path], \
+            "no file_prefix but a known raw_path should degrade to that one frame"
+        no_raw_entry = by_kind["snap"]._replace(raw_path=None)
+        assert capture_frame_paths(no_raw_entry) == [], \
+            "no raw_path at all means no frames to find"
+        print("capture_frame_paths check PASS: full burst recovered for a "
+              "multi-frame capture, sane degradation with no file_prefix or no "
+              "raw_path")
+    finally:
+        provenance.OUT_ROOT, provenance.PROVENANCE_ROOT = _orig_out_root, _orig_prov_root
 
     # capture_has_annotation: real green-plane hashes against a temp
     # annotations store, proving this checks the actual measurement
@@ -538,7 +575,7 @@ def render_check():
           "correctly distinguishes an annotated plane from an unannotated "
           "sibling")
 
-    shutil.rmtree(tmp_root.parent, ignore_errors=True)
+    shutil.rmtree(tmp_root, ignore_errors=True)
 
 
 if __name__ == "__main__":

@@ -286,6 +286,23 @@ if _HAVE_QT:
             paths = dlg.selected_paths()
             if paths:
                 self._try_validate(paths[0])
+                return
+            # Accepted, but selected_paths() came back empty: the picked
+            # entry has no raw file on disk (GalleryWidget.selected_paths()
+            # silently drops any entry with raw_path=None). Say so instead
+            # of leaving this page looking like the click did nothing --
+            # e.g. Keep RAW Images off (Part 03) deliberately discarded that
+            # capture's raw once it processed, and a silent no-op here would
+            # read exactly like a missed click, not an explained refusal.
+            entries = dlg.selected_entries()
+            if entries:
+                self.status_label.setText(
+                    "The selected {} capture has no raw file to open (its "
+                    "raw frames may have been deliberately discarded -- "
+                    "Keep RAW Images off -- or moved). Choose a different "
+                    "capture, or use \"Choose file manually...\" to point "
+                    "at a raw file directly.".format(entries[0].kind or ""))
+                self._set_complete(False)
 
         def _on_captured(self, path):
             self._try_validate(Path(path))

@@ -50,6 +50,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -183,13 +184,13 @@ PROCESSOR = Path(__file__).resolve().parent / "hdr_from_session.py"
 # path subprocess pattern PROCESSOR already uses above.
 DEBAYER_TOOL = Path(__file__).resolve().parent / "debayer.py"
 
-# CASUAL MODE (BUILD_LIST Tier 3 item 2) is superseded (Preferences-dialog
-# plan set, PLAN_00_context_and_supersession.md): there is no toggle, no
-# second window class, no launch branch, no separate layout any more --
-# CASUAL_MODE_DEFAULT and the Options > Casual Mode action are gone.
-# casual_mode.py itself is NOT deleted yet (that happens in the plan
-# set's own Part 03, not yet drafted); it is simply unreferenced from
-# here on.
+# CASUAL MODE (BUILD_LIST Tier 3 item 2) is superseded in full (Preferences-
+# dialog plan set, PLAN_00_context_and_supersession.md): there is no toggle,
+# no second window class, no launch branch, no separate layout, and (Part
+# 03) no casual_mode.py file any more -- its capture-and-save logic, format
+# handling, and JPG-first delivery are all lifted into this file's own main
+# capture path (see _auto_process/_run_process_cmd and PreferencesDialog's
+# "Additional export formats" row).
 
 # --- THEMES (BUILD_LIST Tier 1 item 3) --------------------------------------
 # Deliberately open-ended, not a fixed Dark/Light pair: the user plans to
@@ -743,20 +744,48 @@ def save_pref(key, value):
 PROCESSABLE_KINDS = {"hdr", "science", "snap"}
 
 
-def list_sessions(out_root):
-    """Every session directory under out_root that has a session.json, most
-    recent first (session directories are timestamp-named, so name order is
-    chronological order). Returns a list of Paths."""
-    out_root = Path(out_root)
-    if not out_root.exists():
+def _provenance_dir_for(capture_dir):
+    """The provenance directory mirroring capture_dir's own position under
+    the GLOBAL provenance.OUT_ROOT -- session.json and every .meta.json
+    sidecar live there now, never beside the raw frames (Part 03, provenance
+    relocation). Sessions and their provenance directories are always minted
+    in lockstep with matching relative paths under their respective global
+    roots (see provenance.py's new_session_dirs/new_zstack_root_dirs and
+    Session's own session_dir=/provenance_dir= pairing), so this mapping is
+    exact -- never a guess -- PROVIDED the relative path is always taken
+    from the true global OUT_ROOT, never from some narrower capture_root a
+    caller happens to be browsing (e.g. list_sessions() called against a
+    single z-stack's own root folder, several levels under OUT_ROOT: the
+    mirrored provenance path still needs the "focal/zstack_<ts>/" prefix
+    that a root relative to just the z-stack folder would lose)."""
+    rel = Path(capture_dir).relative_to(provenance.OUT_ROOT)
+    return provenance.PROVENANCE_ROOT / rel
+
+
+def list_sessions(capture_root):
+    """Every session's CAPTURE directory (raw + processed image bytes, what
+    every caller here actually wants) directly under capture_root whose
+    MATCHING provenance directory has a session.json, most recent first
+    (session directories are timestamp-named, so name order is chronological
+    order). capture_root need not be the global provenance.OUT_ROOT itself
+    (the z-stack aid passes its own stack root, several levels under
+    OUT_ROOT, to browse just that stack's planes) -- _provenance_dir_for
+    always maps each candidate back to OUT_ROOT regardless. Returns a list
+    of capture-dir Paths -- unchanged shape from before Part 03, just
+    discovered via the mirrored provenance side now that session.json no
+    longer lives beside the raw frames."""
+    capture_root = Path(capture_root)
+    if not capture_root.exists():
         return []
-    found = [d for d in out_root.iterdir() if d.is_dir() and (d / "session.json").exists()]
+    found = [d for d in capture_root.iterdir()
+             if d.is_dir() and (_provenance_dir_for(d) / "session.json").exists()]
     return sorted(found, key=lambda d: d.name, reverse=True)
 
 
 def load_session_json(session_dir):
     try:
-        return json.loads((Path(session_dir) / "session.json").read_text())
+        prov_dir = _provenance_dir_for(session_dir)
+        return json.loads((prov_dir / "session.json").read_text())
     except Exception:
         return {"captures": []}
 
@@ -772,17 +801,25 @@ def processable_captures(session_json):
 def capture_correction_status(session_dir, session_json, cap):
     """What flat/dark correction frames actually exist on disk for `cap`
     RIGHT NOW, mirroring hdr_from_session.py's process() exactly:
-      - flat: the LAST 'flat' kind capture in the session ("last flat wins"),
-        searched by its own file_prefix.
+      - flat: provenance.FLAT_ROOT, the one standing library shared across
+        every session (Part 03, provenance relocation) -- never scanned out
+        of this session's own captures list. A session's own "flat" kind
+        entry, if it has one, only documents that a flat was (re)shot during
+        it; it does not mean the frames still live here, since each new Flat
+        capture replaces FLAT_ROOT outright.
       - dark: for an hdr capture, its own per-level dark_levels prefixes; for
         science/snap, the standalone "dark_" prefix (pairs with science).
+        Either way, read from session_dir/"dark" -- session-scoped imagery
+        nested under its own session, never flat alongside science/hdr
+        frames (mirrors hdr_from_session.py's own frames_for/process split).
     Also detects the raw file extension in use (dng on-rig, tif off-rig)
     from whatever is actually on disk, so the wizard's eventual subprocess
     call passes the right --raw-ext without guessing. Returns a dict with
     flat_frames/dark_frames/own_frames counts and the detected ext."""
     session_dir = Path(session_dir)
+    dark_dir = session_dir / "dark"
 
-    def _frames_for(prefix):
+    def _frames_in(base, prefix):
         # Restricted to the actual raw extensions (not a bare "*.*" wildcard,
         # which also matches each frame's own ".meta.json" sidecar and both
         # double-counts frames and can misdetect the extension).
@@ -790,26 +827,22 @@ def capture_correction_status(session_dir, session_json, cap):
             return []
         matches = []
         for ext in ("dng", "tif"):
-            matches += session_dir.glob("{}frame_*.{}".format(prefix, ext))
+            matches += base.glob("{}frame_*.{}".format(prefix, ext))
         return sorted(matches)
 
-    flat_prefix = None
-    for c in session_json.get("captures", []):
-        if c.get("kind") == "flat":
-            flat_prefix = c.get("file_prefix")
-    flat_frames = _frames_for(flat_prefix)
+    flat_frames = _frames_in(provenance.FLAT_ROOT, "flat_")
 
     kind = cap.get("kind")
     if kind == "hdr":
         own_prefix = cap["levels"][0]["file_prefix"] if cap.get("levels") else None
         dark_frames = []
         for lvl in cap.get("dark_levels", []):
-            dark_frames += _frames_for(lvl.get("file_prefix"))
+            dark_frames += _frames_in(dark_dir, lvl.get("file_prefix"))
     else:
         own_prefix = cap.get("file_prefix")
-        dark_frames = _frames_for("dark_")
+        dark_frames = _frames_in(dark_dir, "dark_")
 
-    own_frames = _frames_for(own_prefix)
+    own_frames = _frames_in(session_dir, own_prefix)
     ext = own_frames[0].suffix.lstrip(".") if own_frames else "dng"
     return {"flat_frames": len(flat_frames), "dark_frames": len(dark_frames),
            "own_frames": len(own_frames), "ext": ext}
@@ -836,9 +869,12 @@ def archive_session_raws(session_dir):
     place in that case, same as the original's failure mode).
     """
     session_dir = Path(session_dir)
+    dark_dir = session_dir / "dark"   # Part 03: dark nests one level down
     raws = []
     for ext in ("dng", "tif"):
         raws += sorted(session_dir.glob("*.{}".format(ext)))
+        if dark_dir.is_dir():
+            raws += sorted(dark_dir.glob("*.{}".format(ext)))
     if not raws:
         return {"archived": 0, "tar_path": None, "mb": 0.0}
     tarpath = session_dir / "{}_raws.tar".format(session_dir.name)
@@ -1213,16 +1249,107 @@ if _HAVE_QT:
                 lambda on: save_pref("keep_raw_images", bool(on)))
             adv_form.addRow(self._keep_raw_check)
 
+            # Additional export formats (Part 03: lifted from casual_mode.py,
+            # which this supersedes). Persist immediately, live-apply, same
+            # shape as Keep RAW Images just above -- read fresh at
+            # PROCESSING time by _run_process_cmd, not baked into an open
+            # session. All four are now genuinely independent: debayer.py's
+            # tonemap step (Preferences-dialog plan set follow-up) computes
+            # its display-referred result once in memory and writes exactly
+            # the formats asked for via --tonemap-tiff/--tonemap-8bit/
+            # --tonemap-jpg, none reading another format's file back off
+            # disk -- TIFF is no longer a locked structural byproduct (it
+            # used to be, before debayer.py could skip writing it; that
+            # workaround is gone). Unchecking all of TIFF/PNG/JPG is a
+            # legitimate choice now, not a special case: it simply means no
+            # display-referred image gets produced this run (final.tif, the
+            # linear RGB measurement master, is unaffected either way -- it
+            # has no checkbox, never did). DNG defaults off (a raw-domain
+            # COPY, not a second copy of what Keep RAW Images already
+            # governs -- see its own tooltip); "Process DNG" (merge) only
+            # matters together with it.
+            fmt_row = QHBoxLayout()
+            self._fmt_tiff_check = QCheckBox("TIFF")
+            self._fmt_tiff_check.setChecked(bool(load_pref("export_format_tiff", True)))
+            self._fmt_tiff_check.toggled.connect(
+                lambda on: save_pref("export_format_tiff", bool(on)))
+            self._fmt_png_check = QCheckBox("PNG")
+            self._fmt_png_check.setChecked(bool(load_pref("export_format_png", True)))
+            self._fmt_png_check.toggled.connect(
+                lambda on: save_pref("export_format_png", bool(on)))
+            self._fmt_jpg_check = QCheckBox("JPG")
+            self._fmt_jpg_check.setChecked(bool(load_pref("export_format_jpg", True)))
+            self._fmt_jpg_check.toggled.connect(
+                lambda on: save_pref("export_format_jpg", bool(on)))
+            self._fmt_dng_check = QCheckBox("DNG (raw copy)")
+            self._fmt_dng_check.setToolTip(
+                "Copy a raw-domain deliverable alongside the processed result. "
+                "Independent of Keep RAW Images, which governs the session's "
+                "own working raw frames, not this extra copy.")
+            self._fmt_dng_check.setChecked(bool(load_pref("export_format_dng", False)))
+            self._fmt_dng_check.toggled.connect(
+                lambda on: save_pref("export_format_dng", bool(on)))
+            self._fmt_dng_merge_check = QCheckBox("Process DNG (merge Burst/HDR frames)")
+            self._fmt_dng_merge_check.setToolTip(
+                "With DNG checked, on a Burst/HDR capture: deliver the merged "
+                "raw-domain master instead of the first untouched raw frame "
+                "(named <prefix>raw.tif, never .dng -- a merge is a derivative).")
+            self._fmt_dng_merge_check.setChecked(bool(load_pref("export_format_dng_merge", False)))
+            self._fmt_dng_merge_check.setEnabled(self._fmt_dng_check.isChecked())
+            self._fmt_dng_check.toggled.connect(self._fmt_dng_merge_check.setEnabled)
+            self._fmt_dng_merge_check.toggled.connect(
+                lambda on: save_pref("export_format_dng_merge", bool(on)))
+            fmt_row.addWidget(self._fmt_tiff_check)
+            fmt_row.addWidget(self._fmt_png_check)
+            fmt_row.addWidget(self._fmt_jpg_check)
+            fmt_row.addWidget(self._fmt_dng_check)
+            adv_form.addRow("Additional export formats:", fmt_row)
+            adv_form.addRow("", self._fmt_dng_merge_check)
+
             prov_row = QHBoxLayout()
             self._provenance_edit = QLineEdit(
                 str(load_pref("provenance_folder", str(Path.home() / "provenance"))))
             self._provenance_edit.editingFinished.connect(
                 lambda: save_pref("provenance_folder", self._provenance_edit.text()))
             prov_browse = QPushButton("Browse...")
-            prov_browse.clicked.connect(self._on_browse_provenance_folder)
+            prov_browse.clicked.connect(
+                lambda: self._on_browse_folder_pref(self._provenance_edit, "provenance_folder",
+                                                    "Choose provenance folder"))
             prov_row.addWidget(self._provenance_edit)
             prov_row.addWidget(prov_browse)
             adv_form.addRow("Provenance folder location:", prov_row)
+
+            # capture_folder / flat_library_folder (Part 03: provenance
+            # relocation) -- same next-launch-independent, persist-immediately
+            # shape as provenance_folder just above; applied to
+            # provenance.OUT_ROOT/provenance.FLAT_ROOT at startup in main(),
+            # not live here, since every open Session already has its roots
+            # baked in (see HANDOFF.md's Part 03 folder-layout note).
+            cap_row = QHBoxLayout()
+            self._capture_edit = QLineEdit(
+                str(load_pref("capture_folder", str(Path.home() / "captures"))))
+            self._capture_edit.editingFinished.connect(
+                lambda: save_pref("capture_folder", self._capture_edit.text()))
+            cap_browse = QPushButton("Browse...")
+            cap_browse.clicked.connect(
+                lambda: self._on_browse_folder_pref(self._capture_edit, "capture_folder",
+                                                    "Choose capture folder"))
+            cap_row.addWidget(self._capture_edit)
+            cap_row.addWidget(cap_browse)
+            adv_form.addRow("Capture folder location (next launch):", cap_row)
+
+            flat_row = QHBoxLayout()
+            self._flat_library_edit = QLineEdit(
+                str(load_pref("flat_library_folder", str(Path.home() / "flat"))))
+            self._flat_library_edit.editingFinished.connect(
+                lambda: save_pref("flat_library_folder", self._flat_library_edit.text()))
+            flat_browse = QPushButton("Browse...")
+            flat_browse.clicked.connect(
+                lambda: self._on_browse_folder_pref(self._flat_library_edit, "flat_library_folder",
+                                                    "Choose flat-field library folder"))
+            flat_row.addWidget(self._flat_library_edit)
+            flat_row.addWidget(flat_browse)
+            adv_form.addRow("Flat-field library location (next launch):", flat_row)
 
             clean_now_btn = QPushButton("Clean cache now")
             clean_now_btn.clicked.connect(self._on_clean_cache_now)
@@ -1287,12 +1414,11 @@ if _HAVE_QT:
             combo.setCurrentIndex(idx if idx >= 0 else 0)
             return combo
 
-        def _on_browse_provenance_folder(self):
-            chosen = QFileDialog.getExistingDirectory(
-                self, "Choose provenance folder", self._provenance_edit.text())
+        def _on_browse_folder_pref(self, edit, pref_key, dialog_title):
+            chosen = QFileDialog.getExistingDirectory(self, dialog_title, edit.text())
             if chosen:
-                self._provenance_edit.setText(chosen)
-                save_pref("provenance_folder", chosen)
+                edit.setText(chosen)
+                save_pref(pref_key, chosen)
 
         def _on_clean_cache_now(self):
             # No green-plane cache exists yet (Part 04, not yet drafted) --
@@ -1408,6 +1534,9 @@ if _HAVE_QT:
             self._session = None
             self._last_process_session_dir = None   # set by _run_process_cmd; used to
                                                      # offer archiving after a successful run
+            self._last_process_index = None   # set by _run_process_cmd; paired with
+                                               # _last_process_session_dir to record
+                                               # flat/dark correction status (Part 03)
             self._snap_counter = 0   # unique stem per snap; see _start_capture / _ensure_session
             self._last_readout = None
             # Arm-then-fire for burst kinds: a walkthrough (menu-triggered) fills
@@ -2479,10 +2608,15 @@ if _HAVE_QT:
                     "saved {}".format(result.raw.name),
                     "saved {}  (session {}, capture #{})".format(
                         result.raw.name, self._session.ts, idx))
-                # No offer-to-process here: a single snap is one frame, frame
-                # averaging (and the rest of the processing chain) only makes
-                # sense for a multi-frame burst. Science and HDR still offer
-                # it (see _on_burst_finished).
+                # Auto-processing (Part 03): Snap is a genuinely new call
+                # site here -- before this part only science/hdr ever
+                # reached _run_process_cmd (frame-averaging a single frame
+                # was considered pointless), but hdr_from_session.py's
+                # process() already has a working kind in ("science",
+                # "snap") branch, so this is wiring, not new processing
+                # logic. Matches Casual Mode's always-functional design:
+                # no Yes/No gate, every capture kind processes automatically.
+                self._auto_process("snap", idx)
             except Exception as exc:
                 self._set_capture_status(
                     "saved but recording failed",
@@ -2800,8 +2934,9 @@ if _HAVE_QT:
                 return
             if self.camera.is_recording():
                 return
-            stack_id, root = provenance.new_zstack_root_dir(provenance.OUT_ROOT)
-            self._zstack = {"root": root, "stack_id": stack_id, "next_plane": 0}
+            stack_id, root, prov_root = provenance.new_zstack_root_dirs()
+            self._zstack = {"root": root, "prov_root": prov_root,
+                           "stack_id": stack_id, "next_plane": 0}
             # Mutual exclusion, mirroring how Record disables capture_kind_
             # combo while recording (_on_record_start_finished): nothing else
             # should start a flat/science/hdr/dark burst or a recording while
@@ -2820,9 +2955,10 @@ if _HAVE_QT:
                 return
             plane = self._zstack["next_plane"]
             plane_dir = self._zstack["root"] / "plane_{}".format(plane)
+            plane_prov_dir = self._zstack["prov_root"] / "plane_{}".format(plane)
             plane_session = provenance.Session(
                 self._zstack["root"], provenance.load_profile() or {},
-                self._display_flags, session_dir=plane_dir)
+                self._display_flags, session_dir=plane_dir, provenance_dir=plane_prov_dir)
             self._capturing = True
             self._enforce_exposure_lock()
             self._set_capture_controls(
@@ -2896,7 +3032,13 @@ if _HAVE_QT:
             self.zstack_btn.setText("Start Z-Stack")
 
             plane_dirs = sorted(zstack["root"].glob("plane_*"))
-            issues = _stacks.validate_all(plane_dirs)
+            # validate_all reads session.json straight from whatever dirs
+            # it's given -- session.json lives in the mirrored provenance
+            # dir now, not beside each plane's raw frames (Part 03), so map
+            # through _provenance_dir_for rather than passing plane_dirs
+            # (capture dirs) directly, which would silently find nothing.
+            prov_plane_dirs = [_provenance_dir_for(d) for d in plane_dirs]
+            issues = _stacks.validate_all(prov_plane_dirs)
             if issues:
                 detail = "\n".join(str(i) for i in issues)
             else:
@@ -2941,7 +3083,13 @@ if _HAVE_QT:
             if self.camera.is_recording():
                 return
             self._ensure_session()
-            if not self._reshoot_guard([prefix], kinds_set, kind):
+            # Flat is a replaced-outright standing library (provenance.
+            # FLAT_ROOT, Part 03), never a per-session capture -- there is
+            # nothing to "clear existing frames and reshoot" about it, each
+            # new Flat capture simply replaces whatever was there. Every
+            # other kind still guards against silently clobbering frames
+            # already shot into THIS session.
+            if kind != "flat" and not self._reshoot_guard([prefix], kinds_set, kind):
                 if auto_fire and self._batch_active:
                     self._advance_batch()
                 return
@@ -3154,11 +3302,15 @@ if _HAVE_QT:
                 else:
                     # phase == "dark": re-enters still mode here (exited above,
                     # right after science) rather than continuing a session
-                    # held open across the pause.
+                    # held open across the pause. Dark frames nest one level
+                    # down, in dir/"dark" (Part 03: session-scoped imagery,
+                    # never flat alongside the science frames above).
+                    dark_dir = session.dir / "dark"
+                    dark_dir.mkdir(parents=True, exist_ok=True)
                     self.camera.enter_still_mode()
                     try:
                         dark_levels = self.camera.capture_bracket_phase(
-                            session.dir, "dark_", armed["nd"], base_us, ordered)
+                            dark_dir, "dark_", armed["nd"], base_us, ordered)
                     finally:
                         self.camera.exit_still_mode(base_us)
                     idx = provenance.record_hdr(session, armed["sci_levels"], dark_levels)
@@ -3169,7 +3321,23 @@ if _HAVE_QT:
                            .format(sci_n, dark_n, len(ordered))}
             else:
                 prefix = armed["prefix"]
-                result = self.camera.capture_burst(session.dir, prefix, armed["n"])
+                # Part 03 folder split: flat replaces provenance.FLAT_ROOT
+                # outright (one standing library, never a per-session
+                # capture -- see _walkthrough_burst's own reshoot-guard
+                # skip for "flat"); standalone dark nests under dir/"dark",
+                # same as HDR's own dark phase above; science/snap still
+                # write directly into the session dir.
+                if kind == "flat":
+                    target_dir = provenance.FLAT_ROOT
+                    if target_dir.exists():
+                        shutil.rmtree(target_dir)
+                    target_dir.mkdir(parents=True, exist_ok=True)
+                elif kind == "dark":
+                    target_dir = session.dir / "dark"
+                    target_dir.mkdir(parents=True, exist_ok=True)
+                else:
+                    target_dir = session.dir
+                result = self.camera.capture_burst(target_dir, prefix, armed["n"])
                 idx = provenance.record_burst(session, kind, prefix, result)
                 if kind == "science":
                     # Post-capture QC (section 13): flat/dark are calibration
@@ -3252,24 +3420,32 @@ if _HAVE_QT:
 
             threading.Thread(target=_worker, daemon=True).start()
 
-        def _offer_process(self, kind, index):
-            # Invokes hdr_from_session.py (--index/display flags), but only
-            # called for science and hdr here (see _on_burst_finished), not
-            # snap: a single capture is one frame, and frame averaging only
-            # makes sense across a burst. A GUI Yes/No instead of a blocking
-            # terminal prompt; the actual run is shared with the manual
-            # processing wizard (see _run_process_cmd).
-            resp = self._flat_question(
-                "Process capture?",
-                "Process capture #{} to a display image now?\n"
-                "(frame averaging, flat/dark correction, tonemap, debayer)"
-                .format(index))
-            if resp != QMessageBox.Yes:
-                return
-            self._run_process_cmd(self._session.dir, index)
+        def _auto_process(self, kind, index):
+            # Auto-processing (Part 03) replaces the old Yes/No QMessageBox:
+            # Snap, Science, and HDR all process automatically now, matching
+            # Casual Mode's always-functional design -- no gate, no blocking
+            # prompt. Invokes hdr_from_session.py (--index/display flags);
+            # the actual run is shared with the manual processing wizard
+            # (see _run_process_cmd). `kind` is accepted for symmetry with
+            # the burst-finished call site and future logging, though
+            # --index alone already fully selects the capture.
+            #
+            # --raw-ext must be detected, not left to hdr_from_session.py's
+            # own "dng" default: the real Picamera2 backend always writes
+            # .dng, so that default was never wrong on-rig, but the default
+            # (no --camera) FakeCamera backend writes .tif, and the manual
+            # processing wizard already detects this per capture via
+            # capture_correction_status's own on-disk glob rather than
+            # assuming a camera class -- reused here instead of a second,
+            # camera-duck-typed way to answer the same question.
+            cap = next((c for c in self._session.captures if c.get("index") == index), None)
+            ext = capture_correction_status(
+                self._session.dir, {"captures": self._session.captures}, cap)["ext"] \
+                if cap is not None else "dng"
+            self._run_process_cmd(self._session.dir, index, extra_args=["--raw-ext", ext])
 
         def _run_process_cmd(self, session_dir, index, extra_args=None):
-            # Shared by the automatic offer (_offer_process) and the manual
+            # Shared by the automatic offer (_auto_process) and the manual
             # processing wizard (_open_processing_wizard): same
             # hdr_from_session.py invocation shape, same worker thread (frame
             # averaging plus debayering at full res is not instant and must
@@ -3302,10 +3478,42 @@ if _HAVE_QT:
             # this app does automatically; if that becomes wanted later it
             # should be its own explicit choice, not a side effect of a
             # prompt that happened to get suppressed.
-            cmd = ([sys.executable, str(PROCESSOR), str(session_dir),
-                   "--index", str(index), "--keep-raws"]
+            # hdr_from_session.py's positional arg is the PROVENANCE dir now
+            # (Part 03: session.json no longer sits beside the raw frames);
+            # session_dir here is the CAPTURE dir every caller of this method
+            # actually has on hand (self._session.dir, or a dir list_sessions
+            # returned), so map it through _provenance_dir_for rather than
+            # asking every caller to track two directories.
+            prov_dir = _provenance_dir_for(Path(session_dir))
+            cmd = ([sys.executable, str(PROCESSOR), str(prov_dir),
+                   "--index", str(index), "--keep-raws",
+                   "--flat-root", str(provenance.FLAT_ROOT)]
                   + list(self._display_flags) + list(extra_args or []))
+            # Keep RAW Images (Preferences > Advanced, applies to captures
+            # from now on): the live preference is read at PROCESSING time,
+            # not capture time, for both the automatic and manual-wizard
+            # paths -- this is the only setting that changes what survives
+            # once processing succeeds (Part 03: provenance is always
+            # written regardless).
+            if not load_pref("keep_raw_images", True):
+                cmd.append("--delete-raw-on-success")
+            # Additional export formats (Preferences > Advanced, Part 03) --
+            # same "read live at processing time" reasoning as Keep RAW
+            # Images just above. TIFF is now genuinely optional too (the
+            # debayer.py tonemap/write split removed the old structural-
+            # byproduct lock -- see _fmt_tiff_check's own comment).
+            if not load_pref("export_format_tiff", True):
+                cmd.append("--no-export-tiff")
+            if not load_pref("export_format_png", True):
+                cmd.append("--no-export-png")
+            if load_pref("export_format_jpg", True):
+                cmd.append("--export-jpg")
+            if load_pref("export_format_dng", False):
+                cmd.append("--export-dng")
+                if load_pref("export_format_dng_merge", False):
+                    cmd.append("--export-dng-merge")
             self._last_process_session_dir = Path(session_dir)
+            self._last_process_index = index
             self._capturing = True   # reuse the same busy-guard the capture path uses
             self._set_capture_controls(enabled=False, label="Processing ...")
             self._set_capture_status("processing ...",
@@ -3496,13 +3704,58 @@ if _HAVE_QT:
                 "archived {} raw file(s) into {} ({:.1f} MB); loose files removed."
                 .format(result["archived"], result["tar_path"].name, result["mb"]))
 
+        def _record_correction_status(self, capture_dir, index, correction_status):
+            """Write flat_correction/dark_correction onto capture #index's
+            OWN entry in session.json -- the named technique that ran or
+            was skipped, never folded into a generic "processing complete"
+            (CORRECTION_flat_dark_framing.md). Reads session.json fresh and
+            writes it straight back rather than going through a live
+            Session object: this runs for ANY processed session, including
+            one opened through the manual processing wizard, not just
+            self._session. Best-effort -- the image itself already
+            processed successfully by the time this runs, so a bookkeeping
+            failure here is surfaced in the status detail, not raised into
+            the completion handler."""
+            prov_dir = _provenance_dir_for(Path(capture_dir))
+            sj_path = prov_dir / "session.json"
+            try:
+                data = json.loads(sj_path.read_text())
+                cap = next((c for c in data.get("captures", [])
+                           if c.get("index") == index), None)
+                if cap is None:
+                    return "capture #{} not found in {}".format(index, sj_path)
+                cap.update(correction_status)
+                sj_path.write_text(json.dumps(data, indent=2))
+            except Exception as exc:
+                return "could not record correction status: {}".format(exc)
+            return None
+
         def _on_process_finished(self, payload):
             self._capturing = False
             self._set_capture_controls(enabled=True, label="Capture")
             ok, stdout, stderr = payload
             if ok:
-                self._set_capture_status("processed",
-                                         "processing complete\n\n" + stdout[-4000:])
+                detail = "processing complete\n\n" + stdout[-4000:]
+                # hdr_from_session.py's process() prints one line naming the
+                # flat/dark correction techniques that ran or were skipped
+                # (CORRECTION_flat_dark_framing.md); parse it back out of
+                # stdout (the only channel a subprocess result carries) and
+                # persist it onto session.json.
+                for line in stdout.splitlines():
+                    if line.startswith("CORRECTION_STATUS_JSON: "):
+                        try:
+                            status = json.loads(line[len("CORRECTION_STATUS_JSON: "):])
+                        except Exception:
+                            break
+                        if (self._last_process_session_dir is not None
+                                and self._last_process_index is not None):
+                            err = self._record_correction_status(
+                                self._last_process_session_dir,
+                                self._last_process_index, status)
+                            if err:
+                                detail += "\n\n(correction status not recorded: {})".format(err)
+                        break
+                self._set_capture_status("processed", detail)
                 if self._last_process_session_dir is not None:
                     self._offer_archive_raws(self._last_process_session_dir)
             else:
@@ -3543,14 +3796,14 @@ if _HAVE_QT:
                 # manual step this sequence exists to remove).
                 self._advance_batch()
                 return
-            # Offer to process for the two burst-produced kinds that can be
-            # (flat and dark are calibration-only, never offered). This also
+            # Auto-process the two burst-produced kinds that can be (flat
+            # and dark are calibration-only, never processed). This also
             # fires when HDR's dark phase was cancelled mid-sequence
             # (science-only, dark_levels empty): hdr_from_session.py's own
             # process() already handles an empty dark_levels dict gracefully,
             # just skipping that correction stage.
             if result["kind"] in ("science", "hdr"):
-                self._offer_process(result["kind"], result["index"])
+                self._auto_process(result["kind"], result["index"])
 
         # --- box interaction ------------------------------------------------
         def _disp_rect(self):
@@ -3690,6 +3943,18 @@ def main(argv=None):
     theme_qss = resolve_theme_qss_path(load_pref("theme", None))
     if theme_qss is not None:
         app.setStyleSheet(load_theme_stylesheet(theme_qss))
+
+    # Folder-layout prefs (Part 03: provenance relocation) -- applied to
+    # provenance.py's own root globals BEFORE any Session gets constructed,
+    # since Session/new_session_dirs/new_zstack_root_dirs all read these as
+    # their defaults. Module-attribute assignment, not a `global` rebind
+    # (same reasoning as the PROFILE_PATH note elsewhere in this file):
+    # qt_shell.py does not own these names, it only ever configures them.
+    provenance.PROVENANCE_ROOT = Path(
+        load_pref("provenance_folder", str(Path.home() / "provenance")))
+    provenance.OUT_ROOT = Path(load_pref("capture_folder", str(Path.home() / "captures")))
+    provenance.FLAT_ROOT = Path(load_pref("flat_library_folder", str(Path.home() / "flat")))
+
     if a.camera:
         try:
             from .camera_backend import Picamera2Camera
@@ -3735,6 +4000,19 @@ def render_check():
     # (this file, gallery.py, wizard_pages.py) actually reads.
     _orig_profile_path_for_render_check = provenance.PROFILE_PATH
     provenance.PROFILE_PATH = Path("/tmp/zynergy_render_check_profile.json")
+
+    # Same one-shot reasoning as PROFILE_PATH just above, extended to the
+    # three Part 03 folder-layout globals: every provenance.Session(...)
+    # built anywhere below this point (and every list_sessions/
+    # capture_correction_status call, via _provenance_dir_for) reads these
+    # as its defaults, so they must point at disposable temp dirs for the
+    # whole function, never the real ~/provenance, ~/captures, or ~/flat.
+    provenance.PROVENANCE_ROOT = Path("/tmp/zynergy_render_check_provenance_root")
+    provenance.OUT_ROOT = Path("/tmp/zynergy_render_check_capture_root")
+    provenance.FLAT_ROOT = Path("/tmp/zynergy_render_check_flat_root")
+    for _r in (provenance.PROVENANCE_ROOT, provenance.OUT_ROOT, provenance.FLAT_ROOT):
+        if _r.exists():
+            shutil.rmtree(_r)
 
     box = FocusBox.centered(0.5, 0.4)
     bar = BarState(fill=0.5, current=0.02, hi=0.03, lo=0.0, at_peak=False, settled=True)
@@ -3875,7 +4153,6 @@ def render_check():
     # substitutes {{ASSETS}} for the theme's own absolute assets/ path, and
     # resolve_theme_qss_path degrades a stale/deleted preference to None
     # (stock look) instead of crashing main().
-    import shutil
     themes_tmp = Path("/tmp/zynergy_render_check_themes")
     if themes_tmp.exists():
         shutil.rmtree(themes_tmp)
@@ -3946,12 +4223,25 @@ def render_check():
     # a flat+science session built here as fixture data, plus a second
     # session to confirm list_sessions finds multiple and sorts
     # most-recent-first.
-    wiz_root = Path("/tmp/zynergy_render_check_wizard")
+    # The real (already-patched, temp) provenance.OUT_ROOT itself, not a
+    # subfolder of it or an independent path: Session()'s implicit
+    # provenance-dir pairing (new_session_dirs(root) with no explicit
+    # provenance_dir override) only mirrors root's own relative position
+    # when root truly IS the global OUT_ROOT -- exactly how _ensure_session
+    # constructs the real capture session, so this matches it precisely.
+    # A root that were some other subfolder would mint a provenance dir at
+    # the bare PROVENANCE_ROOT with no matching subfolder, which
+    # _provenance_dir_for could never resolve back correctly (this is why
+    # the z-stack path builds its own provenance_dir explicitly instead).
+    wiz_root = provenance.OUT_ROOT
     if wiz_root.exists():
         shutil.rmtree(wiz_root)
     s_old = provenance.Session(wiz_root, {}, [])
     wcam = FakeCamera()
-    old_flat = wcam.capture_burst(s_old.dir, "flat_", 2, shutter_us=5000)
+    # Flat is a replaced-outright standing library (provenance.FLAT_ROOT,
+    # Part 03), never session-scoped -- written straight to the library, not
+    # into s_old.dir, mirroring how _run_burst_kind now does it.
+    old_flat = wcam.capture_burst(provenance.FLAT_ROOT, "flat_", 2, shutter_us=5000)
     provenance.record_burst(s_old, "flat", "flat_", old_flat)
     old_sci = wcam.capture_burst(s_old.dir, "science_", 2)
     provenance.record_burst(s_old, "science", "science_", old_sci)
@@ -3970,40 +4260,64 @@ def render_check():
     assert len(proc_old) == 1 and proc_old[0]["kind"] == "science", \
         "processable_captures should list science but exclude flat"
 
-    status_with_flat = capture_correction_status(s_old.dir, sj_old, proc_old[0])
-    assert status_with_flat["flat_frames"] == 2, "expected 2 flat frames found"
-    assert status_with_flat["dark_frames"] == 0, "no standalone dark shot yet"
-    assert status_with_flat["own_frames"] == 2, "expected 2 own science frames"
+    status_old = capture_correction_status(s_old.dir, sj_old, proc_old[0])
+    assert status_old["flat_frames"] == 2, \
+        "expected 2 flat frames found in the standing library"
+    assert status_old["dark_frames"] == 0, "no standalone dark shot yet"
+    assert status_old["own_frames"] == 2, "expected 2 own science frames"
 
+    # Flat is shared across every session now (Part 03: one standing
+    # library, not scanned out of any particular session's own captures
+    # list) -- s_new never shot its own flat, but must still see s_old's.
     sj_new = load_session_json(s_new.dir)
     proc_new = processable_captures(sj_new)
-    status_no_flat = capture_correction_status(s_new.dir, sj_new, proc_new[0])
-    assert status_no_flat["flat_frames"] == 0, \
-        "a different session's flat must not leak into this one's status"
+    status_new = capture_correction_status(s_new.dir, sj_new, proc_new[0])
+    assert status_new["flat_frames"] == 2, \
+        "flat is a standing library shared across every session -- a " \
+        "session with no flat capture of its own must still see it"
     print("processing wizard helpers check PASS: sessions listed most-recent-first, "
-          "processable captures filtered correctly, flat/dark status accurate and "
-          "session-scoped")
+          "processable captures filtered correctly, flat status accurate and "
+          "correctly shared across sessions via the standing library")
+
+    # Standalone dark, nested under dir/"dark" (Part 03) -- must be found by
+    # capture_correction_status and paired with the science capture, exactly
+    # like an HDR capture's own per-level dark_levels already are.
+    dark_dir = s_old.dir / "dark"
+    dark_dir.mkdir()
+    dark_result = wcam.capture_burst(dark_dir, "dark_", 2)
+    provenance.record_burst(s_old, "dark", "dark_", dark_result)
+    sj_old2 = load_session_json(s_old.dir)
+    sci_cap = next(c for c in processable_captures(sj_old2) if c["kind"] == "science")
+    status_with_dark = capture_correction_status(s_old.dir, sj_old2, sci_cap)
+    assert status_with_dark["dark_frames"] == 2, \
+        "standalone dark frames nested under dir/'dark' must be found"
+    print("capture_correction_status dark-nesting check PASS: standalone dark "
+          "under session_dir/'dark' is found and paired with the science capture")
 
     # archive_session_raws: no-op with nothing to archive, then a real
-    # bundle-and-remove against the flat+science files already on disk
-    # in s_old (built above), verified against the exact same tar
-    # safety order hdr_from_session.py's own archive_raws uses.
+    # bundle-and-remove against the science + nested-dark files on disk in
+    # s_old (flat lives in the separate standing library and is deliberately
+    # never archived alongside any one session -- it isn't this session's
+    # own raw), verified against the exact same tar safety order
+    # hdr_from_session.py's own archive_raws uses.
     empty_result = archive_session_raws(Path("/tmp/zynergy_render_check_no_such_dir"))
     assert empty_result == {"archived": 0, "tar_path": None, "mb": 0.0}, \
         "archiving an empty/missing dir should be a clean no-op"
 
-    raws_before = sorted(s_old.dir.glob("*.tif"))
-    assert len(raws_before) == 4, "expected 2 flat + 2 science raw files before archiving"
+    raws_before = sorted(s_old.dir.glob("*.tif")) + sorted(dark_dir.glob("*.tif"))
+    assert len(raws_before) == 4, "expected 2 science + 2 dark raw files before archiving"
     arch_result = archive_session_raws(s_old.dir)
-    assert arch_result["archived"] == 4, "expected all 4 raws archived"
+    assert arch_result["archived"] == 4, \
+        "expected all 4 raws archived (own dir + nested dark/)"
     assert arch_result["tar_path"].exists(), "tar file should exist on disk"
-    assert not list(s_old.dir.glob("*.tif")), "loose raws should be removed after archiving"
+    assert not list(s_old.dir.glob("*.tif")), "loose science raws should be removed after archiving"
+    assert not list(dark_dir.glob("*.tif")), "loose dark raws should be removed after archiving"
     with tarfile.open(str(arch_result["tar_path"])) as tf:
         names = set(tf.getnames())
     assert names == {p.name for p in raws_before}, \
         "tar contents should exactly match the original raw filenames"
     print("archive_session_raws check PASS: no-op on empty/missing dir, real bundle+verify+"
-          "remove matches hdr_from_session.py's own tar safety order")
+          "remove covers both the session dir and its nested dark/ subfolder")
 
     # _on_tag_stack: needs a real FocusPreviewWindow (a QMainWindow subclass),
     # so this one check -- unlike everything above it in render_check -- does
@@ -4045,7 +4359,9 @@ def render_check():
         assert cap.get("stack") == "T9" and cap.get("plane") == 5, \
             "the tag should be written onto the session's own capture record"
         assert "Tagged" in infos[-1][0]
-        on_disk = json.loads((win._session.dir / "session.json").read_text())
+        # session.json lives in prov_dir now, not beside the raw frames
+        # (Part 03) -- read it from there directly rather than dir.
+        on_disk = json.loads((win._session.prov_dir / "session.json").read_text())
         assert on_disk["captures"][0]["stack"] == "T9", \
             "the tag must be persisted to session.json, not just held in memory"
 
@@ -4194,7 +4510,10 @@ def render_check():
                 "folder layout must be zstack_<ts>/plane_0, plane_1, plane_2 -- " \
                 "one real, independent session per plane"
             for i, pd in enumerate(plane_dirs):
-                sj = json.loads((pd / "session.json").read_text())
+                # session.json lives in the mirrored provenance dir now, not
+                # beside the plane's own raw frames (Part 03) -- go through
+                # load_session_json rather than assuming co-location.
+                sj = load_session_json(pd)
                 cap = sj["captures"][0]
                 assert cap["kind"] == "science", \
                     "a plane capture must be kind=science, the only kind " \
@@ -4257,6 +4576,13 @@ def render_check():
             try:
                 zwin._end_zstack()
                 assert zwin._zstack is None, "_end_zstack must always clear the stack state"
+                # validate_all must actually find and read each plane's
+                # session.json (mapped through _provenance_dir_for, Part 03)
+                # rather than silently seeing nothing -- a real 3-plane,
+                # correctly-tagged stack should validate clean.
+                assert "No issues found." in zwin.capture_status.toolTip(), \
+                    "validate_all should find no issues in a clean 3-plane " \
+                    "stack -- got: {!r}".format(zwin.capture_status.toolTip())
                 assert not opened, \
                     "declining the 'process now?' offer must never open the wizard"
                 assert zwin.capture_kind_combo.isEnabled(), \
@@ -4293,7 +4619,14 @@ def render_check():
                 "with no active stack, _start_capture must never repurpose " \
                 "into _capture_zstack_plane"
         finally:
-            OUT_ROOT = _orig_out_root
+            # FIX: this was a dead local rebind (`OUT_ROOT = ...`, no
+            # `provenance.` prefix) that never actually restored the real
+            # attribute -- harmless before Part 03 (nothing downstream read
+            # provenance.OUT_ROOT), but now load-bearing: _provenance_dir_for
+            # (used by list_sessions/load_session_json/capture_correction_
+            # status, exercised again later in this same render_check run)
+            # depends on provenance.OUT_ROOT matching the real capture root.
+            provenance.OUT_ROOT = _orig_out_root
             zcam.stop()
             shutil.rmtree(zroot, ignore_errors=True)
         print("z-stack aid check PASS: start guard refuses mid-capture, "
@@ -4460,6 +4793,38 @@ def render_check():
             assert load_pref("keep_raw_images", "sentinel") is False, \
                 "Cancel must not revert a live-applied Advanced setting"
 
+            # Additional export formats (Part 03, lifted from casual_mode.py,
+            # then genuinely completed once debayer.py's tonemap/write split
+            # removed TIFF's old structural-byproduct lock): TIFF/PNG/JPG/DNG
+            # are all four real, independent checkboxes now, none locked.
+            # PNG/JPG/TIFF default on, DNG defaults off; Process DNG only
+            # enables once DNG is checked, same shape casual_mode.py's own
+            # dng_merge_check used.
+            dlg3 = PreferencesDialog(pcam)
+            assert dlg3._fmt_tiff_check.isChecked() is True and \
+                dlg3._fmt_tiff_check.isEnabled(), \
+                "TIFF defaults checked but must be a REAL, togglable checkbox now"
+            assert dlg3._fmt_png_check.isChecked() is True
+            assert dlg3._fmt_jpg_check.isChecked() is True
+            assert dlg3._fmt_dng_check.isChecked() is False
+            assert dlg3._fmt_dng_merge_check.isEnabled() is False, \
+                "Process DNG must start disabled -- DNG itself isn't checked yet"
+            dlg3._fmt_tiff_check.setChecked(False)
+            assert load_pref("export_format_tiff", "sentinel") is False, \
+                "TIFF must persist immediately like every other Advanced export setting"
+            dlg3._fmt_dng_check.setChecked(True)
+            assert load_pref("export_format_dng", "sentinel") is True, \
+                "an Advanced export-format setting must persist immediately"
+            assert dlg3._fmt_dng_merge_check.isEnabled() is True, \
+                "checking DNG must enable Process DNG"
+            dlg3._fmt_png_check.setChecked(False)
+            assert load_pref("export_format_png", "sentinel") is False
+            dlg3.reject()
+            assert load_pref("export_format_tiff", "sentinel") is False and \
+                load_pref("export_format_dng", "sentinel") is True and \
+                load_pref("export_format_png", "sentinel") is False, \
+                "Cancel must not revert live-applied export-format settings either"
+
             pcam.stop()
         finally:
             PREFS_PATH = orig_prefs_path
@@ -4467,7 +4832,9 @@ def render_check():
               "entirely from get_capabilities() (an omitted capability "
               "produces no control), next-launch settings persist only on "
               "OK, Advanced settings persist immediately regardless of "
-              "OK/Cancel, Keep RAW Images defaults on")
+              "OK/Cancel, Keep RAW Images defaults on, TIFF/PNG/JPG/DNG "
+              "export-format settings are all four real, independently "
+              "togglable checkboxes that persist immediately")
 
         # Preferences dialog, part 2: stream_formats/stream_resolutions
         # present -> real controls appear (the flip side of the omitted-
@@ -4570,7 +4937,7 @@ def render_check():
         score = qc_session.captures[qc_idx].get("sharpness_score")
         assert isinstance(score, float), \
             "a real capture should score as a real float, got {!r}".format(score)
-        on_disk_qc = json.loads((qc_session.dir / "session.json").read_text())
+        on_disk_qc = json.loads((qc_session.prov_dir / "session.json").read_text())
         assert on_disk_qc["captures"][qc_idx]["sharpness_score"] == score, \
             "the score must be persisted to session.json, not just held in memory"
 
@@ -4594,6 +4961,189 @@ def render_check():
               "focus.score_capture_sharpness (nothing mocked), the score "
               "persists to session.json, a simulated extraction failure "
               "records None rather than raising into the capture flow")
+
+        # Auto-processing (Part 03): _auto_process/_run_process_cmd/
+        # _on_process_finished, end to end through a REAL hdr_from_session.py
+        # subprocess -- no Yes/No gate in between anymore (Snap/Science/HDR
+        # all reach this now), and the flat/dark correction status it prints
+        # must land on the capture's own session.json entry as the named
+        # technique's actual outcome (CORRECTION_flat_dark_framing.md), not
+        # just print to stdout and vanish.
+        # FLAT_ROOT may already hold frames from an earlier check in this
+        # same render_check run (e.g. the processing-wizard-helpers check
+        # above, which shoots into it and does not clean up -- it is a
+        # standing library by design, so nothing here normally would);
+        # clear it so this check's "no flat shot" expectation is real
+        # rather than order-dependent on what ran before it.
+        if provenance.FLAT_ROOT.exists():
+            shutil.rmtree(provenance.FLAT_ROOT)
+        ap_session = provenance.Session(provenance.OUT_ROOT, {}, [])
+        ap_result = win.camera.capture_burst(ap_session.dir, "science_", 2)
+        ap_idx = provenance.record_burst(ap_session, "science", "science_", ap_result)
+        win._session = ap_session
+        win._flat_question = lambda title, text, default=None: QMessageBox.No   # decline archive offer
+        win._auto_process("science", ap_idx)
+        assert win._capturing, \
+            "_auto_process must go straight into processing, no Yes/No gate first"
+        ap_deadline = time.time() + 20.0
+        while win._capturing and time.time() < ap_deadline:
+            qtapp.processEvents()
+            time.sleep(0.01)
+        assert not win._capturing, "auto-processing must finish within the deadline"
+        assert "processed" in win.capture_status.text().lower(), \
+            "a successful auto-process must report completion: {!r}".format(
+                win.capture_status.text())
+        assert (ap_session.dir / "final_display.tif").exists(), \
+            "the real hdr_from_session.py subprocess must have produced a display image"
+        on_disk_ap = json.loads((ap_session.prov_dir / "session.json").read_text())
+        cap_entry = on_disk_ap["captures"][ap_idx]
+        assert cap_entry.get("flat_correction") == \
+            "skipped (no flat_ frames in the flat library)", \
+            "flat_correction must be recorded as the named technique's " \
+            "actual outcome: {!r}".format(cap_entry.get("flat_correction"))
+        assert cap_entry.get("dark_correction") == \
+            "skipped (no standalone dark_ frames)", \
+            "dark_correction must be recorded as the named technique's " \
+            "actual outcome: {!r}".format(cap_entry.get("dark_correction"))
+        assert cap_entry.get("raw_discarded") is False, \
+            "Keep RAW Images defaults on -- raw_discarded must be recorded " \
+            "False, not just absent, so a reader never has to guess"
+        assert (ap_session.dir / "science_frame_0000.tif").exists(), \
+            "Keep RAW Images on: raw frames must survive processing"
+        shutil.rmtree(ap_session.dir, ignore_errors=True)
+        shutil.rmtree(ap_session.prov_dir, ignore_errors=True)
+        print("auto-processing check PASS: _auto_process runs immediately with "
+              "no Yes/No gate, a real hdr_from_session.py subprocess run "
+              "produces a display image, and flat/dark correction status is "
+              "parsed back out of its stdout and persisted onto the capture's "
+              "own session.json entry as the named technique's actual outcome, "
+              "never a generic 'processing complete'; Keep RAW Images on "
+              "(the default) leaves raw_discarded explicitly False and the "
+              "raw frames themselves in place")
+
+        # Keep RAW Images OFF: raw frames + the linear master must be
+        # deleted once processing succeeds, and session.json must record
+        # the discard as deliberate (raw_discarded=True + a stated reason) --
+        # never a silent gap that could be mistaken for corruption.
+        save_pref("keep_raw_images", False)
+        try:
+            kr_session = provenance.Session(provenance.OUT_ROOT, {}, [])
+            kr_result = win.camera.capture_burst(kr_session.dir, "science_", 2)
+            kr_idx = provenance.record_burst(kr_session, "science", "science_", kr_result)
+            win._session = kr_session
+            win._auto_process("science", kr_idx)
+            kr_deadline = time.time() + 20.0
+            while win._capturing and time.time() < kr_deadline:
+                qtapp.processEvents()
+                time.sleep(0.01)
+            assert not win._capturing, "auto-processing must finish within the deadline"
+            assert "processed" in win.capture_status.text().lower(), \
+                "Keep RAW Images off must still report a successful processing " \
+                "run, not a failure: {!r}".format(win.capture_status.text())
+            assert not any(kr_session.dir.glob("science_frame_*.tif")), \
+                "Keep RAW Images off must delete this capture's own raw frames"
+            assert not (kr_session.dir / "single_master.tif").exists(), \
+                "Keep RAW Images off must delete the linear master too"
+            assert (kr_session.dir / "final_display.tif").exists(), \
+                "Keep RAW Images off must NEVER touch the processed result itself"
+            on_disk_kr = json.loads((kr_session.prov_dir / "session.json").read_text())
+            kr_entry = on_disk_kr["captures"][kr_idx]
+            assert kr_entry.get("raw_discarded") is True, \
+                "session.json must record the discard, not leave it silent"
+            assert kr_entry.get("raw_discard_reason"), \
+                "the discard must be recorded as DELIBERATE, with a reason -- " \
+                "a later reader must be able to tell 'chose not to keep' from " \
+                "'a file is missing'"
+        finally:
+            save_pref("keep_raw_images", True)
+            shutil.rmtree(kr_session.dir, ignore_errors=True)
+            shutil.rmtree(kr_session.prov_dir, ignore_errors=True)
+        print("Keep RAW Images check PASS: off deletes this capture's own raw "
+              "frames + linear master once processing succeeds, never the "
+              "processed result itself, and session.json records the discard "
+              "as deliberate with a stated reason, never a silent gap")
+
+        # Additional export formats (Part 03, lifted from casual_mode.py,
+        # TIFF genuinely optional since the debayer.py tonemap/write split):
+        # TIFF off + PNG off + JPG on + DNG on (merged) must reach
+        # hdr_from_session.py as real --no-export-tiff/--no-export-png/
+        # --export-jpg/--export-dng/--export-dng-merge flags and produce
+        # exactly the files those flags promise -- "whatever's checked is
+        # what gets written, full stop" now genuinely holds for all three
+        # display formats, not just PNG/JPG.
+        save_pref("export_format_tiff", False)
+        save_pref("export_format_png", False)
+        save_pref("export_format_jpg", True)
+        save_pref("export_format_dng", True)
+        save_pref("export_format_dng_merge", True)
+        try:
+            ef_session = provenance.Session(provenance.OUT_ROOT, {}, [])
+            ef_result = win.camera.capture_burst(ef_session.dir, "science_", 2)
+            ef_idx = provenance.record_burst(ef_session, "science", "science_", ef_result)
+            win._session = ef_session
+            win._auto_process("science", ef_idx)
+            ef_deadline = time.time() + 20.0
+            while win._capturing and time.time() < ef_deadline:
+                qtapp.processEvents()
+                time.sleep(0.01)
+            assert not win._capturing, "auto-processing must finish within the deadline"
+            assert "processed" in win.capture_status.text().lower(), \
+                "export-format processing must still report success: {!r}".format(
+                    win.capture_status.text())
+            assert not (ef_session.dir / "final_display.tif").exists(), \
+                "TIFF unchecked must mean TIFF is never produced at all -- " \
+                "the old structural-byproduct lock is gone"
+            assert not (ef_session.dir / "final_display.png").exists(), \
+                "PNG unchecked must mean PNG is never produced at all, not " \
+                "produced-then-deleted"
+            assert (ef_session.dir / "final_display.jpg").exists(), \
+                "JPG checked must produce final_display.jpg"
+            assert (ef_session.dir / "science_raw.tif").exists(), \
+                "DNG + Process DNG merge checked must produce the merged " \
+                "raw-domain deliverable, honestly named .tif (never .dng)"
+            # Content, not just the name, must match the MERGED master --
+            # single_master.tif already got deleted by Keep RAW Images
+            # default-on's own "keep it" behavior here (Keep RAW Images
+            # wasn't touched in this block, still on), so it's still on
+            # disk to compare against.
+            assert (ef_session.dir / "science_raw.tif").read_bytes() == \
+                (ef_session.dir / "single_master.tif").read_bytes(), \
+                "Process DNG merge checked must copy the MERGED master's " \
+                "actual bytes, not just produce a same-named placeholder"
+
+            # DNG checked WITHOUT Process DNG merge: the deliverable must be
+            # the first untouched raw frame instead -- same checkbox, same
+            # session, opposite merge state, to prove the branch really
+            # switches on the checkbox rather than always doing one thing.
+            save_pref("export_format_dng_merge", False)
+            (ef_session.dir / "science_raw.tif").unlink()
+            ef_idx2 = provenance.record_burst(
+                ef_session, "science", "science2_",
+                win.camera.capture_burst(ef_session.dir, "science2_", 2))
+            win._auto_process("science", ef_idx2)
+            ef_deadline2 = time.time() + 20.0
+            while win._capturing and time.time() < ef_deadline2:
+                qtapp.processEvents()
+                time.sleep(0.01)
+            assert not win._capturing
+            assert (ef_session.dir / "science2_raw.tif").read_bytes() == \
+                (ef_session.dir / "science2_frame_0000.tif").read_bytes(), \
+                "DNG checked WITHOUT Process DNG merge must copy the FIRST " \
+                "RAW FRAME's actual bytes untouched, not the merged master"
+        finally:
+            for k in ("export_format_tiff", "export_format_png", "export_format_jpg",
+                     "export_format_dng", "export_format_dng_merge"):
+                save_pref(k, {"export_format_tiff": True, "export_format_png": True,
+                             "export_format_jpg": True, "export_format_dng": False,
+                             "export_format_dng_merge": False}[k])
+            shutil.rmtree(ef_session.dir, ignore_errors=True)
+            shutil.rmtree(ef_session.prov_dir, ignore_errors=True)
+        print("export-format check PASS: Preferences > Advanced's TIFF/PNG/JPG/DNG "
+              "settings reach hdr_from_session.py as real CLI flags and "
+              "produce exactly the promised files -- TIFF and PNG unchecked "
+              "both mean never produced (not produced-then-deleted; TIFF's "
+              "old structural-byproduct lock is gone), JPG and a merged DNG "
+              "deliverable land exactly when checked")
 
         # --- MEASURE MENU (separable): _launch_measure opens a real
         # measure.MeasureWindow, same "raise the existing one, don't open a

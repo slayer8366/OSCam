@@ -84,13 +84,13 @@ drafted). The design: one application, one window, one layout — every
 feature always present, nothing gated by a mode. Provenance moves to
 `~/provenance/<timestamp>/` rather than becoming conditional; the only
 setting that changes what gets kept is Keep RAW Images. `casual_mode.py`
-is superseded but **not yet deleted** — that happens in Part 03, which
-hasn't been drafted, so the module itself stays in place and working for
-now; its `qt_shell.py` plumbing (`CASUAL_MODE_DEFAULT`, the `"casual_mode"`
-gui_prefs key, the Options > Casual Mode action, `main()`'s window-class
-branch), however, is gone — removed as part of Part 01 below. **Both
-Part 01 (Preferences dialog) and Part 02 (camera capability query) are
-now done** — `Camera
+is superseded in full and **is now deleted** (Part 03, below) — its
+capture-and-save logic, format handling, and JPG-first delivery are all
+lifted into `qt_shell.py`'s own main capture path. Its `qt_shell.py`
+plumbing (`CASUAL_MODE_DEFAULT`, the `"casual_mode"` gui_prefs key, the
+Options > Casual Mode action, `main()`'s window-class branch) went first,
+as part of Part 01 below. **Parts 01, 02, and 03 are all now done** —
+`Camera
 Backend.get_capabilities()` is a new abstract method, implemented on both
 `FakeCamera` (a small synthetic set; pass `stream_caps=True` at
 construction to exercise the stream-key-present rendering path, since the
@@ -185,24 +185,24 @@ specifically — see the note above about `QGlPicamera2`'s EGL surface
 failure in this environment, which blocks constructing a live
 `Picamera2Camera` at all here, not just this dialog).
 
-### Provenance relocation, Keep RAW, and auto-processing (Preferences-dialog plan set, Part 03) — DESIGN, NOT YET BUILT
+### Provenance relocation, Keep RAW, and auto-processing (Preferences-dialog plan set, Part 03) — BUILT
 
-Intent recorded (`CHANGELOG.md`'s matching entry); no code has landed for
-this part yet. Full design in `PLAN_00_context_and_supersession.md` and
+Full design in `PLAN_00_context_and_supersession.md` and
 `PLAN_03_provenance_relocation_and_keep_raw.md` (drafted, not checked
 into the repo), plus `CORRECTION_flat_dark_framing.md` (also not checked
-in). This section also captures folder-layout and plumbing decisions
-settled directly with Brandon that go beyond what those files say.
+in). This section captures folder-layout and plumbing decisions settled
+directly with Brandon that go beyond what those files say, plus what
+actually landed — including several real bugs this build surfaced that
+the plan files didn't anticipate (see "Bugs this build found and fixed"
+below).
 
-**Supersedes `casual_mode.py` in full.** Do not delete it as a first
-move — its capture-and-save logic, format handling, and the
-`(Exception, SystemExit)` catch around `hdr_from_session.process()`
-(`process()` calls `sys.exit()` on some error paths; `SystemExit`
-derives from `BaseException`, so a bare `except Exception` around it
-lets the worker thread die silently — this is a real find from the
-Casual Mode build, not a hypothetical) are all reused, lifted into the
-main capture path. Delete the module only once that logic has a new
-home, at the end of this part.
+**Supersedes `casual_mode.py` in full — the module is now deleted.** Its
+capture-and-save logic, format handling, and the `(Exception, SystemExit)`
+catch around `hdr_from_session.process()` (`process()` calls `sys.exit()`
+on some error paths; `SystemExit` derives from `BaseException`, so a bare
+`except Exception` around it lets the worker thread die silently — a real
+find from the Casual Mode build, not a hypothetical) were all reused,
+lifted into the main capture path, before the module was deleted.
 
 **Folder layout.** Three Preferences > Advanced settings — `provenance_
 folder` already exists from Part 01 (default `~/provenance`); this part
@@ -227,34 +227,69 @@ adds `capture_folder` (default `~/captures`) and `flat_library_folder`
   folder, so a new field on the session record stores the capture dir's
   absolute path (chosen over deriving it from a shared timestamp
   convention, which would silently break if folder-naming ever drifts).
-  Every consumer that currently does `session_dir.glob(...)` assuming
-  images sit beside `session.json` — `hdr_from_session.py`, `gallery.py`,
-  `process_wizard.py`, `measure.py` — needs to resolve two directories
-  instead of one.
+  Every consumer that did `session_dir.glob(...)` assuming images sit
+  beside `session.json` now resolves two directories instead of one:
+  `hdr_from_session.py` (reads `capture_dir` off the session record it's
+  handed, see its own module docstring), `gallery.py` (a new
+  `_capture_base_dir`), `qt_shell.py` (a new `_provenance_dir_for`, used
+  by `list_sessions`/`load_session_json`/`capture_correction_status`/
+  `_run_process_cmd`/`_end_zstack`). `process_wizard.py` turned out to
+  need no change of its own — it sources every frame through
+  `gallery.capture_frame_paths`, so gallery's own fix already covers it.
+  `measure.py` needed the fix too (see "Bugs this build found and fixed"
+  below) even though the original plan file didn't name it explicitly —
+  its z-stack code (`collect_stack_planes`/`_on_exclude_toggled`) reads
+  session.json directly, same as `qt_shell.py`, via its own
+  `_provenance_dir_for` (duplicated rather than importing `qt_shell.py`,
+  which would drag in the whole Qt capture GUI just for one helper).
 
 **Provenance is always written; Keep RAW Images is the only setting that
 changes what survives.** There is no setting that stops a record from
 being written — Brandon's framing: invisibility is the product, not the
 extinction of provenance. Off means raw frames + the linear master
 (`single_master.tif`/`master_*.tif`/`hdr_linear.tif`) are deleted once
-processing succeeds, and the session record must state the discard was
-deliberate — a later reader (human or agent) needs to distinguish "the
-user chose not to keep these" from "a file is missing"; absence with a
-recorded reason is provenance, absence without one looks like corruption.
-`measure.py` must fail legibly (not obscurely, and specifically NOT a
-silent fallback to the JPG) on a raw-less capture — the JPG is a
-display-referred derivative, already structurally excluded from
-`annotations.json` by `check_measurement_provenance()`, and falling back
-to it would measure tonemapped edge positions.
+processing succeeds (`hdr_from_session.py process()`'s own
+`a.delete_raw_on_success`, wired from the `keep_raw_images` pref in
+`qt_shell.py`'s `_run_process_cmd`, read live at processing time — not
+baked into an open session), and the session record states the discard
+was deliberate: `correction_status["raw_discarded"]` + (when true)
+`"raw_discard_reason"`, parsed out of `hdr_from_session.py`'s
+`CORRECTION_STATUS_JSON:` stdout line and written onto the capture's own
+`session.json` entry by `qt_shell.py`'s `_record_correction_status` — a
+later reader (human or agent) can distinguish "the user chose not to
+keep these" from "a file is missing"; absence with a recorded reason is
+provenance, absence without one looks like corruption. `measure.py`
+fails legibly (not obscurely, and specifically NOT a silent fallback to
+the JPG) on a raw-less capture: `load_measurement_plane`'s new
+`_raw_discard_reason` checks the owning capture's `raw_discarded` flag
+and, if set, names the TRUE reason instead of
+`calibrate.resolve_raw_path`'s generic "this suggests the file moved on
+its own" wording (which would otherwise misdescribe a deliberate choice
+as an anomaly) — never a silent fallback to measuring the JPG, which
+`calibrate.resolve_raw_path` already structurally prevented (a `.jpg`
+argument resolves to its `.dng` sibling or refuses; it never measures
+the JPEG itself). `wizard_pages.py`'s `ImageSourcePage._on_open_existing`
+got a matching fix: picking a raw-discarded Gallery entry used to
+silently do nothing (`GalleryWidget.selected_paths()` drops any entry
+with `raw_path=None`) — it now reports why, with a pointer to the
+manual-file escape hatch.
 
-**Auto-processing replaces `_offer_process`'s Yes/No `QMessageBox`**
-(`qt_shell.py` around line 3255). Snap, Science, and HDR all process
-automatically now, matching Casual Mode's always-functional design —
-Snap is a genuinely new call site: today only science/hdr ever reach
-`_run_process_cmd` (the comment there is explicit that frame-averaging a
-single frame was considered pointless, but `hdr_from_session.process()`
-already has a working `kind in ("science", "snap")` branch, so this is
-wiring, not new processing logic).
+**Auto-processing replaces `_offer_process`'s Yes/No `QMessageBox`** —
+the method itself is renamed `_auto_process` (`qt_shell.py`). Snap,
+Science, and HDR all process automatically now, matching Casual Mode's
+always-functional design — Snap is a genuinely new call site: previously
+only science/hdr ever reached `_run_process_cmd` (the comment there was
+explicit that frame-averaging a single frame was considered pointless,
+but `hdr_from_session.process()` already had a working
+`kind in ("science", "snap")` branch, so this was wiring, not new
+processing logic). **Bug this surfaced**: `_auto_process` always let
+`hdr_from_session.py` default `--raw-ext` to `"dng"`, which is fine on
+real hardware (Picamera2Camera always writes `.dng`) but silently broke
+processing under the default (no `--camera`) `FakeCamera` backend, which
+writes `.tif` — `_auto_process` now detects the real extension via
+`capture_correction_status`'s own on-disk glob (the same mechanism the
+manual processing wizard already used) rather than assuming a camera
+class.
 
 **Flat/Dark correction status must be recorded and displayed as the
 named technique, never folded into a generic "processing complete"**
@@ -271,25 +306,98 @@ today (the existing checkbox picker at `qt_shell.py` ~line 903) — not
 moved into Advanced, not defaulted silently, not collapsed into one
 implied on/off.
 
-**What's reused from `casual_mode.py` unchanged, lifted into the main
-capture path at the end of this part:** the four independent format
-checkboxes (DNG/PNG/JPG/TIFF, any combination) plus the separate Process
-DNG (merge Burst/HDR frames) control — `<stem>_raw.tif`, never `.dng`,
-for a merged master, since a merge produces a derivative and a DNG
-container would mislabel it as raw; and JPG-first delivery (placeholder
-JPG written immediately, atomic `os.replace` swap to the final chosen
-format, honest failure that keeps the JPG and reports plainly rather
-than silently standing in as the requested format).
+**Additional export formats, lifted from `casual_mode.py` — but NOT a
+literal transplant.** Three placement/scope questions came up mid-build
+that the plan files didn't settle, and were resolved directly with
+Brandon rather than guessed:
+- **Where**: Preferences > Advanced, not a new row of controls next to
+  the Capture button — persisted, live-applied (read fresh by
+  `_run_process_cmd` at processing time, same as Keep RAW Images), not a
+  per-capture UI decision the way Casual Mode's own window had it.
+- **JPG-first**: still "always produced, discarded if unchecked" in
+  spirit, but the mechanism differs from Casual Mode's literal
+  placeholder-then-atomic-swap (which existed because Casual Mode ran a
+  synchronous capture→process→deliver flow with a real "before processing
+  starts" moment to drop a placeholder into). The main path's processing
+  already runs as a background subprocess with no separate staging
+  directory; `hdr_from_session.py process()` now converts
+  `final_display.png` (or `.tif` if PNG is off) straight into
+  `final_display.jpg` via `os.replace` for atomicity once processing
+  itself completes, gated on `--export-jpg`.
+- **The all-formats-unchecked case**: turned out to be a non-question.
+  `final.tif`/`final_display.tif` are `debayer.py`'s own structural
+  output of the tonemap step this pipeline always runs (`-o final.tif`
+  plus the automatic `_display.tif` sibling `--tonemap` produces) — there
+  is no flag to skip them without deeper surgery to `debayer.py` itself,
+  a shared tool other paths (`calibrate.py`, `ca_measure.py`) also
+  depend on. So TIFF is shown as a checkbox for visual parity with Casual
+  Mode's four-checkbox layout, but locked checked and disabled, with a
+  tooltip explaining why. PNG is genuinely gatable (`display_opts` only
+  passes debayer.py's own `--tonemap-8bit` when `a.export_png`, default
+  `True` via `getattr` so a caller that never heard of the flag — i.e.
+  `casual_mode.py`'s own `SimpleNamespace`, before it was deleted — kept
+  its old unconditional-PNG behavior). JPG and DNG are genuinely new
+  (`--export-jpg`, `--export-dng`, `--export-dng-merge`), gated the same
+  "produce it or don't, never produce-then-delete" way. DNG's own
+  naming — `<file_prefix>raw.<ext>` untouched, or `<file_prefix>raw.tif`
+  when Process DNG merge is also checked — follows the same "never a
+  mislabeled `.dng` for a merged result" rule Casual Mode's own
+  `dng_merge` checkbox used, since a merge produces a derivative and a
+  DNG container would mislabel it as raw.
+- Audited first (per Brandon's own staged plan for this step):
+  `gallery.py`/`process_wizard.py`/`measure.py` turned out to have ZERO
+  dependency on `final_display.tif`/`.png` existing at all (gallery only
+  ever shows raw+camera-preview-jpg; process_wizard has its own
+  independent `<label>_final.tif` pipeline; measure.py never touches a
+  display-referred file, by its own green-plane-only invariant) — so no
+  changes were needed there, only in `qt_shell.py`'s own render_check
+  fixtures, which had assumed unconditional TIFF/PNG.
 
-**Build order**: `provenance.py`'s new roots + `Session` split →
+**Build order** (as actually built, including the parts the original
+plan didn't anticipate): `provenance.py`'s new roots + `Session` split →
 `qt_shell.py`'s Preferences additions and capture-path re-plumbing
 (flat/dark/focal) → `hdr_from_session.py`'s structured return and
-flat-library lookup → the auto-process wiring and structured
-flat/dark recording → Keep RAW deletion + discard recording →
-`measure.py`'s legible failure → `gallery.py`/`process_wizard.py` path
-resolution → lift casual_mode.py's format handling and JPG-first
-delivery → delete `casual_mode.py` and its remaining `qt_shell.py`
-plumbing → full `--render-check` sweep → completion entry.
+flat-library lookup → `gallery.py`/`process_wizard.py` path resolution
+→ **[not in the original plan] fix `measure.py`'s own stack code and
+`qt_shell.py`'s `_end_zstack`, both still assuming session.json sits
+beside the raw frames — see "Bugs this build found and fixed"** → the
+auto-process wiring and structured flat/dark recording (**+ the
+`--raw-ext` bug fix above**) → Keep RAW deletion + discard recording →
+`measure.py`'s legible failure (+ `wizard_pages.py`'s matching Gallery
+fix) → audit `final_display.*` consumers, settle the all-unchecked case,
+lift casual_mode.py's format handling and JPG-first delivery (**with the
+placement/scope decisions above, settled directly with Brandon
+mid-build**) → delete `casual_mode.py` and its remaining plumbing → full
+`--render-check` sweep → this completion entry.
+
+**Bugs this build found and fixed, not part of the original design:**
+1. `qt_shell.py`'s `_end_zstack` passed CAPTURE-side `plane_dirs`
+   straight to `_stacks.validate_all`, which reads `session.json` from
+   whatever directory it's given — a real regression introduced by this
+   same build's own earlier `_provenance_dir_for` work (before this fix
+   landed), silently validating nothing and reporting "No issues found"
+   even for a real 3-plane stack. Fixed by mapping through
+   `_provenance_dir_for` first; a new render_check assertion
+   (`"No issues found." in zwin.capture_status.toolTip()`) now actually
+   checks `validate_all`'s real output, which no prior check did.
+2. `measure.py`'s `collect_stack_planes`/`_on_exclude_toggled` (and, via
+   `_stacks.group_by_stack`, `stacks.py`'s own `load_session`) assumed
+   `session.json` sits beside the raw frames — pre-dating Part 03
+   entirely, not caught by the plan files' consumer list. Would have
+   silently found zero stacks once real captures moved to the new
+   layout. Fixed with `measure.py`'s own `_provenance_dir_for` (see the
+   folder-layout note above) — `stacks.py` itself needed no change,
+   since it just reads whatever directory it's handed.
+3. `casual_mode.py` called `hdr_from_session.process()` directly (not
+   through the CLI) and broke twice as that function's signature changed
+   under it during this build: once for the new required `a.flat_root`
+   (`processing_args()` gained a `NO_FLAT_ROOT` sentinel — a path that
+   can never hold frames, preserving "Casual Mode never flat-corrects"
+   without importing `provenance.py`), once for `process()`'s new
+   `(disp, correction_status)` tuple return (unpacked and the status
+   discarded — Casual Mode has nowhere to persist it). Both fixed before
+   the module was deleted, so its own `--render-check` kept passing
+   throughout the build, not just at the very end.
 
 **`provenance.py` extraction plan** (read this before writing any of the
 code — it resolves a real Python gotcha that has already bitten this repo
@@ -342,11 +450,79 @@ twice via a different mechanism):
    (Tier 3 item 3) — that reorg needs this fixed first, or needs to ship
    with CA's live-capture path explicitly disabled/flagged.
 
-If you're picking this up mid-build: check `git log` and this section
-against what's actually in the repo — this describes the plan, not
-necessarily what has landed yet.
+Nothing is currently in progress. Provenance relocation/Keep RAW/
+auto-processing (Part 03, above) is done — verified with a full
+`--render-check` sweep across all 15 remaining modules (`casual_mode.py`
+is deleted, so the 16-module baseline this file used to cite is now 15).
+Parts 04-05 (green-plane cache, live measure panel) remain undrafted.
 
-Nothing else is currently in progress. Casual Mode (above) is done.
+### Debayer.py tonemap/write split (Part 03 follow-up, same day) — BUILT
+
+Part 03 above shipped with TIFF locked checked in Preferences > Advanced's
+export-format row — `debayer.py` had no way to skip writing it, so "TIFF
+unchecked" wasn't actually possible. Brandon flagged this as a workaround,
+not the real "whatever's checked in Preferences is what gets written,
+full stop" contract, and asked for an audit-first fix across the whole
+raw-processing pipeline (`frame_average.py` → `debayer.py` → `hdr_merge.py`
+→ `hdr_from_session.py`), in dependency order, with a consumer-compatibility
+check gated before touching `debayer.py` itself.
+
+**Audit findings:** `frame_average.py` and `hdr_merge.py` are both
+entirely upstream of tonemap (raw-domain masters in, raw-domain masters
+out; `hdr_merge.py`'s own docstring is explicit that it never tone-maps)
+— zero dependency on the write-format question, no changes needed in
+either. The consumer-compatibility check found `gallery.py`/`measure.py`
+have zero dependency on `final_display.tif` existing (gallery only shows
+raw+camera-preview-jpg; measure only reads the file's embedded tag to
+*refuse* it, never its pixels) — but `process_wizard.py` has its own
+independent `debayer.py --tonemap-out` call, a real second caller whose
+contract had to survive the split unchanged.
+
+**The split itself.** `debayer.py`'s tonemap block (CA correct → white
+balance → Reinhard tonemap → shadow-deepen/CLAHE/sharpen → sRGB OETF)
+already produced its result as an in-memory array (`disp`) before writing
+anything; the write to TIFF was just the next line. The existing
+`--tonemap-8bit` (PNG) flag was *already* correctly decoupled — it wrote
+straight from `disp`, never reading the TIFF back off disk — that was the
+template. Three write-format flags now hang independently off the one
+`disp` computation, none reading another's file:
+- `--tonemap-tiff` / `--no-tonemap-tiff` (new; default ON, so every
+  existing caller — `process_wizard.py`'s `--tonemap-out`, any direct CLI
+  use — keeps working unchanged).
+- `--tonemap-8bit` (existing, untouched).
+- `--tonemap-jpg` (new) — writes straight from `disp` via PIL, sharing
+  the same 8-bit conversion `--tonemap-8bit` already computes when both
+  are requested.
+
+**`hdr_from_session.py`:** the JPG export added earlier the same day (a
+post-hoc PIL conversion reading `final_display.png`/`.tif` back off disk)
+is gone — it would have broken the moment TIFF and PNG were both
+unchecked, and was the wrong shape even before that, a disk round-trip
+for data that already existed in memory one process ago. Replaced with
+`--tonemap-jpg` passed straight through to the `debayer.py` subprocess
+call in `display_opts()`. **Also added: real output-existence
+validation.** `run_tool()` only ever checked subprocess exit status —
+`debayer.py` degrades a missing Pillow to a stderr-only warning with
+exit code 0, so a checked PNG/JPG that silently never got written would
+have been invisible (`_on_process_finished`'s success path only surfaces
+`stdout`). Each requested format is now checked against disk after the
+subprocess returns and recorded in the `ran`/`skipped` stage summary
+with the real reason if it's missing.
+
+**`qt_shell.py`:** TIFF's checkbox is unlocked — a real `export_format_
+tiff` preference, persisted immediately like PNG/JPG/DNG, wired into
+`_run_process_cmd` (`--no-export-tiff` when unchecked). Unchecking all
+three display formats is now a legitimate choice, not a special case: it
+just means no display-referred image gets produced that run (`final.tif`,
+the linear RGB measurement master, is unaffected either way — it has no
+checkbox, never did).
+
+Verified: manual CLI smoke tests confirmed each new `debayer.py` flag in
+isolation (baseline unchanged, `--no-tonemap-tiff --tonemap-jpg` correctly
+omits the TIFF and writes only the JPG) before touching any caller. Full
+`--render-check` sweep, all 15 modules, including `process_wizard.py`
+exercising the real `--tonemap-out` contract through its own subprocess
+call — confirms the split didn't disturb that third, independent caller.
 
 **Full screen mode detail worth knowing**: `F11` toggles; the interaction
 model (explicit toggle key, not auto-hide-on-idle or an always-visible

@@ -100,6 +100,20 @@ except ImportError:
     except ImportError:
         _stacks = None
 
+# provenance.py (Qt-free, same as every other import above) rather than
+# qt_shell.py itself: this module only needs OUT_ROOT/PROVENANCE_ROOT for
+# the capture<->provenance directory mapping below (Part 03), not the Qt
+# capture GUI. measure.py "never depends on qt_shell.Session" (see
+# _on_exclude_toggled's own comment) stays true -- this is a path-mapping
+# dependency on provenance.py's constants, not a Session dependency.
+try:
+    from . import provenance as _provenance
+except ImportError:
+    try:
+        import provenance as _provenance
+    except ImportError:
+        _provenance = None
+
 try:
     from . import export as _export
 except ImportError:
@@ -174,6 +188,42 @@ def check_measurement_provenance(path):
             .format(Path(path).name, desc["kind"]))
 
 
+def _raw_discard_reason(path):
+    """If `path` sits in a capture directory whose OWNING entry in
+    session.json recorded raw_discarded=True (Keep RAW Images off, Part 03
+    -- see hdr_from_session.py's process()), return that capture's own
+    raw_discard_reason string. Lets a caller report the TRUE cause of a
+    missing raw sibling instead of calibrate.resolve_raw_path's generic
+    "this suggests the file moved on its own" wording, which is actively
+    wrong for a deliberate discard -- the whole point of recording a
+    reason in session.json is for a reader (human or agent) to be told the
+    real one, not left to guess corruption. None if no owning capture is
+    found, or none of them recorded a discard matching this filename."""
+    if _provenance is None:
+        return None
+    prov_dir = _provenance_dir_for(Path(path).parent)
+    if prov_dir is None:
+        return None
+    sj_path = prov_dir / "session.json"
+    if not sj_path.is_file():
+        return None
+    try:
+        data = json.loads(sj_path.read_text())
+    except Exception:
+        return None
+    stem = Path(path).stem
+    for cap in data.get("captures", []):
+        if not cap.get("raw_discarded"):
+            continue
+        prefix = cap.get("file_prefix") or ""
+        names = cap.get("files") or []
+        if (prefix and stem.startswith(prefix)) or any(Path(n).stem == stem for n in names):
+            return cap.get("raw_discard_reason") or (
+                "Keep RAW Images was off; the raw frame was deleted once "
+                "processing succeeded.")
+    return None
+
+
 def load_measurement_plane(path):
     """The measurement substrate, whichever of the two supported input shapes
     it is: a full-sensor raw mosaic (.dng, or a frame_average.py master.tif)
@@ -181,12 +231,36 @@ def load_measurement_plane(path):
     already half-res green plane (debayer.py's own --green output) is used
     as-is, no double extraction. Runs the provenance guard first. Raises
     ValueError for anything that is neither shape, or RuntimeError if
-    debayer.py is not importable and extraction is actually needed."""
+    debayer.py is not importable and extraction is actually needed.
+
+    A missing raw sibling (e.g. path is a .jpg preview whose .dng was
+    deleted) is refused by calibrate.resolve_raw_path itself -- this never
+    silently falls back to measuring the JPG. What changes here (Part 03):
+    if that missing raw was a DELIBERATE discard (Keep RAW Images off),
+    the refusal names that reason explicitly instead of resolve_raw_path's
+    generic "this suggests the file moved on its own", which would
+    misdescribe a deliberate choice as an anomaly."""
+    def _discard_error(bad_path, fallback):
+        reason = _raw_discard_reason(path)
+        if reason:
+            return ValueError(
+                "{} has no raw file to measure -- it was deliberately "
+                "discarded: {} The display JPG/TIFF is a tonemapped "
+                "derivative, never a substitute (measuring it would measure "
+                "apparent edges the tonemap already moved).".format(
+                    Path(bad_path).name, reason))
+        return fallback
+
     if _calibrate is None:
         raise RuntimeError("calibrate.py could not be imported; needed for "
                            "resolve_raw_path/load_mosaic_array")
     check_measurement_provenance(path)
-    resolved = _calibrate.resolve_raw_path(path)
+    try:
+        resolved = _calibrate.resolve_raw_path(path)
+    except ValueError as exc:
+        raise _discard_error(path, exc) from exc
+    if not Path(resolved).is_file():
+        raise _discard_error(resolved, ValueError("{} does not exist.".format(resolved)))
     arr = _calibrate.load_mosaic_array(resolved)
     full_hw = (FULL_RES[1], FULL_RES[0])
     green_hw = (GREEN_PLANE_RES[1], GREEN_PLANE_RES[0])
@@ -362,6 +436,26 @@ def format_mark_result(mark):
 DEFAULT_CAPTURES_ROOT = Path.home() / "captures"
 
 
+def _provenance_dir_for(capture_dir):
+    """The provenance directory mirroring capture_dir's own position under
+    the global provenance.OUT_ROOT -- session.json lives there now, never
+    beside the raw frames (Part 03, provenance relocation; mirrors
+    qt_shell.py's own _provenance_dir_for exactly, duplicated rather than
+    imported since pulling in qt_shell.py here would drag the whole Qt
+    capture GUI along just for one path-mapping helper). None if
+    capture_dir is not actually under OUT_ROOT (e.g. a folder browsed from
+    outside the managed capture tree) or provenance.py is unavailable --
+    callers degrade to "no session.json found" rather than raising, same
+    temperament as the rest of this file's stack-scanning code."""
+    if _provenance is None:
+        return None
+    try:
+        rel = Path(capture_dir).relative_to(_provenance.OUT_ROOT)
+    except ValueError:
+        return None
+    return _provenance.PROVENANCE_ROOT / rel
+
+
 def resolve_capture_raw(session_dir, cap):
     """The on-disk raw file for one tagged capture entry: the first recorded
     filename that still exists (a snap's `files` list), else the first frame
@@ -399,23 +493,38 @@ def collect_stack_planes(captures_root):
 
     A plane whose raw file no longer resolves is dropped here -- same
     missing-plane temperament as zstack_process's own flag, not an error.
+
+    captures_root's direct children are CAPTURE directories (raw frames);
+    session.json for each lives in the mirrored provenance directory now
+    (Part 03, provenance relocation) -- stacks.py itself is untouched by
+    that split (it just reads session.json from whatever directory it's
+    given), so group_by_stack/ordered_planes are called against the
+    PROVENANCE side here, with a capture-dir lookup kept alongside to
+    resolve each plane's actual raw file. The "session_dir" key in the
+    returned dict is therefore the provenance dir (its one real consumer,
+    _on_exclude_toggled, reads/writes session.json through it) -- not the
+    capture dir, which callers never need directly since "path" already
+    points at the resolved raw file.
     """
     if _stacks is None:
         raise RuntimeError("stacks.py could not be imported; needed for the z-stack view")
     root = Path(captures_root)
     if not root.is_dir():
         return {}
-    session_dirs = [p for p in sorted(root.iterdir())
-                    if (p / "session.json").is_file()]
+    cap_by_prov = {}
+    for p in sorted(root.iterdir()):
+        prov = _provenance_dir_for(p)
+        if prov is not None and (prov / "session.json").is_file():
+            cap_by_prov[prov] = p
     out = {}
-    groups = _stacks.group_by_stack(session_dirs, include_excluded=True)
+    groups = _stacks.group_by_stack(list(cap_by_prov), include_excluded=True)
     for stack_id, members in groups.items():
         planes = []
-        for sd, cap in _stacks.ordered_planes(members):
-            raw = resolve_capture_raw(sd, cap)
+        for prov_dir, cap in _stacks.ordered_planes(members):
+            raw = resolve_capture_raw(cap_by_prov[prov_dir], cap)
             if raw is not None:
                 planes.append({"plane": _stacks.plane_of(cap), "path": raw,
-                               "session_dir": sd, "excluded": not _stacks.is_active(cap),
+                               "session_dir": prov_dir, "excluded": not _stacks.is_active(cap),
                                "sharpness_score": cap.get("sharpness_score")})
         if planes:
             out[stack_id] = planes
@@ -1137,7 +1246,10 @@ if _HAVE_QT:
             deliberate, reversible human action, never automatic. Writes
             straight to that plane's OWN session.json (measure.py never
             depends on qt_shell.Session; this is the same read-modify-write
-            shape Session.write() itself uses, just scoped to one capture)."""
+            shape Session.write() itself uses, just scoped to one capture).
+            entry["session_dir"] is the PROVENANCE directory (Part 03) --
+            see collect_stack_planes's own docstring for why that key means
+            provenance dir, not capture dir, in this returned shape."""
             if not (0 <= plane_idx < len(self._stack)) or _stacks is None:
                 return
             entry = self._stack[plane_idx]
@@ -1354,6 +1466,78 @@ def render_check():
           "debayer.py exactly, an already-green plane passes through unchanged, "
           "an unrecognized shape refuses")
 
+    # --- load_measurement_plane: deliberate raw discard (Part 03, Keep RAW
+    # Images off) must name the TRUE reason, not calibrate.resolve_raw_
+    # path's generic "this suggests the file moved on its own" wording --
+    # and must never silently measure the JPG instead.
+    if _provenance is None:
+        print("raw-discard legible-failure check SKIPPED: provenance.py not importable here")
+    else:
+        import shutil as _rc_shutil
+        import tempfile as _rc_tempfile
+        rd_base = Path(_rc_tempfile.mkdtemp())
+        rd_cap_root = rd_base / "captures"
+        rd_prov_root = rd_base / "provenance"
+        rd_cap_root.mkdir()
+        rd_prov_root.mkdir()
+        _orig_rd_out_root = _provenance.OUT_ROOT
+        _orig_rd_prov_root = _provenance.PROVENANCE_ROOT
+        _provenance.OUT_ROOT = rd_cap_root
+        _provenance.PROVENANCE_ROOT = rd_prov_root
+        try:
+            rd_cap_dir = rd_cap_root / "2026-02-01_000001"
+            rd_prov_dir = rd_prov_root / "2026-02-01_000001"
+            rd_cap_dir.mkdir()
+            rd_prov_dir.mkdir()
+            reason = ("Keep RAW Images preference was off; raw frames and "
+                      "the linear master were deleted once processing succeeded.")
+            (rd_prov_dir / "session.json").write_text(json.dumps({"captures": [
+                {"index": 0, "kind": "science", "file_prefix": "science_",
+                 "raw_discarded": True, "raw_discard_reason": reason},
+            ]}))
+            # Only the JPG preview survives on disk -- the .dng sibling
+            # really is gone, matching what Keep RAW Images off leaves behind.
+            jpg_path = rd_cap_dir / "science_frame_0000.jpg"
+            jpg_path.write_bytes(b"\xff\xd8\xff\xd9")
+            try:
+                load_measurement_plane(jpg_path)
+                raise AssertionError(
+                    "a raw-discarded capture must refuse to load, never "
+                    "silently measure the JPG")
+            except ValueError as exc:
+                msg = str(exc)
+                assert reason in msg, \
+                    "the refusal must name the TRUE recorded reason: {!r}".format(msg)
+                assert "moved on its own" not in msg, \
+                    "a deliberate discard must not be misdescribed as an " \
+                    "anomaly: {!r}".format(msg)
+
+            # A genuinely unexplained missing sibling (no owning session.json
+            # at all -- a capture dir this scan never recorded) keeps
+            # calibrate.resolve_raw_path's own generic wording: this check
+            # must not swallow every missing-raw case into the discard
+            # message, only the ones session.json actually explains.
+            rd_cap_dir2 = rd_cap_root / "2026-02-01_000002"
+            rd_cap_dir2.mkdir()   # no matching provenance dir at all
+            unexplained_jpg = rd_cap_dir2 / "science_frame_0000.jpg"
+            unexplained_jpg.write_bytes(b"\xff\xd8\xff\xd9")
+            try:
+                load_measurement_plane(unexplained_jpg)
+                raise AssertionError("expected ValueError for a genuinely missing sibling")
+            except ValueError as exc:
+                assert "moved on its own" in str(exc), \
+                    "an unexplained missing sibling should keep the generic " \
+                    "refusal, not be mistaken for a recorded discard: {!r}".format(exc)
+        finally:
+            _provenance.OUT_ROOT = _orig_rd_out_root
+            _provenance.PROVENANCE_ROOT = _orig_rd_prov_root
+            _rc_shutil.rmtree(rd_base, ignore_errors=True)
+        print("raw-discard legible-failure check PASS: a deliberately "
+              "discarded raw refuses with the TRUE recorded reason (never "
+              "the generic 'file moved on its own' wording, never a silent "
+              "fallback to measuring the JPG), while a genuinely unexplained "
+              "missing sibling keeps the generic refusal")
+
     # --- hash consistency: same pixels, same identity, regardless of path ----
     if _pixel_hash is not None:
         h_direct = _pixel_hash.pixel_sha256(expected_plane)
@@ -1539,13 +1723,30 @@ def render_check():
     import tempfile as _tempfile
     if _stacks is None:
         print("z-stack assembly check SKIPPED: stacks.py not importable here")
+    elif _provenance is None:
+        print("z-stack assembly check SKIPPED: provenance.py not importable here")
     else:
-        zroot = Path(_tempfile.mkdtemp()) / "captures"
+        # Split capture/provenance roots (Part 03): raw frames go under
+        # zroot (capture side), session.json under zprov (provenance side),
+        # mirrored by name -- collect_stack_planes/_provenance_dir_for map
+        # between the two via provenance.OUT_ROOT/PROVENANCE_ROOT, so both
+        # must be patched to point here for the whole fixture's lifetime.
+        _tmp_base = Path(_tempfile.mkdtemp())
+        zroot = _tmp_base / "captures"
+        zprov = _tmp_base / "provenance"
+        zroot.mkdir()
+        zprov.mkdir()
+        _orig_out_root = _provenance.OUT_ROOT
+        _orig_prov_root = _provenance.PROVENANCE_ROOT
+        _provenance.OUT_ROOT = zroot
+        _provenance.PROVENANCE_ROOT = zprov
 
         def _fake_session(name, captures, files):
             d = zroot / name
+            pd = zprov / name
             d.mkdir(parents=True)
-            (d / "session.json").write_text(json.dumps({"captures": captures}))
+            pd.mkdir(parents=True)
+            (pd / "session.json").write_text(json.dumps({"captures": captures}))
             for f in files:
                 (d / f).write_bytes(b"")
             return d
@@ -1575,112 +1776,119 @@ def render_check():
                         "sharpness_score": 12.0}],
                       ["science_frame_0000.dng"])
 
-        found = collect_stack_planes(zroot)
-        assert list(found) == ["T1"], "exactly one stack should be found, got {}".format(list(found))
-        planes = found["T1"]
-        assert [p["plane"] for p in planes] == [1, 2, 3], \
-            "planes must be ordered by the integer tag, INCLUDING the excluded " \
-            "one (section 13: documented, not deleted); got {}".format(
-                [p["plane"] for p in planes])
-        assert planes[0]["path"].name == "science_frame_0000.dng"
-        assert planes[1]["path"].name == "science_frame_0000.dng", \
-            "glob fallback should resolve frame 0 of the burst"
-        assert planes[0]["session_dir"].name == "2026-01-01_0002", \
-            "plane 1 must come from its own session, regardless of shoot order"
+        try:
+            found = collect_stack_planes(zroot)
+            assert list(found) == ["T1"], "exactly one stack should be found, got {}".format(list(found))
+            planes = found["T1"]
+            assert [p["plane"] for p in planes] == [1, 2, 3], \
+                "planes must be ordered by the integer tag, INCLUDING the excluded " \
+                "one (section 13: documented, not deleted); got {}".format(
+                    [p["plane"] for p in planes])
+            assert planes[0]["path"].name == "science_frame_0000.dng"
+            assert planes[1]["path"].name == "science_frame_0000.dng", \
+                "glob fallback should resolve frame 0 of the burst"
+            assert planes[0]["session_dir"].name == "2026-01-01_0002", \
+                "plane 1 must come from its own PROVENANCE session (Part 03: " \
+                "session_dir now means provenance dir), regardless of shoot order"
+            assert planes[0]["session_dir"] == zprov / "2026-01-01_0002", \
+                "session_dir must resolve to the provenance mirror, not the capture dir"
 
-        by_plane = {p["plane"]: p for p in planes}
-        assert by_plane[1]["excluded"] is False and by_plane[1]["sharpness_score"] is None
-        assert by_plane[2]["excluded"] is False and by_plane[2]["sharpness_score"] == 88.0
-        assert by_plane[3]["excluded"] is True and by_plane[3]["sharpness_score"] == 12.0, \
-            "the excluded plane must carry excluded=True and its own recorded score"
+            by_plane = {p["plane"]: p for p in planes}
+            assert by_plane[1]["excluded"] is False and by_plane[1]["sharpness_score"] is None
+            assert by_plane[2]["excluded"] is False and by_plane[2]["sharpness_score"] == 88.0
+            assert by_plane[3]["excluded"] is True and by_plane[3]["sharpness_score"] == 12.0, \
+                "the excluded plane must carry excluded=True and its own recorded score"
 
-        assert collect_stack_planes(zroot / "no_such_dir") == {}, \
-            "a missing root should give no stacks, not raise"
+            assert collect_stack_planes(zroot / "no_such_dir") == {}, \
+                "a missing root should give no stacks, not raise"
 
-        # a capture whose files vanished resolves to None and its plane is dropped
-        assert resolve_capture_raw(zroot / "2026-01-01_0003", {"file_prefix": "nope_"}) is None
-        print("z-stack assembly check PASS: cross-session grouping via stacks.py, "
-              "integer-plane ordering INCLUDING the excluded plane (marked, not "
-              "dropped), untagged session ignored, both raw-resolution paths "
-              "(files list + prefix glob), missing root and missing files "
-              "degrade cleanly, sharpness_score passed through per plane")
+            # a capture whose files vanished resolves to None and its plane is dropped
+            assert resolve_capture_raw(zroot / "2026-01-01_0003", {"file_prefix": "nope_"}) is None
+            print("z-stack assembly check PASS: cross-session grouping via stacks.py, "
+                  "integer-plane ordering INCLUDING the excluded plane (marked, not "
+                  "dropped), untagged session ignored, both raw-resolution paths "
+                  "(files list + prefix glob), missing root and missing files "
+                  "degrade cleanly, sharpness_score passed through per plane, "
+                  "session_dir resolves through the provenance mirror (Part 03)")
 
-        # --- MeasureWindow._load_stack / _on_exclude_toggled, against the
-        # SAME synthetic stack, exercising the real GUI methods end to end ---
-        if not _HAVE_QT:
-            print("_load_stack / _on_exclude_toggled check SKIPPED: PyQt5 not available")
-        else:
-            qtapp = QApplication.instance() or QApplication([])
+            # --- MeasureWindow._load_stack / _on_exclude_toggled, against the
+            # SAME synthetic stack, exercising the real GUI methods end to end ---
+            if not _HAVE_QT:
+                print("_load_stack / _on_exclude_toggled check SKIPPED: PyQt5 not available")
+            else:
+                qtapp = QApplication.instance() or QApplication([])
 
-            def _write_fake_green_plane(path):
-                # resolve_capture_raw pointed at empty stub .dng files above;
-                # overwrite each with a real, loadable TIFF shaped as an
-                # already-extracted green plane -- load_measurement_plane
-                # accepts that shape directly, no debayer extraction needed,
-                # far cheaper than writing a full-sensor mosaic for this test.
-                import tifffile
-                green_hw = (GREEN_PLANE_RES[1], GREEN_PLANE_RES[0])
-                arr = np.random.default_rng(0).integers(
-                    0, 4096, size=green_hw).astype(np.uint16)
-                tifffile.imwrite(str(path), arr)
+                def _write_fake_green_plane(path):
+                    # resolve_capture_raw pointed at empty stub .dng files above;
+                    # overwrite each with a real, loadable TIFF shaped as an
+                    # already-extracted green plane -- load_measurement_plane
+                    # accepts that shape directly, no debayer extraction needed,
+                    # far cheaper than writing a full-sensor mosaic for this test.
+                    import tifffile
+                    green_hw = (GREEN_PLANE_RES[1], GREEN_PLANE_RES[0])
+                    arr = np.random.default_rng(0).integers(
+                        0, 4096, size=green_hw).astype(np.uint16)
+                    tifffile.imwrite(str(path), arr)
 
-            for p in planes:
-                _write_fake_green_plane(p["path"])
+                for p in planes:
+                    _write_fake_green_plane(p["path"])
 
-            win = MeasureWindow()
-            win._load_stack("T1", planes)
-            assert len(win._stack) == 3, "all 3 planes (incl. excluded) should load"
-            # initial active plane must be the first NON-excluded one (1),
-            # never the excluded plane 3, even though 3 sorts last
-            assert win._stack[win._active_plane_idx]["plane"] == 1, \
-                "the initially active plane should be the first non-excluded " \
-                "one, got plane {}".format(win._stack[win._active_plane_idx]["plane"])
+                win = MeasureWindow()
+                win._load_stack("T1", planes)
+                assert len(win._stack) == 3, "all 3 planes (incl. excluded) should load"
+                # initial active plane must be the first NON-excluded one (1),
+                # never the excluded plane 3, even though 3 sorts last
+                assert win._stack[win._active_plane_idx]["plane"] == 1, \
+                    "the initially active plane should be the first non-excluded " \
+                    "one, got plane {}".format(win._stack[win._active_plane_idx]["plane"])
 
-            # the filmstrip actually reflects excluded/score/flagged state
-            win._refresh_filmstrip()
-            assert len(win.filmstrip.planes) == 3
-            plane3_info = next(fp for fp in win.filmstrip.planes
-                               if "3" in fp["label"])
-            assert plane3_info["excluded"] is True
-            assert plane3_info["score"] == 12.0
-            # best score in this stack is 88.0 (plane 2); plane 3's 12.0 is
-            # well below half of that, so it should ALSO be flagged as soft
-            # -- independent evidence, on top of already being excluded
-            assert plane3_info["flagged"] is True, \
-                "plane 3's score (12.0) should register as soft relative to " \
-                "the stack's best (88.0)"
+                # the filmstrip actually reflects excluded/score/flagged state
+                win._refresh_filmstrip()
+                assert len(win.filmstrip.planes) == 3
+                plane3_info = next(fp for fp in win.filmstrip.planes
+                                   if "3" in fp["label"])
+                assert plane3_info["excluded"] is True
+                assert plane3_info["score"] == 12.0
+                # best score in this stack is 88.0 (plane 2); plane 3's 12.0 is
+                # well below half of that, so it should ALSO be flagged as soft
+                # -- independent evidence, on top of already being excluded
+                assert plane3_info["flagged"] is True, \
+                    "plane 3's score (12.0) should register as soft relative to " \
+                    "the stack's best (88.0)"
 
-            # toggle plane 3 (index 2, since planes are ordered 1,2,3) back
-            # to included via the REAL _on_exclude_toggled path
-            excluded_idx = next(i for i, e in enumerate(win._stack) if e["plane"] == 3)
-            win._on_exclude_toggled(excluded_idx)
-            assert win._stack[excluded_idx]["excluded"] is False, \
-                "toggling should flip the in-memory state immediately"
-            on_disk = json.loads((zroot / "2026-01-01_0004" / "session.json").read_text())
-            assert on_disk["captures"][0].get("exclude") is None, \
-                "toggling back to included must clear the exclude key in " \
-                "session.json (set_exclude's own pop-not-False rule), not " \
-                "just flip it to false in memory"
+                # toggle plane 3 (index 2, since planes are ordered 1,2,3) back
+                # to included via the REAL _on_exclude_toggled path
+                excluded_idx = next(i for i, e in enumerate(win._stack) if e["plane"] == 3)
+                win._on_exclude_toggled(excluded_idx)
+                assert win._stack[excluded_idx]["excluded"] is False, \
+                    "toggling should flip the in-memory state immediately"
+                on_disk = json.loads((zprov / "2026-01-01_0004" / "session.json").read_text())
+                assert on_disk["captures"][0].get("exclude") is None, \
+                    "toggling back to included must clear the exclude key in " \
+                    "session.json (set_exclude's own pop-not-False rule), not " \
+                    "just flip it to false in memory"
 
-            # a fresh collect_stack_planes call must now see plane 3 as active
-            found2 = collect_stack_planes(zroot)
-            by_plane2 = {p["plane"]: p for p in found2["T1"]}
-            assert by_plane2[3]["excluded"] is False, \
-                "the exclude toggle must be visible to a fresh scan of the " \
-                "captures root, not just held in this window's own memory"
+                # a fresh collect_stack_planes call must now see plane 3 as active
+                found2 = collect_stack_planes(zroot)
+                by_plane2 = {p["plane"]: p for p in found2["T1"]}
+                assert by_plane2[3]["excluded"] is False, \
+                    "the exclude toggle must be visible to a fresh scan of the " \
+                    "captures root, not just held in this window's own memory"
 
-            # toggle it back to excluded again, confirm the round trip
-            win._on_exclude_toggled(excluded_idx)
-            assert win._stack[excluded_idx]["excluded"] is True
-            on_disk2 = json.loads((zroot / "2026-01-01_0004" / "session.json").read_text())
-            assert on_disk2["captures"][0].get("exclude") is True
+                # toggle it back to excluded again, confirm the round trip
+                win._on_exclude_toggled(excluded_idx)
+                assert win._stack[excluded_idx]["excluded"] is True
+                on_disk2 = json.loads((zprov / "2026-01-01_0004" / "session.json").read_text())
+                assert on_disk2["captures"][0].get("exclude") is True
 
-            print("_load_stack / _on_exclude_toggled check PASS: initial active "
-                  "plane skips the excluded one, filmstrip carries excluded/"
-                  "score/flagged per plane, toggling exclude writes through to "
-                  "session.json (both directions) and is visible to a fresh scan")
-
-        _shutil.rmtree(zroot.parent, ignore_errors=True)
+                print("_load_stack / _on_exclude_toggled check PASS: initial active "
+                      "plane skips the excluded one, filmstrip carries excluded/"
+                      "score/flagged per plane, toggling exclude writes through to "
+                      "session.json (both directions) and is visible to a fresh scan")
+        finally:
+            _provenance.OUT_ROOT = _orig_out_root
+            _provenance.PROVENANCE_ROOT = _orig_prov_root
+            _shutil.rmtree(_tmp_base, ignore_errors=True)
 
 
 def main():

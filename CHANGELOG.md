@@ -7,6 +7,107 @@ this file is the historical record of what happened and why.
 
 ## 2026-07-24
 
+### Build: Debayer.py tonemap/write split (Part 03 follow-up)
+
+Part 03 (below) shipped with TIFF locked checked in Preferences >
+Advanced's export-format row, because `debayer.py` had no way to skip
+writing it. Brandon flagged this as a workaround rather than the real
+"whatever's checked is what gets written, full stop" contract, and asked
+for an audit-first fix across `frame_average.py` → `debayer.py` →
+`hdr_merge.py` → `hdr_from_session.py`, with a consumer-compatibility
+check gated before touching `debayer.py`. See `HANDOFF.md`'s matching
+section for the full account.
+
+`frame_average.py`/`hdr_merge.py` needed no changes (both entirely
+upstream of tonemap). The consumer check found `gallery.py`/`measure.py`
+have zero dependency on `final_display.tif`, but `process_wizard.py` has
+its own independent `debayer.py --tonemap-out` call that had to keep
+working. `debayer.py`'s tonemap computation and TIFF-writing were fused;
+split so the in-memory tone-mapped result now feeds three independent
+write-format flags (`--tonemap-tiff`/`--no-tonemap-tiff` new, default on;
+`--tonemap-8bit` existing; `--tonemap-jpg` new), none reading another's
+file off disk. `hdr_from_session.py`'s post-hoc PIL-based JPG conversion
+(added earlier the same day, and already the wrong shape) is gone,
+replaced by passing `--tonemap-jpg` straight to the subprocess call; a
+new output-existence check now also catches a silently-failed PNG/JPG
+write (e.g. missing Pillow) that exit-status checking alone would have
+missed. `qt_shell.py`'s TIFF checkbox is unlocked, a real persisted
+preference like PNG/JPG/DNG.
+
+Full `--render-check` sweep, all 15 modules, passes — including
+`process_wizard.py`, which exercises the real `--tonemap-out` contract
+through its own subprocess call.
+
+### Build: Provenance relocation, Keep RAW, and auto-processing (Preferences-dialog plan set, Part 03)
+
+Builds the intent recorded below. Full `--render-check` sweep passes
+across all 15 remaining modules (`casual_mode.py` is deleted as part of
+this entry, down from the prior 16-module baseline). See `HANDOFF.md`'s
+own Part 03 section for the complete account — this entry summarizes.
+
+**Landed as designed:** the capture/provenance folder split
+(`OUT_ROOT`/`PROVENANCE_ROOT`/`FLAT_ROOT`, dark nested under
+`<capture>/dark/`, z-stack moved to `<capture>/focal/<stack_id>/plane_N/`)
+in `provenance.py`; auto-processing with no Yes/No gate, including Snap
+as a new call site, in `qt_shell.py`'s renamed `_auto_process`; structured
+flat/dark correction status parsed from `hdr_from_session.py`'s
+`CORRECTION_STATUS_JSON:` stdout line and written onto each capture's own
+`session.json` entry; Keep RAW Images off deleting raw frames + the
+linear master once processing succeeds and recording the discard as
+deliberate (`raw_discarded` + `raw_discard_reason`); `measure.py` failing
+legibly (never a silent JPG fallback) on a raw-discarded capture, naming
+the TRUE reason instead of `calibrate.resolve_raw_path`'s generic "file
+moved on its own" wording; `casual_mode.py`'s format handling (DNG/PNG/
+JPG/TIFF + Process DNG merge) and JPG-first delivery lifted into the main
+capture path, then the module deleted.
+
+**Departed from the plan files, settled directly with Brandon mid-build:**
+the lifted format controls live in Preferences > Advanced (persisted,
+live-applied at processing time), not a per-capture control row; TIFF is
+shown as a checkbox for visual parity but is locked checked and disabled,
+since `final.tif`/`final_display.tif` are `debayer.py`'s own structural
+output of the tonemap step this pipeline always runs, not a separately
+gatable export; PNG/JPG/DNG are the three genuinely optional formats,
+gated so an unchecked format is never produced at all (never
+produced-then-deleted). An audit of `gallery.py`/`process_wizard.py`/
+`measure.py` (done before writing any gating code, at Brandon's explicit
+direction) found zero dependency on `final_display.tif`/`.png` existing
+in any of the three, so none of them needed changes.
+
+**Real bugs found and fixed, not anticipated by the plan files:**
+1. `qt_shell.py`'s `_end_zstack` passed capture-side plane directories
+   straight to `_stacks.validate_all`, which reads `session.json` from
+   whatever directory it's given — a regression from this same build's
+   own earlier provenance-split work, silently validating nothing and
+   reporting "No issues found" even for a real stack. Fixed by mapping
+   through `_provenance_dir_for` first, with a new render_check
+   assertion that actually inspects `validate_all`'s output (nothing
+   previously did).
+2. `measure.py`'s z-stack code (`collect_stack_planes`/
+   `_on_exclude_toggled`) and, via it, `stacks.py`'s `load_session`
+   assumed `session.json` sits beside the raw frames — pre-existing
+   coupling the plan files' consumer list didn't name. Would have
+   silently found zero stacks under the new layout. Fixed with
+   `measure.py`'s own `_provenance_dir_for` (duplicated from
+   `qt_shell.py`'s rather than importing the whole Qt capture GUI for
+   one helper); `stacks.py` itself needed no change.
+3. `_auto_process` let `hdr_from_session.py` default `--raw-ext` to
+   `"dng"`, correct on real hardware but silently broken under the
+   default (no `--camera`) `FakeCamera` backend, which writes `.tif`.
+   Fixed by detecting the real extension via `capture_correction_status`,
+   the same mechanism the manual processing wizard already used.
+4. `casual_mode.py` called `hdr_from_session.process()` directly and
+   broke twice as that function's signature changed under it during this
+   build (a new required `a.flat_root`, then a new tuple return) —
+   fixed both times before the module was deleted, so its own
+   `--render-check` kept passing throughout rather than only at the end.
+
+`wizard_pages.py`'s `ImageSourcePage._on_open_existing` also got a
+related fix: picking a raw-discarded Gallery entry used to silently do
+nothing (`GalleryWidget.selected_paths()` drops any entry with
+`raw_path=None`); it now reports why and points at the manual-file
+escape hatch.
+
 ### Intent: Provenance relocation, Keep RAW, and auto-processing (Preferences-dialog plan set, Part 03)
 
 Recording the intent to build Part 03 before any code exists, per this
