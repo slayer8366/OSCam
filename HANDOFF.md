@@ -1207,7 +1207,59 @@ now in it). `stacks.py`, `focus.py`, `plane_cache.py`, and `calibrate.py`'s
 own pure functions run fine without PyQt5 or a display; `qt_shell.py`/
 `measure.py` have PyQt5-gated checks that print `SKIPPED` (not `FAILED`)
 when PyQt5 isn't importable — that's correct, expected behavior, not a bug
-to chase.
+to chase. `camera_backend.py` has no `--render-check` flag of its own —
+its self-check runs unconditionally on `python3 camera_backend.py` — so
+it's not in the loop above; run it separately.
+
+### Fix: Preferences dialog crash on `get_capabilities()` (Part 02 follow-up)
+
+Opening Options > Preferences while the camera was running crashed:
+`RuntimeError: Camera must be stopped before configuring`. Root cause:
+`Picamera2.sensor_modes` is not a passive lookup — reading it internally
+calls `configure()`, which Picamera2 refuses while the camera is running,
+and the main window's preview has always already started the camera by
+the time a user can open Preferences. Part 02's own hardware verification
+missed this because it exercised `get_capabilities()` standalone, against
+a `Picamera2()` that was not mid-preview — the translation logic itself
+(favoring `"unpacked"` over the raw `PixelFormat` object) was genuinely
+confirmed correct; calling it during the camera's actual normal running
+state, the only state the real UI ever calls it in, was not.
+
+**Fix, not workaround**: `sensor_modes` describes fixed hardware
+capability that cannot change between construction and any later point in
+the same process, so it is queried exactly once — in
+`Picamera2Camera.__init__`, while construction is still in progress and
+before `start()` can possibly have run — and cached on
+`self._capabilities`. `get_capabilities()` returns that cached dict on
+every later call and never touches `_picam2` again; external contract
+(signature, return shape) is unchanged, so `PreferencesDialog` needed no
+changes at all. `FakeCamera` got the identical caching shape (eager
+`__init__` priming, cache-or-compute) purely for symmetry between the two
+backend classes — its own synthetic result never changes regardless.
+
+If you touch either class's `get_capabilities()` again: do NOT add a
+stop-query-restart dance around a live call — there is no case that needs
+the camera paused just to re-answer a question that hasn't changed since
+construction. Also do not assume the returned dict is safe to mutate in
+place across callers — it's the same cached object every time now, not a
+fresh one per call (see `qt_shell.py`'s `PreferencesDialog.__init__`,
+which only ever reads via `.get(...)`, never mutates).
+
+**Verification split, same honest pattern as everywhere else in this
+project**: the self-check (`camera_backend.py`, run directly — see above)
+proves the caching CONTRACT — a second `get_capabilities()` call returns
+the exact same cached object (`is`, not just an equal value), both for
+`__init__`'s own eager priming and a forced cold first computation —
+against `FakeCamera`, the only one of the two classes constructible
+off-rig (`Picamera2Camera.__init__` also builds a real GL preview widget,
+on top of needing real hardware). **On-rig confirmation is now done**:
+reproduced the original crash first (opened Preferences while the preview
+was running, on the real Pi 5 + IMX477, confirmed via photos of the
+crash), then confirmed the fix removes it — same sequence, no crash,
+Preferences shows the same real capture resolutions/formats Part 02's own
+standalone verification already found. Both halves of this fix — the
+caching contract (self-check) and the actual crash being gone
+(hardware) — are independently verified.
 
 ## Things that will bite you if you don't know them
 

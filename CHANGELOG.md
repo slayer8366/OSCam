@@ -7,6 +7,58 @@ this file is the historical record of what happened and why.
 
 ## 2026-07-25
 
+### Fix: Preferences dialog crash on `get_capabilities()`
+
+Bug fix to landed code (Part 02's capability query), not a new plan set —
+full design in a user-provided `PLAN_fix_capabilities_cache.md` (not
+checked into the repo). One function changes shape, in each backend class.
+
+**Root cause**: opening Options > Preferences while the camera is running
+crashed with `RuntimeError: Camera must be stopped before configuring`.
+`Picamera2.sensor_modes` is not a passive lookup — reading it internally
+calls `configure()`, which Picamera2 refuses while the camera is running.
+By the time a user opens Preferences, the main window's preview has
+already started the camera, so a live `get_capabilities()` call in that
+ordering always fails. This slipped past Part 02's own hardware
+verification because that verification exercised `get_capabilities()`
+standalone, against a `Picamera2()` not mid-preview — the translation
+logic itself was genuinely confirmed correct; calling it during the
+camera's actual normal running state (the only state the real UI ever
+calls it in) was not.
+
+**The fix**: `sensor_modes` describes fixed hardware capability — it
+cannot change between camera construction and any later point in the same
+process, so there is nothing to gain by re-querying live and real risk in
+doing so (this crash). `Picamera2Camera.__init__` now queries
+`get_capabilities()` once, itself, while construction is still in
+progress and before `start()` can possibly have been called by the GUI,
+and caches the result on `self._capabilities`. `get_capabilities()`
+itself now returns the cached dict on every later call, never touching
+`_picam2` again — same external contract (signature, return shape)
+throughout, so `PreferencesDialog` needed zero changes (confirmed, per
+the plan's own instruction that a needed change there would mean the
+cached shape had drifted from the live one — it hadn't).
+`FakeCamera.get_capabilities()` gets the identical caching shape (eager
+`__init__` priming, cache-or-compute on call) for consistency, even
+though its synthetic result never changes anyway — kept both classes'
+behavior symmetric per the plan.
+
+**Verification**: `camera_backend.py`'s self-check gained a cache-identity
+assertion — a second `get_capabilities()` call returns the exact same
+cached object (`is`, not just an equal value) for both `__init__`'s own
+eager priming and a forced cold first computation, proving the cached
+branch actually runs rather than merely producing a value that happens to
+look right twice. `Picamera2Camera` itself cannot be constructed off-rig
+at all (no hardware, and its `__init__` also builds a real GL preview
+widget), so confirming its `sensor_modes` is genuinely read only once, and
+that the original crash is actually gone, needed the rig — now done: the
+original crash was reproduced first (Preferences opened while the preview
+was running, on the real Pi 5 + IMX477, photographed), then the fix
+confirmed to remove it, same sequence, no crash, same real capture
+resolutions/formats Part 02's own standalone verification already found.
+Full `--render-check` sweep across all 16 `--render-check`-bearing modules
+plus `camera_backend.py`'s own self-check: all pass.
+
 ### Build: Live measure panel (Preferences-dialog plan set, Part 05)
 
 Builds the intent recorded below. Full `--render-check` sweep passes

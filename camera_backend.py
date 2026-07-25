@@ -339,6 +339,12 @@ class FakeCamera(CameraBackend):
         # stream_resolutions are omitted. Pass True to exercise the
         # present-key rendering path off-rig, since the real driver can't.
         self._stream_caps = bool(stream_caps)
+        # Capability cache (Fix: Preferences dialog crash on
+        # get_capabilities()): computed once and reused on every later call.
+        # FakeCamera's synthetic result never changes anyway, but the same
+        # caching shape as Picamera2Camera keeps the two classes symmetric
+        # and lets --render-check assert "computed once" against either.
+        self._capabilities = None
         self._source = source
         self._frame_source = frame_source
         self._rng = np.random.default_rng(seed)
@@ -370,6 +376,13 @@ class FakeCamera(CameraBackend):
         # Video recording state (see start_recording/stop_recording below).
         self._recording_path: Optional[Path] = None
         self._video_res = PREVIEW_RES   # matches Picamera2Camera's own default
+
+        # Primed here, not left to the first caller, for symmetry with
+        # Picamera2Camera (whose own priming is load-bearing there -- see its
+        # __init__): keeps both classes' "computed once, at construction"
+        # contract identical, even though FakeCamera has no live-camera
+        # hazard of its own to avoid.
+        self._capabilities = self.get_capabilities()
 
     def start(self) -> None:
         self.started = True
@@ -571,6 +584,12 @@ class FakeCamera(CameraBackend):
 
     # --- capability query ----------------------------------------------------
     def get_capabilities(self) -> dict:
+        # Cached (Fix: Preferences dialog crash on get_capabilities()): see
+        # Picamera2Camera's own get_capabilities for why this shape exists at
+        # all -- FakeCamera mirrors it for consistency, not because its own
+        # synthetic result could ever change.
+        if self._capabilities is not None:
+            return self._capabilities
         # A small, clearly-synthetic set -- plausible numbers, not real
         # hardware ones, so the Preferences dialog is buildable and testable
         # with no Pi. See __init__'s note on self._stream_caps.
@@ -583,6 +602,7 @@ class FakeCamera(CameraBackend):
         if self._stream_caps:
             caps["stream_formats"] = ["YUY2", "MJPEG"]
             caps["stream_resolutions"] = [(1280, 720), (640, 480)]
+        self._capabilities = caps
         return caps
 
 
@@ -688,6 +708,21 @@ class Picamera2Camera(CameraBackend):
         # Video recording state (see start_recording/stop_recording below).
         self._encoder = None
         self._recording_path: Optional[Path] = None
+
+        # Capability cache (Fix: Preferences dialog crash on
+        # get_capabilities()): self._picam2.sensor_modes is not a passive
+        # lookup -- reading it internally calls Picamera2.configure(), which
+        # raises RuntimeError if the camera is already running. By the time a
+        # user opens Preferences, start() (called by the GUI right after
+        # construction) has already made the camera running, so a live query
+        # at that point always crashes. sensor_modes describes fixed hardware
+        # capability -- it cannot change between construction and any later
+        # point in this process -- so it is queried exactly once, HERE, while
+        # construction is still in progress and before start() can possibly
+        # have been called, and cached. get_capabilities() below returns this
+        # cached value on every later call and never touches _picam2 again.
+        self._capabilities = None
+        self._capabilities = self.get_capabilities()
 
     def start(self) -> None:
         # ON-RIG: confirm make_array("lores") works in post_callback on your version.
@@ -1107,8 +1142,18 @@ class Picamera2Camera(CameraBackend):
     def video_resolution(self):
         return self._video_res
 
-    # --- capability query (PLAN_02_camera_capability_query.md) -------------
+    # --- capability query (PLAN_02_camera_capability_query.md;
+    # PLAN_fix_capabilities_cache.md for the caching added after) ----------
     def get_capabilities(self) -> dict:
+        # Cached: see __init__'s own note on why this cannot be a live query
+        # every call -- self._picam2.sensor_modes triggers an internal
+        # configure(), which raises if the camera is already running (the
+        # real crash this caching exists to close). Computed once, at
+        # construction, before start() can possibly have run; every later
+        # call (e.g. from PreferencesDialog while the preview is live)
+        # returns the cached dict without touching _picam2 again.
+        if self._capabilities is not None:
+            return self._capabilities
         # ON-RIG: reads self._picam2.sensor_modes and translates every value
         # to a plain Python primitive before it crosses the seam. sensor_modes'
         # own "format" field is a libcamera PixelFormat object -- NEVER read
@@ -1137,6 +1182,7 @@ class Picamera2Camera(CameraBackend):
         # stream_resolutions are omitted entirely -- absent, not empty. That
         # is the honest answer today; a future streaming feature adds the
         # keys here when it actually exists, not before.
+        self._capabilities = caps
         return caps
 
 
@@ -1349,6 +1395,42 @@ if __name__ == "__main__":
         assert caps2.get("stream_formats") and caps2.get("stream_resolutions"), \
             "stream_caps=True should populate both stream keys"
         print("get_capabilities (stream_caps=True) PASS:", caps2)
+
+        # Capability cache (Fix: Preferences dialog crash on
+        # get_capabilities()): a fresh FakeCamera already has __init__'s own
+        # eager call cached before any explicit get_capabilities() call is
+        # even made -- caps above (from the untouched `cam` built earlier)
+        # must be the SAME object __init__ primed, not a fresh dict built on
+        # this call, proving the cached branch (not recomputation) is what
+        # ran. Object identity (`is`), not just equal values -- the whole
+        # point of caching is that get_capabilities() stops doing the
+        # (real-hardware: possibly crash-triggering) work on every call, and
+        # only identity actually proves that. This exercises the shared
+        # caching CONTRACT both backend classes share; Picamera2Camera's own
+        # copy of it needs a real Picamera2 to construct at all (its
+        # __init__ also builds a GL preview widget), so confirming its
+        # sensor_modes is genuinely read only once -- and that the original
+        # "camera must be stopped before configuring" crash is actually gone
+        # -- is on-rig-only verification, not something this self-check can
+        # cover; see HANDOFF.md's note on this fix for the on-rig procedure.
+        assert cam.get_capabilities() is caps, \
+            "a second call must return the exact cached object __init__ " \
+            "already primed, not recompute a fresh one"
+        # Isolates the lazy compute-then-cache branch itself (not just
+        # __init__'s own eager priming, already proven above): force a cold
+        # cache, then confirm the FIRST real computation still caches, so a
+        # second call afterward is identity-equal to it too.
+        again = FakeCamera()
+        again._capabilities = None
+        first_call = again.get_capabilities()
+        second_call = again.get_capabilities()
+        assert first_call is second_call, \
+            "the first real computation must itself be cached, not just " \
+            "__init__'s own eager priming"
+        print("get_capabilities cache check PASS: a second call returns the "
+              "exact same cached object (identity, not just equal value), "
+              "both for __init__'s own eager priming and a cold first "
+              "real computation")
 
         assert_only_camera_backend_imports_picamera2()
         print("assert_only_camera_backend_imports_picamera2 PASS: no other "
