@@ -143,9 +143,9 @@ once that's done.
 **Part 01 (Preferences dialog) — now built and committed.** See the
 "Preferences dialog" section below for what landed.
 
-**Part 03 (provenance relocation, Keep RAW, auto-processing) — intent
-recorded, not yet built.** See the dedicated section below for the full
-design. This is the part that supersedes and deletes `casual_mode.py`.
+**Part 03 (provenance relocation, Keep RAW, auto-processing) — now built
+and committed.** See the dedicated section below for the full design.
+This is the part that supersedes and deletes `casual_mode.py`.
 
 ### Preferences dialog (Preferences-dialog plan set, Part 01)
 
@@ -454,19 +454,19 @@ design, the real-hardware timing finding that changed a default, and what
 landed. Depended on Part 01 for its Advanced-tab controls, per
 `PLAN_00_context_and_supersession.md`'s own dependency order.
 
-**Part 05 (live measure panel) — intent recorded, not yet built.** See
-the dedicated section below (after Part 04's own section) for the full
-design. Depends on Part 04 (built) for the cache a committed mark points
-at. The only part of this plan set that adds a genuinely new user-facing
-capability — everything before it was relocation, configuration, or
-housekeeping.
+**Part 05 (live measure panel) — now built.** See the dedicated section
+below (after Part 04's own section) for the full design, the real
+eventFilter-wiring bug found resuming a session that dropped mid-build,
+and the render_check coverage added. Depended on Part 04 (built) for the
+cache a committed mark points at. The only part of this plan set that
+adds a genuinely new user-facing capability — everything before it was
+relocation, configuration, or housekeeping. This closes out the
+Preferences-dialog plan set (Parts 01–05), all built.
 
-Nothing is currently in progress. Provenance relocation/Keep RAW/
-auto-processing (Part 03) and the green-plane cache (Part 04) are both
-done — verified with a full `--render-check` sweep across all 16 modules
-(`casual_mode.py` stays deleted; `plane_cache.py`, Part 04's new module,
-is the 16th). Part 05 (live measure panel) has intent recorded; build is
-next.
+Nothing is currently in progress. All five parts of the Preferences-
+dialog plan set are done — verified with a full `--render-check` sweep
+across all 16 modules (`casual_mode.py` stays deleted; `plane_cache.py`,
+Part 04's new module, is the 16th).
 
 ### Debayer.py tonemap/write split (Part 03 follow-up, same day) — BUILT
 
@@ -658,14 +658,28 @@ modules, passes. Extraction/store timing above is real-hardware-verified
 consistency, not that it works on the rig — the timing numbers here are
 the hardware half, run separately, not inferred from the self-check).
 
-### Live measure panel (Preferences-dialog plan set, Part 05) — DESIGN, NOT YET BUILT
+### Live measure panel (Preferences-dialog plan set, Part 05) — BUILT
 
-Intent recorded (`CHANGELOG.md`'s matching entry); no code has landed for
-this part yet. Full design in `PLAN_00_context_and_supersession.md` and
+Full design in `PLAN_00_context_and_supersession.md` and
 `PLAN_05_live_measure_panel.md` (drafted, not checked into the repo). The
 only part of this plan set that adds a genuinely new user-facing
 capability — everything else was relocation, configuration, or
 housekeeping.
+
+**Real bug found resuming a dropped session, now fixed**: the bulk of
+this part's code (`_LiveMeasureCanvas`, `LiveMeasurePanel`, the
+`_live_measure_*` state machine on `FocusPreviewWindow`) had already
+landed uncommitted when the prior session dropped, including a fully
+written `_live_measure_preview_event` — but it was never actually wired
+into `eventFilter`. `self.preview`'s ordinary box-drag (`_press`/`_move`)
+would have kept firing on every click while the panel was open, and the
+freeze-triggering click would never have happened at all. `eventFilter`
+now checks `self._live_measure_active` first and routes to
+`_live_measure_preview_event` (which consumes the event unconditionally)
+before falling through to the box-drag branches — see
+`qt_shell.py`'s `eventFilter` for the fix. This is exactly the kind of
+gap `--render-check` coverage exists to catch, which is also why none
+existed yet for this part: the build had stopped before verification.
 
 **What it is**: a small floating panel (`Qt.Tool`, native title bar so the
 window manager gives it dragging and a close button for free, non-modal so
@@ -781,17 +795,30 @@ cover that branch — not exercised through the live GUI path, since
 from (the standing "`FakeCamera` cannot exercise everything" caution
 `PLAN_00` itself repeats).
 
-**Verification, planned**: self-check-only, no access to the rig this
-session — same honest split `PLAN_00` asks for. `--render-check` will
-prove: the click's own coordinates convert to the plane's actual native
-pixel coordinates (asserted on the real converted values, not just "a mark
-exists" — this is the claim the whole freeze design rests on); freezing
-happens exactly once per panel session and the hash is stable across
-later clicks; a commit writes to a temp-redirected `annotations.json`
-keyed to the frozen plane's real hash; closing discards uncommitted marks
-and keeps committed ones; Point is greyed on a miss and live on a hit;
-Delete never touches a committed mark; the three pen states are visually
-distinct in the scene. Hardware verification (a real first-click freeze
+**Verification**: self-check-only, no access to the rig this session —
+same honest split `PLAN_00` asks for. `qt_shell.py --render-check`'s new
+"Live measure panel" block proves: `native_point_from_preview_click`
+scales the real `frac_from_point` fraction into the green plane's actual
+resolution (asserted on the real converted values, not just "a mark
+exists" — this is the claim the whole freeze design rests on); the
+freeze-triggering click is driven through the REAL `eventFilter`, not
+called directly, which is what actually caught the wiring bug above and
+proves ordinary box-drag is suppressed while the panel is open; freezing
+happens exactly once per panel session (a second, stray click routed to
+`self.preview` post-freeze is a no-op; the hash stays stable) and a real
+`FakeCamera(capture_shape=...)` capture round-trips through
+`load_measurement_plane`'s already-extracted-green branch; a finished
+2-point shape (built the same way as the freeze's own first point, via
+`add_point_programmatic`, the same entry point the canvas's own
+`mousePressEvent` uses) holds in memory with the uncommitted pen; Point
+hit-test misses empty space and finds a real mark by its own segment
+geometry (`live_measure_mark_segments` + `mapFromScene`); commit writes
+to a temp-redirected `_calibrate.CALIBRATION_PATH`/`_annotations.
+ANNOTATION_PATH` pair (a real `40x` calibration entry, not a hand-fed
+`um_per_px`) and flips the pen to the committed color; Delete is a no-op
+against a committed mark; closing discards every uncommitted entry,
+restores the live preview, and leaves the already-committed mark
+untouched in the store. Hardware verification (a real first-click freeze
 feeling instant on the rig, per Part 04's own timing caveat about `save_
 dng`'s ~530 ms) is explicitly NOT claimed until run on the actual Pi.
 

@@ -54,6 +54,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import tempfile
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -170,6 +171,34 @@ except ImportError:
         import plane_cache as _plane_cache
     except ImportError:
         _plane_cache = None
+
+# annotations.py's mark store (Preferences-dialog plan set, Part 05): the
+# live measure panel builds marks with the same build_*_mark calls
+# measure.py's own commit path uses, and writes them with the same
+# save_mark, once committed. None (the Live measure... action reports
+# unavailable rather than crashing) if annotations.py is not alongside
+# this file.
+try:
+    from . import annotations as _annotations
+except ImportError:
+    try:
+        import annotations as _annotations
+    except ImportError:
+        _annotations = None
+
+# pixel_hash.py (Preferences-dialog plan set, Part 05): the live measure
+# panel hashes a frozen plane itself (the same key plane_cache.store_plane
+# and annotations.save_mark both key on), rather than trusting store_plane
+# to compute it silently -- so the hash used to inject the first click's
+# point and to look up the record afterward is known to be the exact same
+# value the cache and the store settled on.
+try:
+    from . import pixel_hash as _pixel_hash
+except ImportError:
+    try:
+        import pixel_hash as _pixel_hash
+    except ImportError:
+        _pixel_hash = None
 
 # The green plane calibrate.py measures on: half the sensor's resolution each
 # axis (see debayer.py's extract_green / the build checklist's own invariant).
@@ -311,9 +340,11 @@ try:
                                  QHBoxLayout, QSplitter, QMessageBox, QInputDialog,
                                  QDialog, QComboBox, QActionGroup, QFileDialog,
                                  QFormLayout, QGroupBox, QSpinBox, QLineEdit,
-                                 QDialogButtonBox)
-    from PyQt5.QtCore import QTimer, Qt, QRect, QEvent, pyqtSignal, QObject
-    from PyQt5.QtGui import QImage, QPainter, QKeyEvent, QCloseEvent
+                                 QDialogButtonBox, QStackedLayout, QMenu,
+                                 QGraphicsView, QGraphicsScene, QButtonGroup)
+    from PyQt5.QtCore import QTimer, Qt, QRect, QEvent, pyqtSignal, QObject, QPointF
+    from PyQt5.QtGui import (QImage, QPainter, QKeyEvent, QCloseEvent, QPen,
+                             QColor, QPolygonF, QMouseEvent)
     _HAVE_QT = True
 except ImportError:                 # PyQt5 absent: --render-check still runs
     _HAVE_QT = False
@@ -436,6 +467,102 @@ def opposite_corner(box, fx, fy, handle=HANDLE_FRAC):
     for (cx, cy), (ox, oy) in pairs:
         if abs(fx - cx) <= handle and abs(fy - cy) <= handle:
             return ox, oy
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Live measure panel (Preferences-dialog plan set, Part 05): pure, Qt-free
+# helpers. The freeze-triggering click's own preview-widget coordinates
+# reuse frac_from_point/displayed_rect above -- this is that same
+# preview-to-sensor mapping, scaled into the green plane's own native
+# pixel size instead of a fractional focus box.
+# ---------------------------------------------------------------------------
+
+LIVE_MEASURE_HIT_RADIUS_PX = 14   # right-click hit-test grab radius, in VIEW-space
+                                  # pixels (not scene-space), so the grab stays the
+                                  # same regardless of the canvas's own zoom level
+
+
+def native_point_from_preview_click(px, py, disp_rect, green_plane_res):
+    """A preview-widget click (px, py) converted to the frozen green plane's
+    own native pixel coordinates -- the exact "preview-to-sensor" mapping
+    PLAN_05 calls for. Reuses frac_from_point's existing letterboxing-aware
+    fraction (never a naive width/height ratio, which would be wrong the
+    moment the widget's aspect differs from the sensor's), then scales that
+    fraction into green_plane_res. This is what makes the freeze-triggering
+    click usable as the shape tool's own first point, not a throwaway
+    trigger click -- see PLAN_05's own reasoning for why an exact
+    conversion of the RIGHT input (the click that happened) is fine, even
+    though the live preview itself is display-referred."""
+    fx, fy = frac_from_point(px, py, disp_rect)
+    return fx * green_plane_res[0], fy * green_plane_res[1]
+
+
+def _live_measure_tool_hint(name):
+    return {
+        "distance": "distance: click the feed to freeze, then a second point",
+        "angle": "angle: click the feed to freeze (vertex), then two arm points",
+        "polygon": "polygon: click the feed to freeze, then each vertex, "
+                  "double-click to finish (3+ points)",
+        "ellipse": "ellipse: click the feed to freeze, then 5+ boundary "
+                  "points, double-click to finish",
+    }.get(name, "Pick a shape, then click on the live feed.")
+
+
+def _live_measure_point_status(tool, n):
+    if tool == "distance":
+        return "distance: {} of 2 points".format(n)
+    if tool == "angle":
+        return "angle: {} of 3 points (vertex first)".format(n)
+    if tool == "polygon":
+        return "polygon: {} point(s), double-click to finish (3+ needed)".format(n)
+    if tool == "ellipse":
+        return "ellipse: {} point(s), double-click to finish (5+ needed)".format(n)
+    return ""
+
+
+def dist_point_to_segment_px(p, a, b):
+    """Point-to-segment distance, plain (x, y) tuples in and out -- pure,
+    Qt-free. Used by the live measure panel's right-click hit test against
+    each mark's own geometry, already converted to VIEW-space coordinates
+    by the caller (mapFromScene), so LIVE_MEASURE_HIT_RADIUS_PX means the
+    same thing regardless of canvas zoom."""
+    px, py = p
+    ax, ay = a
+    bx, by = b
+    dx, dy = bx - ax, by - ay
+    length2 = dx * dx + dy * dy
+    if length2 == 0:
+        return math.hypot(px - ax, py - ay)
+    t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / length2))
+    cx, cy = ax + t * dx, ay + t * dy
+    return math.hypot(px - cx, py - cy)
+
+
+def live_measure_mark_segments(mark):
+    """The mark's own geometry, decomposed into (a, b) point-pairs (plain
+    (x, y) tuples) for hit-testing -- a distance mark is one segment; angle
+    is its two arms (vertex to each); polygon and ellipse (its boundary
+    click points, the same shape a polygon's hit test already handles) are
+    their closed edge loops. None for an unrecognized mark type. Pure,
+    Qt-free: the caller converts each pair to view coordinates."""
+    t = mark.get("type")
+    if t == "distance":
+        p = mark["input"]["points"]
+        return [(tuple(p[0]), tuple(p[1]))]
+    if t == "angle":
+        v = tuple(mark["input"]["vertex"])
+        a = tuple(mark["input"]["arm_a"])
+        b = tuple(mark["input"]["arm_b"])
+        return [(v, a), (v, b)]
+    if t == "polygon":
+        pts = [tuple(pt) for pt in mark["input"]["points"]]
+        n = len(pts)
+        return [(pts[i], pts[(i + 1) % n]) for i in range(n)]
+    if t == "ellipse":
+        pts = [tuple(pt) for pt in mark["input"]["boundary_points"]]
+        n = len(pts)
+        return [(pts[i], pts[(i + 1) % n]) for i in range(n)]
     return None
 
 
@@ -1471,6 +1598,255 @@ if _HAVE_QT:
             save_pref("theme", self._theme_combo.currentData())
 
 
+    class _LiveMeasureCanvas(QGraphicsView):
+        """The frozen-plane canvas for the live measure panel (Preferences-
+        dialog plan set, Part 05). Modeled on measure.py's own MeasureView
+        (same click-count-per-shape interaction: 2 points for distance, 3
+        for angle, double-click to finish a 3+-point polygon or a
+        5+-point ellipse) but a SEPARATE class, not that one reused --
+        measure.py stays untouched, per the plan, and this canvas needs two
+        things MeasureView doesn't: per-mark QGraphicsItem tracking (so a
+        specific mark can be recolored on commit or removed on delete --
+        MeasureView's own draw_* methods discard their item references
+        immediately) and a three-way visual state instead of MeasureView's
+        two. window_ (a FocusPreviewWindow) owns all tool/mark-lifecycle
+        DECISIONS (what tool is active, whether a finished shape becomes a
+        real mark, commit/delete); this class owns click handling and
+        drawing only, the same division of labor MeasureView/MeasureWindow
+        already use."""
+
+        # IN_PROGRESS: dashed, while a shape's points are still being
+        # clicked -- same color/style MeasureView's own PENDING_PEN uses,
+        # since it is semantically the same "still clicking" state.
+        IN_PROGRESS_PEN = QPen(QColor(255, 210, 80), 2)
+        # UNCOMMITTED: a finished shape, not yet committed -- solid, but a
+        # different color from both other states, so "done but not saved"
+        # reads as its own thing, not a variant of either.
+        UNCOMMITTED_PEN = QPen(QColor(255, 140, 0), 2)
+        # COMMITTED: identical color to measure.py's own MARK_PEN (80, 220,
+        # 255) -- a mark looks the same here as it will when measure.py
+        # later opens this same plane by hash. Not imported from measure.py
+        # (that would reach into a module this feature is told not to
+        # touch, just to read a constant); the color is duplicated here on
+        # purpose, matched by eye against measure.py's own MARK_PEN.
+        COMMITTED_PEN = QPen(QColor(80, 220, 255), 2)
+        POINT_RADIUS = 4
+
+        def __init__(self, window):
+            self.scene_ = QGraphicsScene()
+            super().__init__(self.scene_)
+            self.window_ = window
+            self.setRenderHint(QPainter.Antialiasing)
+            self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
+            self._pixmap_item = None
+            self._pending_points = []   # native green-plane (x, y) floats
+            self._pending_items = []    # scene items for the in-progress shape
+
+        def set_image(self, pixmap):
+            self.scene_.clear()
+            self._pixmap_item = self.scene_.addPixmap(pixmap)
+            self.scene_.setSceneRect(self._pixmap_item.boundingRect())
+            self._pending_points = []
+            self._pending_items = []
+            self.resetTransform()
+            self.fitInView(self._pixmap_item, Qt.KeepAspectRatio)
+
+        def wheelEvent(self, ev):
+            factor = 1.15 if ev.angleDelta().y() > 0 else 1 / 1.15
+            self.scale(factor, factor)
+
+        def mousePressEvent(self, ev):
+            if self._pixmap_item is None:
+                super().mousePressEvent(ev)
+                return
+            if ev.button() == Qt.RightButton:
+                self._show_context_menu(ev.pos())
+                return
+            if self.window_._live_measure_tool is None:
+                super().mousePressEvent(ev)
+                return
+            self._add_point(self.mapToScene(ev.pos()))
+
+        def mouseDoubleClickEvent(self, ev):
+            min_points = {"polygon": 3, "ellipse": 5}.get(self.window_._live_measure_tool)
+            if min_points is not None and len(self._pending_points) >= min_points:
+                self._finish_pending()
+            else:
+                super().mouseDoubleClickEvent(ev)
+
+        def keyPressEvent(self, ev):
+            if ev.key() == Qt.Key_Escape:
+                self._clear_pending()
+                self.window_._live_measure_on_point_added([])
+            else:
+                super().keyPressEvent(ev)
+
+        def add_point_programmatic(self, x, y):
+            """Injects the freeze-triggering click's own (already-converted,
+            native green-plane) coordinates as the shape tool's first point,
+            exactly as if the user had clicked there on the frozen image --
+            see native_point_from_preview_click. Called once, right after
+            set_image, by the window's own freeze-completion handler."""
+            self._add_point(QPointF(x, y))
+
+        def _add_point(self, pt):
+            self._pending_points.append((pt.x(), pt.y()))
+            self._draw_pending_point(pt)
+            self.window_._live_measure_on_point_added(list(self._pending_points))
+            needed = {"distance": 2, "angle": 3}.get(self.window_._live_measure_tool)
+            if needed is not None and len(self._pending_points) >= needed:
+                self._finish_pending()
+
+        def _finish_pending(self):
+            points = list(self._pending_points)
+            self._clear_pending()
+            self.window_._live_measure_finish_points(points)
+
+        def _draw_pending_point(self, pt):
+            r = self.POINT_RADIUS
+            item = self.scene_.addEllipse(pt.x() - r, pt.y() - r, 2 * r, 2 * r,
+                                          self.IN_PROGRESS_PEN)
+            self._pending_items.append(item)
+            if len(self._pending_points) >= 2:
+                a = self._pending_points[-2]
+                self._pending_items.append(
+                    self.scene_.addLine(a[0], a[1], pt.x(), pt.y(), self.IN_PROGRESS_PEN))
+
+        def _clear_pending(self):
+            for it in self._pending_items:
+                self.scene_.removeItem(it)
+            self._pending_items = []
+            self._pending_points = []
+
+        # --- finished marks: drawn with an explicit pen, items returned so
+        # the caller (window_) can track/recolor/remove them individually --
+        # the one real difference from measure.py's own draw_distance/
+        # draw_angle/draw_polygon/draw_ellipse, which discard their items.
+        def draw_mark(self, mark, pen):
+            t = mark.get("type")
+            if t == "distance":
+                p = mark["input"]["points"]
+                return [self.scene_.addLine(p[0][0], p[0][1], p[1][0], p[1][1], pen)]
+            if t == "angle":
+                v = mark["input"]["vertex"]
+                a = mark["input"]["arm_a"]
+                b = mark["input"]["arm_b"]
+                return [self.scene_.addLine(v[0], v[1], a[0], a[1], pen),
+                        self.scene_.addLine(v[0], v[1], b[0], b[1], pen)]
+            if t == "polygon":
+                pts = mark["input"]["points"]
+                return [self.scene_.addPolygon(
+                    QPolygonF([QPointF(x, y) for x, y in pts]), pen)]
+            if t == "ellipse":
+                cx, cy = mark["derived"]["center"]
+                major_px, minor_px = mark["derived"]["axes_px"]
+                item = self.scene_.addEllipse(-major_px, -minor_px,
+                                              2 * major_px, 2 * minor_px, pen)
+                item.setPos(cx, cy)
+                item.setRotation(mark["derived"]["angle_deg"])
+                return [item]
+            return []
+
+        # --- right-click menu: Commit > Point/All, Delete > Point/All, per
+        # PLAN_05 exactly -- no extra entries. Escape (keyPressEvent above)
+        # is what cancels an in-progress click sequence, so this menu never
+        # needs a third meaning layered onto it.
+        def _show_context_menu(self, pos):
+            entry = self.window_._live_measure_hit_test((pos.x(), pos.y()), self)
+            marks = self.window_._live_measure_marks
+            menu = QMenu(self)
+            commit_menu = menu.addMenu("Commit")
+            commit_point = commit_menu.addAction("Point")
+            commit_all = commit_menu.addAction("All")
+            delete_menu = menu.addMenu("Delete")
+            delete_point = delete_menu.addAction("Point")
+            delete_all = delete_menu.addAction("All")
+            # Point acts on the mark under the cursor; greyed out on empty
+            # space (PLAN_05) rather than falling back to a nearest mark.
+            # Also greyed for a HIT on an already-committed mark: Commit has
+            # nothing left to do, and Delete structurally can't (the store
+            # never deletes) -- both are about the specific mark under the
+            # cursor, not a generic enable/disable on "anything exists".
+            commit_point.setEnabled(entry is not None and not entry["committed"])
+            delete_point.setEnabled(entry is not None and not entry["committed"])
+            commit_all.setEnabled(any(not e["committed"] for e in marks))
+            delete_all.setEnabled(any(not e["committed"] for e in marks))
+            chosen = menu.exec_(self.mapToGlobal(pos))
+            if chosen is commit_point and entry is not None:
+                self.window_._live_measure_commit_entry(entry)
+            elif chosen is commit_all:
+                self.window_._live_measure_commit_all()
+            elif chosen is delete_point and entry is not None:
+                self.window_._live_measure_delete_entry(entry)
+            elif chosen is delete_all:
+                self.window_._live_measure_delete_all()
+
+
+    class LiveMeasurePanel(QWidget):
+        """The floating shape-picker for the live measure feature
+        (Preferences-dialog plan set, Part 05) -- the ONE genuinely new
+        user-facing capability in this plan set; everything else was
+        relocation, configuration, or housekeeping.
+
+        Qt.Tool, no FramelessWindowHint: a small utility window the window
+        manager decorates with its own native title bar (dragging, a close
+        button) for free -- unlike full-screen mode's own floating panel
+        (Qt.Tool | Qt.FramelessWindowHint), which is composited invisibly on
+        purpose. This one is meant to be dragged out of the way and closed
+        by the user, so it keeps normal window chrome. Non-modal, so the
+        live feed underneath stays interactive while this is open.
+
+        Closing it (native close button, or any window-manager equivalent)
+        is what exits live measure mode -- closeEvent hands off to the main
+        window's own cleanup (_live_measure_close) rather than doing any of
+        it here, since the main window owns the frozen plane, the marks,
+        and the preview/canvas swap."""
+
+        def __init__(self, window):
+            super().__init__(window, Qt.Tool)
+            self.window_ = window
+            self.setWindowTitle("Live measure")
+
+            self.distance_btn = QPushButton("Distance")
+            self.angle_btn = QPushButton("Angle")
+            self.polygon_btn = QPushButton("Polygon")
+            self.ellipse_btn = QPushButton("Ellipse")
+            for btn in (self.distance_btn, self.angle_btn, self.polygon_btn, self.ellipse_btn):
+                btn.setCheckable(True)
+
+            self.tool_group = QButtonGroup(self)
+            self.tool_group.setExclusive(True)
+            for name, btn in (("distance", self.distance_btn),
+                             ("angle", self.angle_btn),
+                             ("polygon", self.polygon_btn),
+                             ("ellipse", self.ellipse_btn)):
+                self.tool_group.addButton(btn)
+                btn.toggled.connect(lambda checked, n=name: self._on_tool_toggled(n, checked))
+
+            self.status_label = QLabel(_live_measure_tool_hint(None))
+            self.status_label.setWordWrap(True)
+
+            row = QHBoxLayout()
+            row.addWidget(self.distance_btn)
+            row.addWidget(self.angle_btn)
+            row.addWidget(self.polygon_btn)
+            row.addWidget(self.ellipse_btn)
+
+            lay = QVBoxLayout(self)
+            lay.addLayout(row)
+            lay.addWidget(self.status_label)
+
+        def _on_tool_toggled(self, name, checked):
+            self.window_._live_measure_set_tool(name if checked else None)
+
+        def set_status(self, text):
+            self.status_label.setText(text)
+
+        def closeEvent(self, ev):
+            self.window_._live_measure_close()
+            super().closeEvent(ev)
+
+
     class FocusPreviewWindow(QMainWindow):
         """The live focus-aid + capture window. Embeds either the on-rig GL
         preview (camera.widget) or the off-rig _FakePreview. A QTimer tick pulls
@@ -1532,6 +1908,13 @@ if _HAVE_QT:
         # archive the session's raws on success, which makes no sense for a
         # standalone extraction that has no session involved at all).
         green_extract_done_signal = pyqtSignal(object)
+
+        # LIVE MEASURE PANEL (Preferences-dialog plan set, Part 05): the
+        # freeze-triggering capture_still_async runs on a worker thread,
+        # same reasoning as every signal above -- this hops a CaptureResult
+        # (or an Exception) back to the GUI thread, where extraction/
+        # hashing/caching and the preview<->canvas swap actually happen.
+        live_measure_freeze_done_signal = pyqtSignal(object)
 
         def __init__(self, camera, meter, tick_ms=33, display_flags=None):
             super().__init__()
@@ -1618,8 +2001,31 @@ if _HAVE_QT:
             # of _toggle_fullscreen) for what this backs.
             self._pre_fullscreen_title = None
 
+            # LIVE MEASURE PANEL (Preferences-dialog plan set, Part 05): see
+            # _launch_live_measure/_live_measure_freeze/_on_live_measure_
+            # freeze_done/_live_measure_close below for the state machine
+            # these back. _live_measure_canvas/_preview_stack are built
+            # once, right after self.preview exists (below); the panel
+            # itself is created lazily, on first launch, like _measure_
+            # window elsewhere in this file.
+            self._live_measure_panel = None
+            self._live_measure_active = False       # the panel is open
+            self._live_measure_frozen = False        # a plane has been pulled
+            self._live_measure_freezing = False       # a freeze capture is in flight
+            self._live_measure_tool = None            # distance/angle/polygon/ellipse/None
+            self._live_measure_plane = None
+            self._live_measure_pixel_sha256 = None
+            self._live_measure_pending_first_point = None
+            self._live_measure_tmp_dir = None
+            # {"mark":, "committed": bool, "items": [QGraphicsItem, ...],
+            #  "objective": str, "um_per_px": float|None} -- um_per_px is
+            #  None only for an angle mark, which needs no calibration.
+            self._live_measure_marks = []
+            self.live_measure_freeze_done_signal.connect(self._on_live_measure_freeze_done)
+
             self.preview = camera.widget if hasattr(camera, "widget") \
                 else _FakePreview(camera)
+            self._live_measure_canvas = _LiveMeasureCanvas(self)
 
             self.readout = QLabel("focus aid off, press F")
             self.capture_status = QLabel("")            # capture state lives here, kept
@@ -1852,8 +2258,23 @@ if _HAVE_QT:
             # growing the window, since a minimum-size request is met but never
             # shrunk back). A splitter's child sizes come from the user's drag, not
             # renegotiated every time a child's size hint changes.
+            # LIVE MEASURE PANEL (Part 05): self.preview no longer goes into
+            # the splitter directly -- it and _live_measure_canvas share one
+            # wrapper via QStackedLayout (which sizes EVERY child to the
+            # container's rect, not just the current one, so self.preview's
+            # own width()/height() -- what _disp_rect() below reads -- keeps
+            # tracking the real displayed size regardless of which child is
+            # on top). Not frozen: the wrapper shows self.preview, live as
+            # always. Frozen: it shows the canvas instead. See
+            # _on_live_measure_freeze_done / _live_measure_close for the swap.
+            self._preview_stack = QWidget()
+            self._preview_stack_layout = QStackedLayout(self._preview_stack)
+            self._preview_stack_layout.addWidget(self.preview)
+            self._preview_stack_layout.addWidget(self._live_measure_canvas)
+            self._preview_stack_layout.setCurrentWidget(self.preview)
+
             splitter = QSplitter(Qt.Horizontal)
-            splitter.addWidget(self.preview)
+            splitter.addWidget(self._preview_stack)
             splitter.addWidget(panel)
             splitter.setStretchFactor(0, 1)   # preview absorbs window resizes
             splitter.setStretchFactor(1, 0)   # panel only changes when dragged
@@ -1948,6 +2369,20 @@ if _HAVE_QT:
             if _measure is None:
                 self._measure_action.setToolTip(
                     "measure.py not found alongside this file")
+
+            # LIVE MEASURE PANEL (Preferences-dialog plan set, Part 05): a
+            # second action on this SAME menu, not a literal "Options >
+            # Measure" -- PLAN_05's own prose predates this app growing its
+            # own top-level Measure menu; this is the real, consistent
+            # placement (see HANDOFF.md's Part 05 section for the full
+            # reasoning), not a deviation worth relitigating.
+            self._live_measure_action = measuremenu.addAction(
+                "Live measure...", self._launch_live_measure)
+            self._live_measure_action.setEnabled(
+                _measure is not None and _annotations is not None)
+            if _measure is None or _annotations is None:
+                self._live_measure_action.setToolTip(
+                    "measure.py and annotations.py must both be alongside this file")
             # --- end measure menu (menu) -----------------------------------------
 
             self.preview.setMouseTracking(True)
@@ -2304,6 +2739,244 @@ if _HAVE_QT:
             # PyQt5 garbage-collects a window with no surviving reference.
             self._measure_window = _measure.MeasureWindow(objective=obj)
             self._measure_window.show()
+
+        # --- LIVE MEASURE PANEL (Preferences-dialog plan set, Part 05) ------
+        def _launch_live_measure(self):
+            """Opens the floating LiveMeasurePanel -- unlike _launch_measure/
+            _launch_calibrate above, this DOES touch the live camera (the
+            freeze-on-first-click capture), so unlike those two there is a
+            real hardware-sharing consideration: the panel and a normal
+            Capture share self._capturing as their busy guard (see
+            _live_measure_freeze), so the two can never collide."""
+            if _measure is None or _annotations is None:
+                return
+            if self._live_measure_panel is not None and self._live_measure_panel.isVisible():
+                self._live_measure_panel.raise_()
+                self._live_measure_panel.activateWindow()
+                return
+            self._live_measure_active = True
+            # Held on self, not a local: PyQt5 garbage-collects a Qt.Tool
+            # window with no surviving Python reference, same reason
+            # _measure_window/_calibrate_window are held above.
+            self._live_measure_panel = LiveMeasurePanel(self)
+            self._live_measure_panel.show()
+
+        def _live_measure_set_tool(self, name):
+            self._live_measure_tool = name
+            self._live_measure_canvas._clear_pending()
+            if self._live_measure_panel is not None:
+                self._live_measure_panel.set_status(_live_measure_tool_hint(name))
+
+        def _live_measure_on_point_added(self, points):
+            if self._live_measure_panel is not None:
+                self._live_measure_panel.set_status(
+                    _live_measure_point_status(self._live_measure_tool, len(points)))
+
+        def _live_measure_preview_event(self, ev):
+            """Routes clicks on self.preview while the live measure panel is
+            open. Consumes every event unconditionally (returns True) so
+            this app's ordinary box-drag interaction (_press/_move, further
+            down in eventFilter) never fires while measure mode has
+            repurposed the same widget's clicks -- the two would otherwise
+            fight over the same drag. Once frozen, self.preview is no
+            longer the visible top of _preview_stack_layout, so it stops
+            receiving mouse events at all (Qt only delivers them to the
+            widget actually under the cursor); the `_live_measure_frozen`
+            check below is a defensive no-op for that state, not the real
+            guard."""
+            if self._live_measure_frozen or self._live_measure_freezing:
+                return True
+            if ev.type() == QEvent.MouseButtonPress and ev.button() == Qt.LeftButton:
+                native = native_point_from_preview_click(
+                    ev.x(), ev.y(), self._disp_rect(), GREEN_PLANE_RES)
+                self._live_measure_freeze(native)
+            return True
+
+        def _live_measure_freeze(self, first_point):
+            """The plan's own load-bearing decision: the first click on the
+            feed pulls a green plane and freezes it under the overlay. Not a
+            provenance event -- no Session, no record_capture, no sidecar;
+            only the cached plane (plane_cache.store_plane, below) has to
+            survive, per Part 04's own framing. Shares self._capturing with
+            the normal capture path as its busy guard, so a freeze can never
+            collide with a real session capture (or vice versa) on the one
+            physical camera."""
+            if self._live_measure_freezing or self._live_measure_frozen:
+                return
+            if self._capturing or self.camera.is_recording():
+                self._set_capture_status(
+                    "Live measure: camera busy, click again",
+                    "a capture or recording is already in progress")
+                return
+            self._live_measure_freezing = True
+            self._live_measure_pending_first_point = first_point
+            self._set_capture_status(
+                "Freezing...", "Live measure: pulling a green plane to measure on")
+            tmp_dir = Path(tempfile.mkdtemp(prefix="zynergy_live_measure_"))
+            self._live_measure_tmp_dir = tmp_dir
+
+            def _on_done(result):
+                self.live_measure_freeze_done_signal.emit(result)
+
+            try:
+                self.camera.capture_still_async(tmp_dir, "freeze", _on_done)
+            except Exception as exc:
+                self.live_measure_freeze_done_signal.emit(exc)
+
+        def _on_live_measure_freeze_done(self, result):
+            tmp_dir = self._live_measure_tmp_dir
+            self._live_measure_tmp_dir = None
+            self._live_measure_freezing = False
+            pending_pt = self._live_measure_pending_first_point
+            self._live_measure_pending_first_point = None
+            try:
+                if isinstance(result, Exception):
+                    self._set_capture_status("Live measure freeze failed", str(result))
+                    return
+                if _measure is None:
+                    self._set_capture_status(
+                        "Live measure unavailable", "measure.py not importable")
+                    return
+                try:
+                    plane = _measure.load_measurement_plane(str(result.raw))
+                except Exception as exc:
+                    self._set_capture_status("Live measure freeze failed", str(exc))
+                    return
+                pixel_sha256 = (_pixel_hash.pixel_sha256(plane)
+                                if _pixel_hash is not None else None)
+                if _plane_cache is not None and pixel_sha256 is not None:
+                    _plane_cache.store_plane(plane, pixel_sha256=pixel_sha256)
+                self._live_measure_plane = plane
+                self._live_measure_pixel_sha256 = pixel_sha256
+                self._live_measure_frozen = True
+                pixmap = _calibrate.array_to_qimage(_calibrate.stretch_to_uint8(plane))
+                self._live_measure_canvas.set_image(pixmap)
+                self._preview_stack_layout.setCurrentWidget(self._live_measure_canvas)
+                if pending_pt is not None and self._live_measure_tool is not None:
+                    self._live_measure_canvas.add_point_programmatic(
+                        pending_pt[0], pending_pt[1])
+                self._set_capture_status(
+                    "Live measure: frozen", "click to continue measuring")
+            finally:
+                if tmp_dir is not None:
+                    shutil.rmtree(tmp_dir, ignore_errors=True)
+
+        def _live_measure_finish_points(self, points):
+            """A shape's points are complete (canvas-driven); build the mark
+            (identical calls to measure.py's own commit_mark -- see
+            annotations.build_*_mark/measure.fit_ellipse) but do NOT call
+            annotations.save_mark yet. Held in memory, drawn with the
+            uncommitted pen, until an explicit right-click Commit."""
+            if _annotations is None or _measure is None:
+                return
+            tool = self._live_measure_tool
+            obj = self.ruler_objective_combo.currentText().strip()
+            um_per_px = _measure.current_um_per_px(obj) if obj else None
+            if tool != "angle" and um_per_px is None:
+                QMessageBox.warning(
+                    self, "No calibration",
+                    "No calibration on record for {}.".format(obj or "(no objective set)"))
+                return
+            try:
+                if tool == "distance":
+                    mark = _annotations.build_distance_mark(points[0], points[1], um_per_px)
+                elif tool == "angle":
+                    mark = _annotations.build_angle_mark(points[0], points[1], points[2])
+                elif tool == "polygon":
+                    mark = _annotations.build_polygon_mark(points, um_per_px)
+                elif tool == "ellipse":
+                    center, axes_px, angle_deg = _measure.fit_ellipse(points)
+                    mark = _annotations.build_ellipse_mark(
+                        points, center, axes_px, angle_deg, um_per_px)
+                else:
+                    return
+            except ValueError as exc:
+                QMessageBox.warning(self, "Cannot measure", str(exc))
+                return
+            items = self._live_measure_canvas.draw_mark(
+                mark, _LiveMeasureCanvas.UNCOMMITTED_PEN)
+            entry = {"mark": mark, "committed": False, "items": items,
+                     "objective": obj, "um_per_px": um_per_px}
+            self._live_measure_marks.append(entry)
+            if self._live_measure_panel is not None:
+                self._live_measure_panel.set_status(
+                    "{} (uncommitted -- right-click to Commit)".format(
+                        _measure.format_mark_result(mark)))
+
+        def _live_measure_hit_test(self, view_pos, canvas):
+            """The nearest finished mark within LIVE_MEASURE_HIT_RADIUS_PX of
+            view_pos (a plain (x, y) tuple, VIEW-space pixels), or None. Each
+            mark's own geometry (live_measure_mark_segments, pure) is
+            converted to view coordinates via mapFromScene so the radius
+            means the same thing regardless of the canvas's own zoom."""
+            best_entry = None
+            best_dist = LIVE_MEASURE_HIT_RADIUS_PX
+            for entry in self._live_measure_marks:
+                segs = live_measure_mark_segments(entry["mark"])
+                if not segs:
+                    continue
+                for a, b in segs:
+                    va = canvas.mapFromScene(QPointF(a[0], a[1]))
+                    vb = canvas.mapFromScene(QPointF(b[0], b[1]))
+                    d = dist_point_to_segment_px(
+                        view_pos, (va.x(), va.y()), (vb.x(), vb.y()))
+                    if d <= best_dist:
+                        best_entry = entry
+                        best_dist = d
+            return best_entry
+
+        def _live_measure_commit_entry(self, entry):
+            if entry["committed"] or _annotations is None or _measure is None:
+                return
+            if self._live_measure_plane is None or self._live_measure_pixel_sha256 is None:
+                return
+            defaults = _measure.build_record_defaults(
+                self._live_measure_plane, entry["objective"])
+            _annotations.save_mark(
+                self._live_measure_pixel_sha256, entry["mark"], record_defaults=defaults)
+            entry["committed"] = True
+            for item in entry["items"]:
+                item.setPen(_LiveMeasureCanvas.COMMITTED_PEN)
+
+        def _live_measure_commit_all(self):
+            for entry in self._live_measure_marks:
+                self._live_measure_commit_entry(entry)
+
+        def _live_measure_delete_entry(self, entry):
+            # Delete acts only on uncommitted marks (PLAN_05): committed
+            # marks are in the append-only store, which never deletes.
+            if entry["committed"]:
+                return
+            for item in entry["items"]:
+                self._live_measure_canvas.scene_.removeItem(item)
+            self._live_measure_marks.remove(entry)
+
+        def _live_measure_delete_all(self):
+            for entry in list(self._live_measure_marks):
+                self._live_measure_delete_entry(entry)
+
+        def _live_measure_close(self):
+            """Closing discards: every uncommitted mark is gone (a committed
+            one needs no special handling here -- it is already durably in
+            annotations.json, save_mark's own atomic write already saw to
+            that). Reopening the panel is a genuine blank slate, by
+            construction (a fresh freeze pulls a fresh frame with a fresh
+            pixel_sha256) -- not a recall feature; see PLAN_05's own
+            "Recall is not a live-mode feature" section."""
+            self._live_measure_canvas._clear_pending()
+            self._live_measure_canvas.scene_.clear()
+            self._live_measure_canvas._pixmap_item = None
+            self._live_measure_marks = []
+            self._preview_stack_layout.setCurrentWidget(self.preview)
+            self._live_measure_frozen = False
+            self._live_measure_freezing = False
+            self._live_measure_plane = None
+            self._live_measure_pixel_sha256 = None
+            self._live_measure_pending_first_point = None
+            self._live_measure_tool = None
+            self._live_measure_active = False
+            self._set_capture_status("", "")
+        # --- end live measure panel (methods) --------------------------------
         # --- end measure menu (method) ---------------------------------------
 
         def _maybe_show_onboarding_gate(self):
@@ -3834,6 +4507,15 @@ if _HAVE_QT:
 
         def eventFilter(self, obj, ev):
             if obj is self.preview:
+                # LIVE MEASURE PANEL (Part 05): while the panel is open, every
+                # preview click is repurposed as a freeze trigger instead of
+                # box-drag -- _live_measure_preview_event consumes the event
+                # unconditionally (returns True) so _press/_move below never
+                # see it. Checked first, before any box-drag branch, so the
+                # two features can never both react to the same click.
+                if self._live_measure_active:
+                    if self._live_measure_preview_event(ev):
+                        return True
                 t = ev.type()
                 if t == QEvent.MouseButtonPress:
                     self._press(ev.x(), ev.y())
@@ -5260,6 +5942,212 @@ def render_check():
                   "real MeasureWindow pre-filled from the ruler's objective, "
                   "a second trigger reuses the existing window rather than "
                   "opening a duplicate")
+
+        # --- LIVE MEASURE PANEL (Preferences-dialog plan set, Part 05) ------
+        # "Verification, planned" (HANDOFF.md's own Part 05 section) lists
+        # exactly what this must prove, self-check-only (no rig access here):
+        # the click's own coordinates convert to the plane's real native
+        # pixel coordinates; freezing happens exactly once per panel session
+        # and the hash is stable across later clicks; a commit writes to a
+        # temp-redirected annotations.json keyed to the frozen plane's real
+        # hash; closing discards uncommitted marks and keeps committed ones;
+        # Point is greyed on a miss and live on a hit; Delete never touches a
+        # committed mark; the three pen states are visually distinct.
+        if _measure is None or _annotations is None:
+            print("Live measure panel check SKIPPED: measure.py and/or "
+                  "annotations.py not importable here")
+        else:
+            # native_point_from_preview_click: asserted on the real converted
+            # values, not just "a mark exists" -- this is the claim the whole
+            # freeze design rests on. An arbitrary fixed disp_rect makes a
+            # hand-computed expectation easy to check independently.
+            rect = (10, 0, 100, 50)
+            nx, ny = native_point_from_preview_click(60, 25, rect, GREEN_PLANE_RES)
+            fx, fy = frac_from_point(60, 25, rect)
+            assert (nx, ny) == (fx * GREEN_PLANE_RES[0], fy * GREEN_PLANE_RES[1]), \
+                "native_point_from_preview_click must scale frac_from_point's " \
+                "own fraction into the green plane's real resolution, not " \
+                "reimplement the mapping"
+
+            orig_calib_path_lm = _calibrate.CALIBRATION_PATH
+            orig_annot_path_lm = _annotations.ANNOTATION_PATH
+            _calibrate.CALIBRATION_PATH = Path(
+                "/tmp/zynergy_render_check_live_measure_calibration.json")
+            _annotations.ANNOTATION_PATH = Path(
+                "/tmp/zynergy_render_check_live_measure_annotations.json")
+            _calibrate.CALIBRATION_PATH.unlink(missing_ok=True)
+            _annotations.ANNOTATION_PATH.unlink(missing_ok=True)
+            try:
+                calib_entry = _calibrate.build_calibration_entry(
+                    Path("/tmp/fake.dng"), (0.0, 0.0), (500.0, 0.0), 500.0,
+                    objective="40x", target_type="stage micrometer", focus_score=300.0)
+                _calibrate.save_calibration("40x", calib_entry)
+
+                lmcam = FakeCamera(async_delay_s=0.0,
+                                   capture_shape=(GREEN_PLANE_RES[1], GREEN_PLANE_RES[0]))
+                lmwin = FocusPreviewWindow(lmcam, FocusMeter())
+                lmwin.ruler_objective_combo.setCurrentText("40x")
+                try:
+                    assert lmwin._live_measure_action.isEnabled(), \
+                        "the Live measure... action must be enabled when both " \
+                        "measure.py and annotations.py are importable"
+                    assert lmwin._live_measure_panel is None
+                    lmwin._launch_live_measure()
+                    assert lmwin._live_measure_panel is not None and \
+                        lmwin._live_measure_panel.isVisible()
+                    assert lmwin._live_measure_active
+
+                    # a second trigger while open reuses the panel -- same
+                    # "raise, don't duplicate" contract every other launcher
+                    # in this file already has.
+                    first_panel = lmwin._live_measure_panel
+                    lmwin._launch_live_measure()
+                    assert lmwin._live_measure_panel is first_panel, \
+                        "a second trigger while open must reuse the panel, " \
+                        "not open a duplicate"
+
+                    lmwin._live_measure_panel.distance_btn.setChecked(True)
+                    assert lmwin._live_measure_tool == "distance"
+
+                    # A 4:3-aspect resize (matching LORES_RES's own aspect, so
+                    # the mapping below is un-letterboxed and easy to reason
+                    # about), at least _FakePreview's own setMinimumSize(480,
+                    # 360) in both dimensions or resize() silently clamps to
+                    # that floor instead of the requested size -- gives
+                    # _disp_rect() real, non-degenerate geometry to map
+                    # through. An unshown widget's width()/height() default to
+                    # 0, which displayed_rect degenerates to a 1x1 rect,
+                    # collapsing any two distinct clicks to the same fraction.
+                    lmwin.preview.resize(800, 600)
+                    assert lmwin._disp_rect() == (0, 0, 800, 600), \
+                        "sanity check: a 4:3 resize on a 4:3-aspect preview " \
+                        "should need no letterboxing"
+
+                    # The freeze-triggering click itself, routed through the
+                    # REAL eventFilter (not called directly) -- this is what
+                    # actually proves the click-repurposing wiring: ordinary
+                    # box-drag must never fire while the panel is open.
+                    assert lmwin._drag is None
+                    press1 = QMouseEvent(QEvent.MouseButtonPress, QPointF(200, 300),
+                                        Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+                    lmwin.eventFilter(lmwin.preview, press1)
+                    deadline = time.time() + 15.0
+                    while lmwin._live_measure_freezing and time.time() < deadline:
+                        qtapp.processEvents()
+                        time.sleep(0.005)
+                    assert lmwin._drag is None, \
+                        "box-drag must never see a click while live measure " \
+                        "is active"
+                    assert lmwin._live_measure_frozen, "freeze must complete"
+                    assert lmwin._preview_stack_layout.currentWidget() is \
+                        lmwin._live_measure_canvas, \
+                        "a completed freeze must swap the stack to the canvas"
+                    first_hash = lmwin._live_measure_pixel_sha256
+                    assert first_hash is not None
+                    # the freeze-triggering click's own point became the
+                    # armed tool's first point -- one pending point already
+                    # logged, not a throwaway trigger click.
+                    assert len(lmwin._live_measure_canvas._pending_points) == 1
+                    first_point = lmwin._live_measure_canvas._pending_points[0]
+
+                    # A stray click still routed to self.preview post-freeze
+                    # must be a pure no-op (the defensive _live_measure_frozen
+                    # branch _live_measure_preview_event's own docstring
+                    # describes) -- freezing happens exactly once per panel
+                    # session, the hash stays stable, and nothing about the
+                    # in-progress shape changes. Real post-freeze clicks land
+                    # on _live_measure_canvas instead (self.preview is no
+                    # longer the visible top of the stack, so Qt would never
+                    # actually deliver them here on the real widget tree) --
+                    # exercised just below via add_point_programmatic, the
+                    # same entry point the canvas's own mousePressEvent uses.
+                    stray = QMouseEvent(QEvent.MouseButtonPress, QPointF(600, 300),
+                                        Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+                    lmwin.eventFilter(lmwin.preview, stray)
+                    assert lmwin._live_measure_pixel_sha256 == first_hash, \
+                        "freezing must happen exactly once per panel session; " \
+                        "the hash must stay stable across a later click"
+                    assert len(lmwin._live_measure_canvas._pending_points) == 1, \
+                        "a stray click still routed to self.preview post-freeze " \
+                        "must be a no-op, not a second point"
+
+                    # The real second point: injected the same way canvas's
+                    # own mousePressEvent would after mapToScene, at a native
+                    # green-plane coordinate distinct from the first point --
+                    # completes the 2-point distance shape.
+                    second_point = (first_point[0] + 100.0, first_point[1])
+                    lmwin._live_measure_canvas.add_point_programmatic(*second_point)
+                    assert len(lmwin._live_measure_marks) == 1, \
+                        "2 points for a distance mark must auto-finish the shape"
+                    entry = lmwin._live_measure_marks[0]
+                    assert not entry["committed"]
+                    assert entry["items"][0].pen().color().getRgb()[:3] == (255, 140, 0), \
+                        "a finished-but-uncommitted mark must draw with UNCOMMITTED_PEN"
+
+                    # Point hit test: a miss (far from the mark) is None; a
+                    # hit (near a real segment, converted through the SAME
+                    # mapFromScene the production menu handler uses) finds
+                    # the entry.
+                    miss = lmwin._live_measure_hit_test((5, 5), lmwin._live_measure_canvas)
+                    assert miss is None, "a click far from any mark must miss"
+                    pt_a = entry["mark"]["input"]["points"][0]
+                    view_a = lmwin._live_measure_canvas.mapFromScene(QPointF(*pt_a))
+                    hit = lmwin._live_measure_hit_test(
+                        (view_a.x(), view_a.y()), lmwin._live_measure_canvas)
+                    assert hit is entry, "a click on a real mark's own geometry must hit it"
+
+                    # Commit writes to the temp-redirected annotations.json,
+                    # keyed to the frozen plane's real hash -- not a hand-fed
+                    # store, the real save_mark call through the real handler.
+                    lmwin._live_measure_commit_entry(entry)
+                    assert entry["committed"]
+                    assert entry["items"][0].pen().color().getRgb()[:3] == (80, 220, 255), \
+                        "a committed mark must draw with COMMITTED_PEN"
+                    stored = _annotations.load_annotations()
+                    assert first_hash in stored and len(stored[first_hash]["marks"]) == 1, \
+                        "commit must write to the real annotations store, " \
+                        "keyed to the frozen plane's own pixel_sha256"
+
+                    # Delete never touches a committed mark (the store never
+                    # deletes) -- a no-op, not silently swallowed into
+                    # looking like it worked.
+                    lmwin._live_measure_delete_entry(entry)
+                    assert entry in lmwin._live_measure_marks, \
+                        "Delete must be a no-op against an already-committed mark"
+
+                    # Closing discards uncommitted marks; the one already
+                    # committed above landed durably in annotations.json and
+                    # is unaffected by anything close does.
+                    lmwin._live_measure_panel.close()
+                    assert lmwin._live_measure_marks == [], \
+                        "closing must discard every in-memory mark entry"
+                    assert not lmwin._live_measure_active
+                    assert not lmwin._live_measure_frozen
+                    assert lmwin._preview_stack_layout.currentWidget() is lmwin.preview, \
+                        "closing must restore the live preview"
+                    stored_after_close = _annotations.load_annotations()
+                    assert first_hash in stored_after_close and \
+                        len(stored_after_close[first_hash]["marks"]) == 1, \
+                        "closing must not touch a mark that was already committed"
+                finally:
+                    lmcam.stop()
+            finally:
+                _calibrate.CALIBRATION_PATH = orig_calib_path_lm
+                _annotations.ANNOTATION_PATH = orig_annot_path_lm
+            print("Live measure panel check PASS: native_point_from_preview_click "
+                  "scales the real preview-to-sensor fraction into the green "
+                  "plane's actual resolution; the freeze-triggering click routes "
+                  "through the real eventFilter and suppresses ordinary box-drag; "
+                  "freezing happens exactly once per panel session (hash stable "
+                  "across a later click); a finished 2-point shape auto-holds in "
+                  "memory with the uncommitted pen; Point hit-test misses empty "
+                  "space and finds a real mark by its own geometry; commit writes "
+                  "to the real, temp-redirected annotations store keyed to the "
+                  "frozen plane's actual hash and flips the pen to the committed "
+                  "color; Delete is a no-op against a committed mark; closing "
+                  "discards every uncommitted entry, restores the live preview, "
+                  "and never touches a mark already committed")
+        # --- end live measure panel check ------------------------------------
 
     provenance.PROFILE_PATH = _orig_profile_path_for_render_check
 

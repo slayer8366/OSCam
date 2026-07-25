@@ -321,8 +321,19 @@ class FakeCamera(CameraBackend):
     def __init__(self, lores_res=LORES_RES, source: str = "green",
                  frame_source: Optional[Callable[[], np.ndarray]] = None,
                  seed: int = 0, async_delay_s: float = 0.05,
-                 fail_capture: bool = False, stream_caps: bool = False):
+                 fail_capture: bool = False, stream_caps: bool = False,
+                 capture_shape=(64, 64)):
         self._w, self._h = lores_res
+        # capture_shape: the (rows, cols) of the stand-in array capture_still
+        # writes. Default matches this class's own long-standing hardcoded
+        # shape exactly, so every existing caller is unaffected. Exists so a
+        # render_check can make a fake capture come back already shaped like
+        # a real green plane (Preferences-dialog plan set, Part 05's live
+        # measure panel) -- construct FakeCamera(capture_shape=(GREEN_PLANE_
+        # RES[1], GREEN_PLANE_RES[0])) to exercise measure.load_measurement_
+        # plane's real already-extracted-green branch headlessly, with no
+        # stubbing of the loader itself.
+        self._capture_shape = tuple(capture_shape)
         # get_capabilities(): False (the default) matches Picamera2Camera's
         # current behavior -- no stream server implemented, so stream_formats/
         # stream_resolutions are omitted. Pass True to exercise the
@@ -485,7 +496,7 @@ class FakeCamera(CameraBackend):
         out_dir.mkdir(parents=True, exist_ok=True)
         path = out_dir / (stem + ".tif")
         import tifffile
-        frame = self._rng.integers(0, 4096, size=(64, 64)).astype(np.uint16)
+        frame = self._rng.integers(0, 4096, size=self._capture_shape).astype(np.uint16)
         tifffile.imwrite(str(path), frame)
         return path
 

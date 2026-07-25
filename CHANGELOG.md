@@ -7,6 +7,55 @@ this file is the historical record of what happened and why.
 
 ## 2026-07-25
 
+### Build: Live measure panel (Preferences-dialog plan set, Part 05)
+
+Builds the intent recorded below. Full `--render-check` sweep passes
+across all 16 modules. This closes out the Preferences-dialog plan set
+(Parts 01-05), all built. See `HANDOFF.md`'s own Part 05 section for the
+complete account — this entry summarizes.
+
+**Landed as designed:** `LiveMeasurePanel` (floating `Qt.Tool`, shape
+picker + status line) and `_LiveMeasureCanvas` (a `QGraphicsView`, kept
+separate from `measure.py`'s `MeasureView` per the plan) on
+`FocusPreviewWindow`, opened from a new "Live measure..." action on the
+existing "Measure" menu. First left-click on the live feed freezes it via
+a real `capture_still_async` into a throwaway temp dir (no provenance
+record); `measure.load_measurement_plane` + `pixel_hash.pixel_sha256` +
+`plane_cache.store_plane` cache the green plane, keyed by its own hash,
+before the temp dir is discarded. The click's own position converts
+through the existing `frac_from_point`/`displayed_rect` preview-to-sensor
+mapping (`native_point_from_preview_click`, new) and becomes the armed
+tool's first point. Marks build via `annotations.py`'s existing
+`build_*_mark` calls but stay in memory (three-state pen: in-progress,
+uncommitted-orange, committed-cyan matching `measure.py`'s own `MARK_PEN`)
+until an explicit right-click Commit; Delete only ever acts on an
+uncommitted mark. Closing discards every uncommitted entry and restores
+the live preview; a plane already written to `plane_cache` is left for
+`clean_cache` to reclaim later, never deleted here directly. `FakeCamera`
+gained the additive `capture_shape` kwarg the intent entry below
+describes.
+
+**Real bug found resuming a session that dropped mid-build:** the bulk of
+this part's code — including a fully written `_live_measure_preview_event`
+— had already landed uncommitted before the drop, but it was never wired
+into `eventFilter`. Every click on the live feed while the panel was open
+would have kept falling through to ordinary box-drag (`_press`/`_move`)
+instead of triggering a freeze; the freeze path was entirely dead code
+until this session added the two-line routing check at the top of
+`eventFilter`. No render_check coverage existed yet for this part either
+— the build had stopped before verification, which is exactly the gap
+that coverage exists to catch. Both are fixed together in this entry: the
+wiring, and the new render_check block (`qt_shell.py`) proving the click's
+own coordinates convert to the plane's real native pixel coordinates,
+freezing happens exactly once per panel session, commit writes to a real
+temp-redirected `annotations.json` keyed to the frozen plane's actual
+hash, Point hit-test misses/hits correctly, Delete never touches a
+committed mark, and closing discards the right things and nothing more.
+
+Hardware verification (a real first-click freeze feeling instant on the
+rig) is explicitly NOT claimed — self-check-only this session, per the
+same honest split every other part of this plan set has used.
+
 ### Intent: Live measure panel (Preferences-dialog plan set, Part 05)
 
 Recording intent before building, per the project's two-phase
