@@ -77,9 +77,8 @@ each with its own `--render-check` coverage; self-check-verified only —
 see the section below for exactly what that does and does not cover.
 
 **A new plan set (2026-07-24) supersedes Casual Mode in full.** See
-`PLAN_00_context_and_supersession.md` through `PLAN_04_green_plane_cache.md`
-(drafted, not checked into the repo; Part 05 — live measure panel — not yet
-drafted). The design: one application, one window, one layout — every
+`PLAN_00_context_and_supersession.md` through `PLAN_05_live_measure_panel.md`
+(drafted, not checked into the repo). The design: one application, one window, one layout — every
 feature always present, nothing gated by a mode. Provenance moves to
 `~/provenance/<timestamp>/` rather than becoming conditional; the only
 setting that changes what gets kept is Keep RAW Images. `casual_mode.py`
@@ -455,12 +454,19 @@ design, the real-hardware timing finding that changed a default, and what
 landed. Depended on Part 01 for its Advanced-tab controls, per
 `PLAN_00_context_and_supersession.md`'s own dependency order.
 
+**Part 05 (live measure panel) — intent recorded, not yet built.** See
+the dedicated section below (after Part 04's own section) for the full
+design. Depends on Part 04 (built) for the cache a committed mark points
+at. The only part of this plan set that adds a genuinely new user-facing
+capability — everything before it was relocation, configuration, or
+housekeeping.
+
 Nothing is currently in progress. Provenance relocation/Keep RAW/
 auto-processing (Part 03) and the green-plane cache (Part 04) are both
 done — verified with a full `--render-check` sweep across all 16 modules
 (`casual_mode.py` stays deleted; `plane_cache.py`, Part 04's new module,
-is the 16th). Part 05 (live measure panel) remains undrafted; it depends
-on Part 04's cache, now in place.
+is the 16th). Part 05 (live measure panel) has intent recorded; build is
+next.
 
 ### Debayer.py tonemap/write split (Part 03 follow-up, same day) — BUILT
 
@@ -651,6 +657,143 @@ modules, passes. Extraction/store timing above is real-hardware-verified
 (see the caveat elsewhere in this file: a headless pass proves internal
 consistency, not that it works on the rig — the timing numbers here are
 the hardware half, run separately, not inferred from the self-check).
+
+### Live measure panel (Preferences-dialog plan set, Part 05) — DESIGN, NOT YET BUILT
+
+Intent recorded (`CHANGELOG.md`'s matching entry); no code has landed for
+this part yet. Full design in `PLAN_00_context_and_supersession.md` and
+`PLAN_05_live_measure_panel.md` (drafted, not checked into the repo). The
+only part of this plan set that adds a genuinely new user-facing
+capability — everything else was relocation, configuration, or
+housekeeping.
+
+**What it is**: a small floating panel (`Qt.Tool`, native title bar so the
+window manager gives it dragging and a close button for free, non-modal so
+the live feed underneath stays interactive) with a shape picker (distance/
+angle/polygon/ellipse — the same four tools `measure.py` has, same
+click-count-per-shape interaction) and a status line. Opened from a new
+action in the existing "Measure" menu (`_launch_live_measure`, alongside
+the current "Measure..." action) — the plan's own prose says
+"Options > Measure," but that was written before this app grew its own
+top-level "Measure" menu; putting the new action there instead of a
+literal Options submenu is the real, consistent placement, not a deviation
+worth relitigating.
+
+**Freeze on first click** (the plan's own load-bearing decision): the
+first left-click on `self.preview` while the panel is open and nothing is
+frozen yet triggers a real still capture — `camera.capture_still_async`
+into a throwaway `tempfile.mkdtemp` directory, no `provenance.Session`, no
+`record_capture`, no sidecar. This is deliberately lighter than the main
+capture path: a live-measure freeze is not a provenance event, it is
+"pull the substrate a click needs right now," and Part 04's own framing
+already established that the cached plane — not a session record — is
+what has to survive. Once the capture resolves, `measure.
+load_measurement_plane` (reused as-is, not touched) extracts the green
+plane exactly the way the rest of the app already does; `pixel_hash.
+pixel_sha256` + `plane_cache.store_plane` cache it; the temp directory is
+deleted (`finally:`) regardless of outcome. The click's own screen
+position is converted through the SAME `displayed_rect`/`frac_from_point`
+fractional mapping the focus box already uses against `self.preview`,
+scaled into `GREEN_PLANE_RES` — this is the "preview-to-sensor" mapping
+the plan calls for, and it already exists in this file for a different
+feature, so Part 05 reuses it rather than building a second copy. That
+converted point becomes the FIRST point of whatever tool is armed, not a
+throwaway trigger click — matching the plan's own "I clicked and started
+measuring" framing.
+
+**Display swap**: `self.preview` moves from being a direct splitter child
+to living inside a small `QStackedLayout` wrapper (added to the splitter
+in its place) alongside a new `_LiveMeasureCanvas` (a `QGraphicsView`).
+Not frozen: the wrapper shows `self.preview`, live as always. Frozen: the
+wrapper shows the canvas instead, with the cached plane as its pixmap
+(`calibrate.array_to_qimage(calibrate.stretch_to_uint8(plane))`, the exact
+call `measure.py` itself uses to render a plane). Closing the panel swaps
+back and restores box-drag on the preview, which is suspended for the
+whole time the panel is open (the two features would otherwise fight over
+the same clicks on the same widget).
+
+**`_LiveMeasureCanvas` is new, not `measure.MeasureView` reused** — a
+deliberate choice, not an oversight. `measure.py` stays untouched, per the
+plan (`PLAN_00`'s own "measure.py is not rewritten and not touched"), and
+this canvas needs two things `MeasureView` doesn't have: per-mark
+`QGraphicsItem` tracking (so a specific mark can be recolored on commit or
+removed on delete — `MeasureView`'s own `draw_*` methods discard their
+item references immediately) and a THREE-way visual state instead of
+`MeasureView`'s two (`PENDING_PEN` while a shape's points are still being
+clicked; a new solid-orange pen for a finished-but-uncommitted mark; a
+solid-cyan pen — identical color to `measure.py`'s own `MARK_PEN` — once
+committed, so a mark looks the same here as it will when `measure.py`
+later opens the same plane by hash). The click-sequence logic itself
+(2 points for distance, 3 for angle, double-click to finish a 3+-point
+polygon or 5+-point ellipse) is the same rule `MeasureView` already
+encodes; duplicated as the minimum needed to drive the different rendering
+underneath, not because the logic itself changed.
+
+**Marks stay in memory until committed.** Finishing a shape's points
+builds the mark object via `annotations.build_distance_mark`/
+`build_angle_mark`/`build_polygon_mark`/`build_ellipse_mark` (`measure.
+fit_ellipse` for the ellipse fit) — identical calls to what `measure.py`'s
+own `commit_mark` makes — but does NOT call `annotations.save_mark` at
+that point. It is held in a plain list (`{"mark":, "committed": False,
+"items": [...]}`) and drawn with the uncommitted pen. The objective (and
+therefore `um_per_px`) is read from the main window's existing `ruler_
+objective_combo` and snapshotted onto the entry the moment its points
+finish, not re-read later at commit time — same "snapshot at mark time"
+discipline `annotations.calibration_ref_for` already documents for its own
+`um_per_px` field, applied one step earlier here since commit is a
+separate, later action.
+
+**Right-click menu** is exactly the plan's own shape:
+```
+Commit > Point / All
+Delete > Point / All
+```
+Point hit-tests the nearest finished mark within a fixed view-space pixel
+radius (not scene-space, so the grab radius stays constant regardless of
+zoom); greyed out on a miss, per the plan. Delete only ever acts on
+uncommitted marks — hitting an already-committed mark greys out both
+Point actions (Commit has nothing left to do; Delete structurally can't,
+the store never deletes). Escape cancels an in-progress, not-yet-finished
+click sequence (mirroring this app's existing Escape conventions
+elsewhere), kept off the right-click menu entirely so that menu stays
+exactly the two actions the plan specifies, no overloading.
+
+**Closing discards.** Every uncommitted mark and its scene items are
+dropped; the live preview is restored; the frozen plane and hash are
+cleared, so reopening the panel is a genuine blank slate. The plane
+already written to `plane_cache` is left on disk (harmless — Part 04's own
+`clean_cache` reclaims anything nothing ever referenced), never deleted
+here directly.
+
+**The one change outside this file's/`plane_cache.py`'s own territory**:
+`FakeCamera` gains an additive `capture_shape=(64, 64)` constructor kwarg
+(default matches today's hardcoded shape exactly, so every existing caller
+and test is unaffected) so `--render-check` can drive the REAL `capture_
+still_async` → `measure.load_measurement_plane` path end to end headlessly
+— constructing `FakeCamera(capture_shape=(GREEN_PLANE_RES[1],
+GREEN_PLANE_RES[0]))` makes the fake's own captured frame already
+green-plane-shaped, so `load_measurement_plane` takes its real
+already-extracted-green branch with no stubbing. The full-mosaic-needs-
+extraction branch is covered separately, against a synthetic mosaic-shaped
+array, the same way `measure.py`'s and `calibrate.py`'s own checks already
+cover that branch — not exercised through the live GUI path, since
+`FakeCamera` cannot produce a real full-sensor mosaic worth extracting
+from (the standing "`FakeCamera` cannot exercise everything" caution
+`PLAN_00` itself repeats).
+
+**Verification, planned**: self-check-only, no access to the rig this
+session — same honest split `PLAN_00` asks for. `--render-check` will
+prove: the click's own coordinates convert to the plane's actual native
+pixel coordinates (asserted on the real converted values, not just "a mark
+exists" — this is the claim the whole freeze design rests on); freezing
+happens exactly once per panel session and the hash is stable across
+later clicks; a commit writes to a temp-redirected `annotations.json`
+keyed to the frozen plane's real hash; closing discards uncommitted marks
+and keeps committed ones; Point is greyed on a miss and live on a hit;
+Delete never touches a committed mark; the three pen states are visually
+distinct in the scene. Hardware verification (a real first-click freeze
+feeling instant on the rig, per Part 04's own timing caveat about `save_
+dng`'s ~530 ms) is explicitly NOT claimed until run on the actual Pi.
 
 **Full screen mode detail worth knowing**: `F11` toggles; the interaction
 model (explicit toggle key, not auto-hide-on-idle or an always-visible

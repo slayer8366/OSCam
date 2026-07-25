@@ -5,6 +5,53 @@ dump — each entry names the commit(s) it corresponds to for traceability.
 See `HANDOFF.md` for what a fresh agent needs to know before working here;
 this file is the historical record of what happened and why.
 
+## 2026-07-25
+
+### Intent: Live measure panel (Preferences-dialog plan set, Part 05)
+
+Recording intent before building, per the project's two-phase
+documentation rule. Full design in `PLAN_00_context_and_supersession.md`
+and `PLAN_05_live_measure_panel.md` (drafted, not checked into the repo).
+Depends on Part 04 (built) for the cache a committed mark points at. The
+only part of this plan set that adds a genuinely new user-facing
+capability — everything before it was relocation, configuration, or
+housekeeping.
+
+Plan: a small floating panel (shape picker: distance/angle/polygon/
+ellipse, plus status), opened from a new action in the existing "Measure"
+menu — the plan's own prose says "Options > Measure," written before this
+app grew its own top-level "Measure" menu; the real, consistent placement
+is alongside the existing "Measure..." action there, not a literal
+Options submenu. The first left-click on the live feed freezes it: a real
+`camera.capture_still_async` into a throwaway temp dir (no session, no
+provenance record at all — this path never touches `provenance.py`),
+`measure.load_measurement_plane` (reused, unmodified) extracts the green
+plane, `pixel_hash.pixel_sha256` + `plane_cache.store_plane` cache it, and
+the temp dir is deleted immediately after — only the cached plane
+persists. The click's own position (converted through the same
+preview-to-sensor fraction mapping the focus box already uses) becomes
+the first point of whatever shape tool is armed, not a discarded trigger
+click. All measurement after that happens on the frozen plane via a new
+`_LiveMeasureCanvas`, not `measure.py`'s own `MeasureView` — kept separate
+(measure.py stays untouched, per the plan) because this canvas needs two
+things `MeasureView` doesn't: per-mark item tracking for the right-click
+Delete/Commit menu, and a distinct visual state for uncommitted marks. A
+finished shape builds a mark via `annotations.py`'s existing
+`build_*_mark`/`measure.fit_ellipse` — identical math to `measure.py`'s
+own commit path — but holds it in memory rather than writing it, until
+the user explicitly commits.
+
+Objective/calibration reuses the main window's existing
+`ruler_objective_combo` (no separate picker in the small panel),
+snapshotted per-mark at the moment its points finish, not re-read at
+commit time.
+
+The one code change outside `qt_shell.py`'s/`plane_cache.py`'s own
+territory: `FakeCamera` gains an additive `capture_shape` constructor
+kwarg (default unchanged) so `--render-check` can drive the real
+`capture_still_async` → `load_measurement_plane` path headlessly, instead
+of stubbing extraction out.
+
 ## 2026-07-24
 
 ### Build: Green-plane cache (Preferences-dialog plan set, Part 04)
