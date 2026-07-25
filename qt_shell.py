@@ -567,6 +567,199 @@ def live_measure_mark_segments(mark):
 
 
 # ---------------------------------------------------------------------------
+# Live Measuring (PLAN_quick_ruler.md): a pixel-only overlay on the LIVE,
+# moving feed -- no freeze, no calibration, nothing committed. Distinct from
+# Measure/Part 05 above: this reuses that feature's INTERACTION SHAPE (shape
+# picker, click-to-place, right-click menu), never its substrate. Every
+# function below is deliberately self-contained pure pixel math -- this
+# module boundary must NEVER import calibrate.py/annotations.py/
+# provenance.py or call native_point_from_preview_click, the same way
+# camera_backend.py must be the only file importing picamera2 (see
+# assert_only_camera_backend_imports_picamera2's own structural check) --
+# assert_live_measuring_has_no_calibration_dependency() below is this
+# feature's own version of that same rule, checked the same way (source
+# inspection, not just code review).
+# ---------------------------------------------------------------------------
+
+def lores_point_from_preview_click(px, py, disp_rect):
+    """A preview-widget click (px, py) converted to LORES_RES-space pixel
+    coordinates -- the SAME overlay-buffer space render_overlay_into already
+    draws the focus box/bar/ruler into (see FocusPreviewWindow._ov_bufs'
+    own shape). Reuses frac_from_point's existing letterboxing-aware
+    fraction, same math native_point_from_preview_click (Part 05) uses for
+    the green plane -- but deliberately NOT that function: Live Measuring
+    reports raw preview pixels, never a calibrated sensor-space value, and
+    PLAN_quick_ruler.md is explicit that reusing a function named for that
+    other purpose would blur the line this feature exists to keep sharp."""
+    fx, fy = frac_from_point(px, py, disp_rect)
+    return fx * LORES_RES[0], fy * LORES_RES[1]
+
+
+def _live_measuring_tool_hint(name):
+    return {
+        "distance": "distance: click the live feed for two points (px)",
+        "angle": "angle: click the vertex, then two arm points",
+        "polygon": "polygon: click each vertex, double-click to finish (3+ points)",
+        "ellipse": "ellipse: click 5+ boundary points, double-click to finish",
+    }.get(name, "Pick a shape, then click on the live feed.")
+
+
+def _live_measuring_point_status(tool, n):
+    if tool == "distance":
+        return "distance: {} of 2 points".format(n)
+    if tool == "angle":
+        return "angle: {} of 3 points (vertex first)".format(n)
+    if tool == "polygon":
+        return "polygon: {} point(s), double-click to finish (3+ needed)".format(n)
+    if tool == "ellipse":
+        return "ellipse: {} point(s), double-click to finish (5+ needed)".format(n)
+    return ""
+
+
+def live_measuring_mark_segments(mark):
+    """Segment decomposition for hit-testing/drawing a Live Measuring mark
+    -- same shape as live_measure_mark_segments above (Part 05's committed-
+    mark version), but against Live Measuring's own minimal in-memory dict
+    ({"type":, "points": [...]}) rather than an annotations.py mark record,
+    since nothing here is ever built via annotations.build_*_mark."""
+    t = mark.get("type")
+    pts = [tuple(p) for p in mark.get("points", [])]
+    if t == "distance" and len(pts) == 2:
+        return [(pts[0], pts[1])]
+    if t == "angle" and len(pts) == 3:
+        v, a, b = pts
+        return [(v, a), (v, b)]
+    if t in ("polygon", "ellipse") and len(pts) >= 3:
+        n = len(pts)
+        return [(pts[i], pts[(i + 1) % n]) for i in range(n)]
+    return []
+
+
+def live_measuring_distance_px(p0, p1):
+    return math.hypot(p1[0] - p0[0], p1[1] - p0[1])
+
+
+def live_measuring_angle_deg(vertex, a, b):
+    """Interior angle at vertex between rays to a and b, in degrees --
+    dimensionless, so (unlike distance/polygon/ellipse) there is no px unit
+    to attach here; degrees alone already reads as unambiguous. None if
+    either arm collapses onto the vertex (undefined direction)."""
+    v = np.asarray(vertex, dtype=float)
+    va = np.asarray(a, dtype=float) - v
+    vb = np.asarray(b, dtype=float) - v
+    na, nb = np.linalg.norm(va), np.linalg.norm(vb)
+    if na == 0 or nb == 0:
+        return None
+    cos_t = np.clip(np.dot(va, vb) / (na * nb), -1.0, 1.0)
+    return float(np.degrees(np.arccos(cos_t)))
+
+
+def live_measuring_polygon_stats(points):
+    """Perimeter and shoelace area, plain pixels -- reimplemented here
+    rather than reusing annotations.py's own polygon math, since this
+    feature must import NEITHER annotations.py NOR calibrate.py at all (see
+    the module-boundary check above). Used for both Polygon and Ellipse:
+    Live Measuring's "ellipse" is the clicked boundary loop itself, same as
+    a polygon, never a true least-squares fit -- there is no calibrated
+    number at stake here to justify the fit machinery measure.fit_ellipse
+    exists for."""
+    n = len(points)
+    if n < 3:
+        return 0.0, 0.0
+    perimeter = sum(
+        math.hypot(points[(i + 1) % n][0] - points[i][0],
+                  points[(i + 1) % n][1] - points[i][1])
+        for i in range(n))
+    area = 0.0
+    for i in range(n):
+        x0, y0 = points[i]
+        x1, y1 = points[(i + 1) % n]
+        area += x0 * y1 - x1 * y0
+    return perimeter, abs(area) / 2.0
+
+
+def live_measuring_result_text(mark):
+    """Every result is labeled explicitly in px (or degrees, itself already
+    unambiguous) -- PLAN_quick_ruler.md's own rule, so a screenshot never
+    reads as a calibrated figure out of context."""
+    t = mark.get("type")
+    pts = mark.get("points", [])
+    if t == "distance":
+        return "{:.1f} px".format(live_measuring_distance_px(pts[0], pts[1]))
+    if t == "angle":
+        deg = live_measuring_angle_deg(pts[0], pts[1], pts[2])
+        return "{:.1f}°".format(deg) if deg is not None else "undefined (degenerate arm)"
+    if t in ("polygon", "ellipse"):
+        perimeter, area = live_measuring_polygon_stats(pts)
+        return "perimeter {:.1f} px, area {:.1f} px²".format(perimeter, area)
+    return ""
+
+
+def _source_without_docs_and_comments(obj):
+    """A function/method/class's own source with every comment and string
+    literal (docstrings included) stripped, via the tokenizer rather than a
+    regex -- so a docstring/comment that merely EXPLAINS why some other
+    module or function is deliberately NOT used (naming it to say so, the
+    way this file's own docstrings do throughout) doesn't trip a scan meant
+    to catch actual CODE reaching for that name. A real reference always
+    survives this strip (it's an attribute access or a call, not a string),
+    so this only removes the false positives, never a real violation."""
+    import inspect
+    import io
+    import tokenize
+    src = inspect.getsource(obj)
+    kept = []
+    for tok_type, tok_string, *_rest in tokenize.generate_tokens(io.StringIO(src).readline):
+        if tok_type in (tokenize.COMMENT, tokenize.STRING):
+            continue
+        kept.append(tok_string)
+    return " ".join(kept)
+
+
+def assert_live_measuring_has_no_calibration_dependency():
+    """Structural self-check (PLAN_quick_ruler.md's own instruction: "assert
+    this the same way Part 02 asserted the camera-import boundary"): every
+    Live Measuring function/method's own SOURCE CODE (comments and
+    docstrings excluded -- see _source_without_docs_and_comments) must never
+    reference calibrate.py/annotations.py/provenance.py or the sensor-space
+    conversion Measure/Part 05 uses. Source inspection, not just code
+    review, so a future edit that quietly reaches into calibration is
+    caught the moment --render-check runs, not just at review time. Called
+    from render_check() itself -- an assertion nobody ever runs is not a
+    guard, it's a comment that lies about being one."""
+    forbidden = ("_calibrate", "_annotations", "_provenance",
+                "native_point_from_preview_click", "um_per_px",
+                "calibration_ref", "pixel_sha256")
+    targets = [lores_point_from_preview_click, _live_measuring_tool_hint,
+              _live_measuring_point_status, live_measuring_mark_segments,
+              live_measuring_distance_px, live_measuring_angle_deg,
+              live_measuring_polygon_stats, live_measuring_result_text]
+    if _HAVE_QT:
+        targets += [LiveMeasuringPanel,
+                   FocusPreviewWindow._launch_live_measuring,
+                   FocusPreviewWindow._live_measuring_set_tool,
+                   FocusPreviewWindow._live_measuring_preview_event,
+                   FocusPreviewWindow._live_measuring_add_point,
+                   FocusPreviewWindow._live_measuring_finish_pending,
+                   FocusPreviewWindow._live_measuring_cancel_pending,
+                   FocusPreviewWindow._live_measuring_context_menu,
+                   FocusPreviewWindow._live_measuring_delete_point,
+                   FocusPreviewWindow._live_measuring_delete_all,
+                   FocusPreviewWindow._live_measuring_hit_test,
+                   FocusPreviewWindow._live_measuring_view_point,
+                   FocusPreviewWindow._live_measuring_notify_changed,
+                   FocusPreviewWindow._live_measuring_signature,
+                   FocusPreviewWindow._live_measuring_close]
+    for target in targets:
+        src = _source_without_docs_and_comments(target)
+        for word in forbidden:
+            assert word not in src, (
+                "{} references {!r} -- Live Measuring must never touch "
+                "calibration/annotation/provenance machinery".format(
+                    getattr(target, "__qualname__", target), word))
+
+
+# ---------------------------------------------------------------------------
 # Pure overlay art (Qt-free)
 # ---------------------------------------------------------------------------
 def _paint(ov, rs, re, cs, ce, col, alpha=255):
@@ -585,6 +778,59 @@ def _rect_outline(ov, r0, r1, c0, c1, col, t):
     _paint(ov, r1 - t, r1, c0, c1, col)            # bottom
     _paint(ov, r0, r1, c0, c0 + t, col)            # left
     _paint(ov, r0, r1, c1 - t, c1, col)            # right
+
+
+def _draw_segment_into(ov, p0, p1, col, thickness=2):
+    """A straight line segment from p0 to p1, (x, y) native pixel
+    coordinates -- NOT axis-aligned like _paint/_rect_outline above.
+    Sampled at every integer step along its own length and stamped as a
+    thickness x thickness square via _paint (which already clips safely to
+    the buffer's bounds). Deliberately simple -- no true Bresenham, no
+    anti-aliasing -- matching this overlay system's existing blocky
+    aesthetic (the focus box/bar/ruler ticks are all axis-aligned
+    rectangles already); this is the one shape family here that genuinely
+    cannot be, since Live Measuring's marks are placed at arbitrary
+    angles. Used by Live Measuring (PLAN_quick_ruler.md) only."""
+    x0, y0 = p0
+    x1, y1 = p1
+    length = math.hypot(x1 - x0, y1 - y0)
+    n = max(int(length), 1)
+    half = thickness // 2
+    for i in range(n + 1):
+        t = i / n
+        x = int(round(x0 + (x1 - x0) * t))
+        y = int(round(y0 + (y1 - y0) * t))
+        _paint(ov, y - half, y - half + thickness, x - half, x - half + thickness, col)
+
+
+# Live Measuring's two visual states (PLAN_quick_ruler.md): unlike Measure/
+# Part 05's three-way pen (in-progress/uncommitted/committed), there is no
+# "committed" state here at all -- nothing here is ever committed. Amber for
+# "still clicking" reuses state_color()'s own "searching" colour (same
+# semantic: work in progress); white for "finished, on the overlay until
+# Deleted" is deliberately unlike EITHER of Part 05's own colours (orange/
+# cyan), so a glance never confuses which of the two live tools is on screen.
+LIVE_MEASURING_PENDING_COL = (245, 205, 70)
+LIVE_MEASURING_FINISHED_COL = (255, 255, 255)
+
+
+def _draw_live_measuring_into(ov, marks, pending_points, thickness=2):
+    """Draws every finished Live Measuring mark (white) plus the in-progress
+    shape's own polyline (amber, consecutive pending points joined pairwise
+    -- same simplification Part 05's own _LiveMeasureCanvas._draw_pending_
+    point already makes: correct for distance/polygon/ellipse, a harmless
+    cosmetic approximation for angle's own middle segment until the shape
+    finishes and switches to the type-correct segment rendering). Composites
+    into an EXISTING buffer without clearing it first, same convention
+    _draw_ruler_ticks_into already follows, so this layers on top of
+    whatever the focus box/bar/ruler already drew."""
+    for mark in marks:
+        for a, b in live_measuring_mark_segments(mark):
+            _draw_segment_into(ov, a, b, LIVE_MEASURING_FINISHED_COL, thickness)
+    for i in range(len(pending_points) - 1):
+        _draw_segment_into(ov, pending_points[i], pending_points[i + 1],
+                          LIVE_MEASURING_PENDING_COL, thickness)
+    return ov
 
 
 def _draw_bar(ov, r0, r1, c_edge, fill, col, width=10):
@@ -676,14 +922,6 @@ def _draw_ruler_ticks_into(ov, x_ticks, y_ticks, col=(230, 230, 230),
     return ov
 
 
-def render_ruler_only_into(ov, ticks):
-    """Just the ruler: for when the focus aid is off, so there is no box or
-    bar to draw and no FocusState needed at all. Clears the buffer first."""
-    ov[:] = 0
-    _draw_ruler_ticks_into(ov, *ticks)
-    return ov
-
-
 # ============================================================================
 # CALIBRATION INTEGRATION (separable): calibrate.py's own GUI, opened from a
 # menu action here, plus a one-time onboarding nudge (build checklist
@@ -710,11 +948,14 @@ def should_show_onboarding_gate(already_shown, any_calibration_exists):
 # ============================================================================
 
 
-def render_overlay_into(ov, box, state, line=3, ruler_ticks=None):
+def render_overlay_into(ov, box, state, line=3, ruler_ticks=None,
+                        live_measuring_marks=None, live_measuring_pending=None):
     """Draw the overlay into an existing (H, W, 4) buffer, clearing it first. The
     GUI reuses one buffer per tick instead of allocating ~1.2 MB every frame.
     ruler_ticks (x_ticks, y_ticks), if given, draws first so the box+bar (the
-    thing actively being dragged) stays visually on top."""
+    thing actively being dragged) stays visually on top. Live Measuring's
+    marks/pending shape (PLAN_quick_ruler.md), if given, draw LAST -- on top
+    of everything else, since they're the thing a user is actively placing."""
     ov[:] = 0
     if ruler_ticks is not None:
         _draw_ruler_ticks_into(ov, *ruler_ticks)
@@ -724,6 +965,9 @@ def render_overlay_into(ov, box, state, line=3, ruler_ticks=None):
     _rect_outline(ov, r0, r1, c0, c1, col, line)
     if state.bar is not None:
         _draw_bar(ov, r0, r1, c1, state.bar.fill, col)
+    if live_measuring_marks or live_measuring_pending:
+        _draw_live_measuring_into(ov, live_measuring_marks or [],
+                                  live_measuring_pending or [])
     return ov
 
 
@@ -736,16 +980,19 @@ def render_overlay(size, box, state, line=3, ruler_ticks=None):
                                line, ruler_ticks=ruler_ticks)
 
 
-def overlay_signature(box, state, overlay_shape, ruler_key=None):
+def overlay_signature(box, state, overlay_shape, ruler_key=None, live_measuring_key=None):
     """A cheap fingerprint of what the overlay would draw: the box pixel rect, the
-    colour, the bar fill in whole pixels, and the ruler's config. When it is
-    unchanged, the overlay is identical and the GPU upload can be skipped."""
+    colour, the bar fill in whole pixels, the ruler's config, and (Live
+    Measuring, PLAN_quick_ruler.md) its own marks/pending-shape key. When it
+    is unchanged, the overlay is identical and the GPU upload can be
+    skipped."""
     h, w = overlay_shape[:2]
     r0, r1, c0, c1 = box.pixel_rect((h, w))
     filled = -1
     if state.bar is not None:
         filled = int(round(min(max(state.bar.fill, 0.0), 1.0) * (r1 - r0)))
-    return (r0, r1, c0, c1, state_color(state), filled, state.valid, ruler_key)
+    return (r0, r1, c0, c1, state_color(state), filled, state.valid, ruler_key,
+            live_measuring_key)
 
 
 # ---------------------------------------------------------------------------
@@ -1847,6 +2094,61 @@ if _HAVE_QT:
             super().closeEvent(ev)
 
 
+    class LiveMeasuringPanel(QWidget):
+        """The floating shape-picker for Live Measuring (PLAN_quick_ruler.md)
+        -- a pixel-only overlay on the LIVE, moving feed. Distinct from
+        Measure's own LiveMeasurePanel above (Part 05): no freeze, no
+        calibration, no commit -- see assert_live_measuring_has_no_
+        calibration_dependency's own module-boundary check. Same Qt.Tool,
+        native-title-bar, non-modal window shape as LiveMeasurePanel, for the
+        same reasons: a small utility window meant to be dragged aside and
+        closed, while the live feed underneath stays interactive."""
+
+        def __init__(self, window):
+            super().__init__(window, Qt.Tool)
+            self.window_ = window
+            self.setWindowTitle("Live Measuring")
+
+            self.distance_btn = QPushButton("Distance")
+            self.angle_btn = QPushButton("Angle")
+            self.polygon_btn = QPushButton("Polygon")
+            self.ellipse_btn = QPushButton("Ellipse")
+            for btn in (self.distance_btn, self.angle_btn, self.polygon_btn, self.ellipse_btn):
+                btn.setCheckable(True)
+
+            self.tool_group = QButtonGroup(self)
+            self.tool_group.setExclusive(True)
+            for name, btn in (("distance", self.distance_btn),
+                             ("angle", self.angle_btn),
+                             ("polygon", self.polygon_btn),
+                             ("ellipse", self.ellipse_btn)):
+                self.tool_group.addButton(btn)
+                btn.toggled.connect(lambda checked, n=name: self._on_tool_toggled(n, checked))
+
+            self.status_label = QLabel(_live_measuring_tool_hint(None))
+            self.status_label.setWordWrap(True)
+
+            row = QHBoxLayout()
+            row.addWidget(self.distance_btn)
+            row.addWidget(self.angle_btn)
+            row.addWidget(self.polygon_btn)
+            row.addWidget(self.ellipse_btn)
+
+            lay = QVBoxLayout(self)
+            lay.addLayout(row)
+            lay.addWidget(self.status_label)
+
+        def _on_tool_toggled(self, name, checked):
+            self.window_._live_measuring_set_tool(name if checked else None)
+
+        def set_status(self, text):
+            self.status_label.setText(text)
+
+        def closeEvent(self, ev):
+            self.window_._live_measuring_close()
+            super().closeEvent(ev)
+
+
     class FocusPreviewWindow(QMainWindow):
         """The live focus-aid + capture window. Embeds either the on-rig GL
         preview (camera.widget) or the off-rig _FakePreview. A QTimer tick pulls
@@ -2022,6 +2324,22 @@ if _HAVE_QT:
             #  None only for an angle mark, which needs no calibration.
             self._live_measure_marks = []
             self.live_measure_freeze_done_signal.connect(self._on_live_measure_freeze_done)
+
+            # LIVE MEASURING (PLAN_quick_ruler.md): pixel-only overlay on the
+            # LIVE, moving feed -- no freeze, so unlike Part 05 above there is
+            # no async signal, no plane, no hash, no temp dir. Marks live
+            # entirely in these two lists and draw straight into the SAME
+            # overlay buffer _tick()/_static_overlay_buf() already manage for
+            # the focus box/ruler -- no separate canvas widget, no
+            # self.preview/_preview_stack swap. Mutually exclusive with
+            # Measure's own live panel (Part 05): both repurpose self.preview's
+            # clicks for their own tool, so opening either one closes the
+            # other first -- see _launch_live_measuring/_launch_live_measure.
+            self._live_measuring_panel = None
+            self._live_measuring_active = False        # the panel is open
+            self._live_measuring_tool = None            # distance/angle/polygon/ellipse/None
+            self._live_measuring_pending_points = []    # LORES_RES-space (x, y), in-progress shape
+            self._live_measuring_marks = []             # [{"type":, "points": [...]}, ...]
 
             self.preview = camera.widget if hasattr(camera, "widget") \
                 else _FakePreview(camera)
@@ -2383,6 +2701,15 @@ if _HAVE_QT:
             if _measure is None or _annotations is None:
                 self._live_measure_action.setToolTip(
                     "measure.py and annotations.py must both be alongside this file")
+
+            # LIVE MEASURING (PLAN_quick_ruler.md): its own distinct entry on
+            # this SAME menu, not nested inside or toggled from either of the
+            # two actions above -- a third, independent tool. Always enabled:
+            # unlike the other two, this one has no dependency on measure.py/
+            # annotations.py at all (see the module-boundary check), so there
+            # is nothing here that could be missing.
+            self._live_measuring_action = measuremenu.addAction(
+                "Live Measuring...", self._launch_live_measuring)
             # --- end measure menu (menu) -----------------------------------------
 
             self.preview.setMouseTracking(True)
@@ -2421,10 +2748,13 @@ if _HAVE_QT:
             # redraws into a reused buffer and alternates buffers so the uploaded
             # one is never overwritten mid-read.
             sig = overlay_signature(self.meter.box, state, self._ov_bufs[0].shape,
-                                    ruler_key=self._ruler_key())
+                                    ruler_key=self._ruler_key(),
+                                    live_measuring_key=self._live_measuring_signature())
             if sig != self._last_sig:
                 buf = self._ov_bufs[self._ov_idx]
-                render_overlay_into(buf, self.meter.box, state, ruler_ticks=ruler)
+                render_overlay_into(buf, self.meter.box, state, ruler_ticks=ruler,
+                                    live_measuring_marks=self._live_measuring_marks,
+                                    live_measuring_pending=self._live_measuring_pending_points)
                 self.camera.set_overlay(buf)
                 self._ov_idx ^= 1
                 self._last_sig = sig
@@ -2614,16 +2944,11 @@ if _HAVE_QT:
                 self.timer.start(self._tick_ms)
             else:
                 self.timer.stop()             # idle: no decode, no score, no upload
+                # The aid drives the timer, but the ruler (and Live Measuring's
+                # own marks, PLAN_quick_ruler.md) are each their own toggle;
+                # turning the aid off should not also erase either.
+                self.camera.set_overlay(self._static_overlay_buf())
                 ruler = self._current_ruler_ticks()
-                if ruler is not None:
-                    # The aid drives the timer, but the ruler is its own toggle;
-                    # turning the aid off should not also erase the ruler.
-                    buf = self._ov_bufs[self._ov_idx]
-                    render_ruler_only_into(buf, ruler)
-                    self.camera.set_overlay(buf)
-                    self._ov_idx ^= 1
-                else:
-                    self.camera.set_overlay(None)  # clear the box (and any ruler) off the preview
                 self._last_sig = None
                 txt = "focus aid off, press F"
                 if ruler is not None:
@@ -2633,6 +2958,32 @@ if _HAVE_QT:
 
         def _toggle_aid(self):
             self._set_aid(not self._aid_on)
+
+        def _static_overlay_buf(self):
+            """Composes whatever should show on the overlay while the tick
+            timer is NOT running (aid off): ruler ticks (if the ruler toggle
+            is on) plus any Live Measuring marks (if that panel is open),
+            into one buffer -- same double-buffer reuse _tick() itself uses.
+            Returns None if there is truly nothing to show (the caller should
+            clear the overlay outright), the buffer otherwise. Two call sites
+            needed this identical composition before Live Measuring existed
+            (_set_aid's and _on_ruler_changed's own aid-off branches, each
+            doing "ruler-only, or clear"); Live Measuring made a third, hence
+            one shared helper instead of a third copy."""
+            ruler = self._current_ruler_ticks()
+            has_live_measuring = bool(self._live_measuring_marks or
+                                      self._live_measuring_pending_points)
+            if ruler is None and not has_live_measuring:
+                return None
+            buf = self._ov_bufs[self._ov_idx]
+            buf[:] = 0
+            if ruler is not None:
+                _draw_ruler_ticks_into(buf, *ruler)
+            if has_live_measuring:
+                _draw_live_measuring_into(buf, self._live_measuring_marks,
+                                         self._live_measuring_pending_points)
+            self._ov_idx ^= 1
+            return buf
 
         # --- XY ruler ---------------------------------------------------------
         def _current_ruler_ticks(self):
@@ -2678,14 +3029,8 @@ if _HAVE_QT:
                 return
             # Aid is off, so the timer is not running: push the overlay directly
             # rather than waiting on a tick loop that isn't ticking.
+            self.camera.set_overlay(self._static_overlay_buf())
             ruler = self._current_ruler_ticks()
-            if ruler is not None:
-                buf = self._ov_bufs[self._ov_idx]
-                render_ruler_only_into(buf, ruler)
-                self.camera.set_overlay(buf)
-                self._ov_idx ^= 1
-            else:
-                self.camera.set_overlay(None)
             txt = "focus aid off, press F"
             if ruler is not None:
                 txt += "  (ruler on)"
@@ -2754,6 +3099,12 @@ if _HAVE_QT:
                 self._live_measure_panel.raise_()
                 self._live_measure_panel.activateWindow()
                 return
+            # Mutual exclusion with Live Measuring (PLAN_quick_ruler.md): both
+            # repurpose self.preview's clicks for their own tool, so only one
+            # may claim them at a time -- opening this one closes that one
+            # first, if it's open (see _launch_live_measuring's matching guard).
+            if self._live_measuring_active:
+                self._live_measuring_panel.close()
             self._live_measure_active = True
             # Held on self, not a local: PyQt5 garbage-collects a Qt.Tool
             # window with no surviving Python reference, same reason
@@ -2977,6 +3328,190 @@ if _HAVE_QT:
             self._live_measure_active = False
             self._set_capture_status("", "")
         # --- end live measure panel (methods) --------------------------------
+
+        # --- LIVE MEASURING (PLAN_quick_ruler.md) ----------------------------
+        def _launch_live_measuring(self):
+            """Opens the floating LiveMeasuringPanel. Unlike Measure/Part 05's
+            own launcher, this never touches the camera at all -- no freeze,
+            no capture, nothing async -- so there is no hardware-sharing
+            guard needed here."""
+            if self._live_measuring_panel is not None and self._live_measuring_panel.isVisible():
+                self._live_measuring_panel.raise_()
+                self._live_measuring_panel.activateWindow()
+                return
+            # Mutual exclusion with Measure's own live panel (Part 05): see
+            # _launch_live_measure's matching guard.
+            if self._live_measure_active:
+                self._live_measure_panel.close()
+            self._live_measuring_active = True
+            # Held on self, not a local: PyQt5 garbage-collects a Qt.Tool
+            # window with no surviving Python reference, same reason every
+            # other floating panel in this file is held.
+            self._live_measuring_panel = LiveMeasuringPanel(self)
+            self._live_measuring_panel.show()
+
+        def _live_measuring_set_tool(self, name):
+            self._live_measuring_tool = name
+            self._live_measuring_pending_points = []
+            if self._live_measuring_panel is not None:
+                self._live_measuring_panel.set_status(_live_measuring_tool_hint(name))
+            self._live_measuring_notify_changed()
+
+        def _live_measuring_preview_event(self, ev):
+            """Routes clicks on self.preview while the Live Measuring panel is
+            open -- same unconditional-consume shape as _live_measure_preview_
+            event (Part 05), so ordinary box-drag never fires while this has
+            repurposed the widget's clicks. No freeze: every click places a
+            point directly against the CURRENT live frame, in LORES_RES-space
+            pixel coordinates (lores_point_from_preview_click), never sensor
+            space -- PLAN_quick_ruler.md's whole point."""
+            if ev.type() == QEvent.MouseButtonPress:
+                if ev.button() == Qt.RightButton:
+                    self._live_measuring_context_menu(ev.pos())
+                elif ev.button() == Qt.LeftButton and self._live_measuring_tool is not None:
+                    pt = lores_point_from_preview_click(ev.x(), ev.y(), self._disp_rect())
+                    self._live_measuring_add_point(pt)
+                return True
+            if ev.type() == QEvent.MouseButtonDblClick:
+                min_points = {"polygon": 3, "ellipse": 5}.get(self._live_measuring_tool)
+                if (min_points is not None
+                        and len(self._live_measuring_pending_points) >= min_points):
+                    self._live_measuring_finish_pending()
+                return True
+            return True
+
+        def _live_measuring_add_point(self, pt):
+            self._live_measuring_pending_points.append(pt)
+            if self._live_measuring_panel is not None:
+                self._live_measuring_panel.set_status(
+                    _live_measuring_point_status(self._live_measuring_tool,
+                                                 len(self._live_measuring_pending_points)))
+            needed = {"distance": 2, "angle": 3}.get(self._live_measuring_tool)
+            if needed is not None and len(self._live_measuring_pending_points) >= needed:
+                self._live_measuring_finish_pending()
+            else:
+                self._live_measuring_notify_changed()
+
+        def _live_measuring_finish_pending(self):
+            """A shape's points are complete: held as a plain in-memory dict
+            (no annotations.build_*_mark call, no calibration, nothing
+            written anywhere -- see the module-boundary check), drawn white
+            until an explicit right-click Delete or the panel closes."""
+            points = self._live_measuring_pending_points
+            self._live_measuring_pending_points = []
+            mark = {"type": self._live_measuring_tool, "points": points}
+            self._live_measuring_marks.append(mark)
+            if self._live_measuring_panel is not None:
+                self._live_measuring_panel.set_status(
+                    "{} -- right-click to Delete".format(live_measuring_result_text(mark)))
+            self._live_measuring_notify_changed()
+
+        def _live_measuring_cancel_pending(self):
+            """Escape cancels an in-progress, not-yet-finished click sequence
+            -- mirrors this app's existing Escape conventions elsewhere (an
+            armed burst, a batch sequence), and Part 05's own identical rule
+            for its own in-progress shape."""
+            self._live_measuring_pending_points = []
+            if self._live_measuring_panel is not None:
+                self._live_measuring_panel.set_status(
+                    _live_measuring_tool_hint(self._live_measuring_tool))
+            self._live_measuring_notify_changed()
+
+        def _live_measuring_view_point(self, lores_pt):
+            """LORES_RES-space (x, y) back to CURRENT on-screen preview-widget
+            pixel coordinates -- the inverse of lores_point_from_preview_click,
+            needed for the right-click hit test: LIVE_MEASURE_HIT_RADIUS_PX
+            means view-space pixels (same reasoning as Part 05's own hit
+            test), so the grab radius stays constant regardless of window
+            size, not scaled by it."""
+            x, y, w, h = self._disp_rect()
+            fx = lores_pt[0] / LORES_RES[0]
+            fy = lores_pt[1] / LORES_RES[1]
+            return (x + fx * w, y + fy * h)
+
+        def _live_measuring_hit_test(self, view_pos):
+            best, best_dist = None, LIVE_MEASURE_HIT_RADIUS_PX
+            for mark in self._live_measuring_marks:
+                for a, b in live_measuring_mark_segments(mark):
+                    va = self._live_measuring_view_point(a)
+                    vb = self._live_measuring_view_point(b)
+                    d = dist_point_to_segment_px(view_pos, va, vb)
+                    if d <= best_dist:
+                        best, best_dist = mark, d
+            return best
+
+        def _live_measuring_context_menu(self, pos):
+            """Delete (Point / All) only -- no Commit submenu at all, per
+            PLAN_quick_ruler.md: nothing here is ever committed, so there is
+            nothing a Commit action could do."""
+            entry = self._live_measuring_hit_test((pos.x(), pos.y()))
+            marks = self._live_measuring_marks
+            menu = QMenu(self.preview)
+            delete_menu = menu.addMenu("Delete")
+            delete_point = delete_menu.addAction("Point")
+            delete_all = delete_menu.addAction("All")
+            delete_point.setEnabled(entry is not None)
+            delete_all.setEnabled(bool(marks))
+            chosen = menu.exec_(self.preview.mapToGlobal(pos))
+            if chosen is delete_point and entry is not None:
+                self._live_measuring_delete_point(entry)
+            elif chosen is delete_all:
+                self._live_measuring_delete_all()
+
+        def _live_measuring_delete_point(self, entry):
+            """Split out of _live_measuring_context_menu so render_check can
+            drive real deletion without going through QMenu.exec_ (a blocking
+            modal call) -- same reason Part 05's own commit/delete are their
+            own methods rather than living inline in ITS context-menu
+            handler."""
+            self._live_measuring_marks.remove(entry)
+            self._live_measuring_notify_changed()
+
+        def _live_measuring_delete_all(self):
+            self._live_measuring_marks = []
+            self._live_measuring_notify_changed()
+
+        def _live_measuring_notify_changed(self):
+            """Call after any Live Measuring mutation (point added, mark
+            finished, mark deleted, panel opened/closed). While the aid's
+            timer is running, _tick() picks up the change on its own within
+            one tick (~33ms, imperceptible) via _live_measuring_signature's
+            own key folded into overlay_signature -- nothing to do here.
+            While it is NOT running, nothing else will ever redraw the
+            overlay on its own, so this pushes the change immediately, the
+            same "timer not ticking, push directly" rule _on_ruler_changed
+            already follows for the ruler."""
+            if self._aid_on:
+                return
+            self.camera.set_overlay(self._static_overlay_buf())
+
+        def _live_measuring_signature(self):
+            """Folded into overlay_signature (mirrors _ruler_key's own
+            reasoning) so a Live Measuring change forces a redraw on the very
+            next tick even when the focus box/bar/ruler are completely
+            unchanged -- without this, _tick()'s own unchanged-signature skip
+            would leave a just-added mark invisible until something else
+            happened to also change that tick."""
+            if not self._live_measuring_active:
+                return None
+            pending = tuple((round(x, 1), round(y, 1))
+                            for x, y in self._live_measuring_pending_points)
+            marks = tuple((m["type"], tuple((round(x, 1), round(y, 1)) for x, y in m["points"]))
+                         for m in self._live_measuring_marks)
+            return (self._live_measuring_tool, pending, marks)
+
+        def _live_measuring_close(self):
+            """Closing discards everything -- nothing here was ever committed
+            or written anywhere, so unlike Measure/Part 05's own close (which
+            only discards uncommitted marks, since a committed one is already
+            durable) there is nothing to preserve. Reopening the panel is
+            always a genuine blank slate."""
+            self._live_measuring_marks = []
+            self._live_measuring_pending_points = []
+            self._live_measuring_tool = None
+            self._live_measuring_active = False
+            self._live_measuring_notify_changed()
+        # --- end Live Measuring (methods) ------------------------------------
         # --- end measure menu (method) ---------------------------------------
 
         def _maybe_show_onboarding_gate(self):
@@ -4516,6 +5051,13 @@ if _HAVE_QT:
                 if self._live_measure_active:
                     if self._live_measure_preview_event(ev):
                         return True
+                # LIVE MEASURING (PLAN_quick_ruler.md): same shape as Part 05's
+                # own guard above -- mutually exclusive with it by construction
+                # (opening either one closes the other), so at most one of
+                # these two branches is ever live at a time.
+                if self._live_measuring_active:
+                    if self._live_measuring_preview_event(ev):
+                        return True
                 t = ev.type()
                 if t == QEvent.MouseButtonPress:
                     self._press(ev.x(), ev.y())
@@ -4559,6 +5101,11 @@ if _HAVE_QT:
                 self._cancel_armed()
             elif ev.key() == Qt.Key_Escape and self._batch_active:
                 self._abort_batch()
+            elif ev.key() == Qt.Key_Escape and self._live_measuring_pending_points:
+                # LIVE MEASURING (PLAN_quick_ruler.md): cancels an in-progress,
+                # not-yet-finished click sequence, same convention as the
+                # armed-burst/batch-abort branches above.
+                self._live_measuring_cancel_pending()
             elif (ev.key() == Qt.Key_Escape and ev.modifiers() & Qt.ControlModifier
                   and self._is_fullscreen):
                 # FULL SCREEN MODE: Ctrl+Escape exits, not plain Escape --
@@ -6148,6 +6695,216 @@ def render_check():
                   "discards every uncommitted entry, restores the live preview, "
                   "and never touches a mark already committed")
         # --- end live measure panel check ------------------------------------
+
+        # --- LIVE MEASURING (PLAN_quick_ruler.md) ----------------------------
+        # A pixel-only overlay on the LIVE, moving feed -- no freeze, no
+        # calibration, nothing committed. Proves: the module-boundary
+        # self-check actually runs clean (it is otherwise never called from
+        # anywhere -- an assertion nobody runs is not a guard); the panel
+        # opens/reuses the same way every other launcher in this file does;
+        # it is mutually exclusive with Measure's own live panel (Part 05) in
+        # BOTH directions; a real click through the REAL eventFilter converts
+        # to the correct LORES_RES-space point and suppresses ordinary
+        # box-drag; distance/angle auto-finish at their own point count while
+        # polygon needs an explicit double-click at or past its minimum (and
+        # NOT before it); Escape cancels an in-progress shape without
+        # touching a finished one; the overlay push actually reaches
+        # camera.set_overlay with the aid off; the hit test misses empty
+        # space and finds a real mark by its own geometry; Delete Point/All
+        # really mutate the mark list; closing discards everything, since
+        # nothing here is ever durable.
+        assert_live_measuring_has_no_calibration_dependency()
+
+        lqcam = FakeCamera()
+        lqwin = FocusPreviewWindow(lqcam, FocusMeter())
+        try:
+            assert lqwin._live_measuring_action.isEnabled(), \
+                "Live Measuring must always be enabled -- it has no " \
+                "measure.py/annotations.py dependency that could be missing"
+            assert lqwin._live_measuring_panel is None
+            lqwin._launch_live_measuring()
+            assert lqwin._live_measuring_panel is not None and \
+                lqwin._live_measuring_panel.isVisible()
+            assert lqwin._live_measuring_active
+
+            first_panel = lqwin._live_measuring_panel
+            lqwin._launch_live_measuring()
+            assert lqwin._live_measuring_panel is first_panel, \
+                "a second trigger while open must reuse the panel, not " \
+                "open a duplicate"
+
+            # Mutual exclusion with Measure's own live panel (Part 05), both
+            # directions -- both repurpose self.preview's clicks, so only one
+            # may hold them at a time. Neither call here ever clicks the
+            # preview, so no freeze thread is ever started -- this is purely
+            # about the open/close guard, not Part 05's own capture path.
+            if _measure is not None and _annotations is not None:
+                lqwin._launch_live_measure()
+                assert lqwin._live_measure_active
+                assert not lqwin._live_measuring_active, \
+                    "opening Measure's own live panel must close Live " \
+                    "Measuring first"
+                lqwin._live_measure_panel.close()
+                assert not lqwin._live_measure_active
+
+                lqwin._launch_live_measuring()
+                assert lqwin._live_measuring_active
+                lqwin._launch_live_measure()
+                assert lqwin._live_measure_active
+                assert not lqwin._live_measuring_active, \
+                    "opening Live Measuring must close Measure's own live " \
+                    "panel first -- the same guard, in the other direction"
+                lqwin._live_measure_panel.close()
+                assert not lqwin._live_measure_active
+                lqwin._launch_live_measuring()
+                assert lqwin._live_measuring_active
+
+            # A 4:3 resize, matching LORES_RES's own aspect exactly, so the
+            # mapping below needs no letterboxing -- same trick Part 05's own
+            # check uses for GREEN_PLANE_RES.
+            lqwin.preview.resize(800, 600)
+            assert lqwin._disp_rect() == (0, 0, 800, 600)
+
+            def expected_lores_point(px, py):
+                # Computed via the SAME frac_from_point primitive production
+                # code uses, not a hand-typed literal -- so this compares
+                # against the real mapping's own arithmetic, not a value that
+                # merely looks plausible.
+                fx, fy = frac_from_point(px, py, (0, 0, 800, 600))
+                return (fx * LORES_RES[0], fy * LORES_RES[1])
+
+            def click(x, y, kind=QEvent.MouseButtonPress):
+                ev = QMouseEvent(kind, QPointF(x, y), Qt.LeftButton,
+                                 Qt.LeftButton, Qt.NoModifier)
+                assert lqwin.eventFilter(lqwin.preview, ev), \
+                    "Live Measuring must consume every click on the " \
+                    "preview while active, never let it fall through to " \
+                    "ordinary box-drag"
+
+            # Distance: select the tool via the real panel button (the same
+            # QButtonGroup toggle path a user's own click drives), then two
+            # real clicks routed through the real eventFilter.
+            lqwin._live_measuring_panel.distance_btn.setChecked(True)
+            assert lqwin._live_measuring_tool == "distance"
+            assert lqwin._drag is None
+            click(160, 300)
+            assert lqwin._drag is None, \
+                "box-drag must never see a click while Live Measuring is active"
+            assert lqwin._live_measuring_pending_points == [expected_lores_point(160, 300)], \
+                "the click's own preview coordinates must convert through " \
+                "the real frac_from_point mapping into LORES_RES-space"
+            click(480, 300)
+            assert lqwin._live_measuring_pending_points == [], \
+                "2 points for a distance shape must auto-finish and clear " \
+                "the pending list"
+            assert len(lqwin._live_measuring_marks) == 1
+            assert lqwin._live_measuring_marks[0]["type"] == "distance"
+            assert lqwin._live_measuring_marks[0]["points"] == \
+                [expected_lores_point(160, 300), expected_lores_point(480, 300)]
+
+            # The overlay push actually happened -- aid is off by default, so
+            # _live_measuring_notify_changed must have pushed directly to
+            # camera.set_overlay rather than waiting on a tick loop that
+            # isn't running (same rule _on_ruler_changed already follows).
+            assert lqcam.last_overlay is not None and \
+                (lqcam.last_overlay[..., 3] > 0).any(), \
+                "a finished mark must actually reach camera.set_overlay, " \
+                "not just live in the in-memory mark list"
+
+            # Angle: 3 points, auto-finishes with no double-click needed.
+            lqwin._live_measuring_panel.angle_btn.setChecked(True)
+            assert lqwin._live_measuring_tool == "angle"
+            click(100, 100)
+            click(200, 100)
+            click(100, 200)
+            assert lqwin._live_measuring_pending_points == [], \
+                "3 points for an angle shape must auto-finish"
+            assert len(lqwin._live_measuring_marks) == 2
+            assert lqwin._live_measuring_marks[1]["type"] == "angle"
+
+            # Polygon: needs an explicit double-click at/past its own
+            # minimum (3) -- unlike distance/angle, reaching the minimum with
+            # a plain click must NOT finish it on its own.
+            lqwin._live_measuring_panel.polygon_btn.setChecked(True)
+            click(100, 100)
+            click(200, 100)
+            click(200, 200)
+            assert len(lqwin._live_measuring_pending_points) == 3, \
+                "a polygon must NOT auto-finish on reaching its minimum -- " \
+                "only an explicit double-click finishes it"
+            click(200, 200, kind=QEvent.MouseButtonDblClick)
+            assert lqwin._live_measuring_pending_points == [], \
+                "a double-click at/past the minimum must finish the polygon"
+            assert len(lqwin._live_measuring_marks) == 3
+            assert lqwin._live_measuring_marks[2]["type"] == "polygon"
+
+            # A double-click BEFORE the minimum is a no-op, not a short shape.
+            lqwin._live_measuring_panel.polygon_btn.setChecked(True)
+            click(100, 100)
+            click(100, 100, kind=QEvent.MouseButtonDblClick)
+            assert len(lqwin._live_measuring_pending_points) == 1, \
+                "a double-click before the minimum point count must not " \
+                "finish the shape early"
+
+            # Escape cancels the in-progress (not yet finished) sequence --
+            # same convention as the armed-burst/batch-abort branches.
+            esc = QKeyEvent(QEvent.KeyPress, Qt.Key_Escape, Qt.NoModifier)
+            lqwin.keyPressEvent(esc)
+            assert lqwin._live_measuring_pending_points == [], \
+                "Escape must cancel an in-progress Live Measuring shape"
+            assert len(lqwin._live_measuring_marks) == 3, \
+                "Escape must never touch an already-finished mark"
+
+            # Hit test: a miss well away from every mark is None; a hit
+            # against a real mark's own geometry (converted through the SAME
+            # _live_measuring_view_point the production context menu uses)
+            # finds it.
+            miss = lqwin._live_measuring_hit_test((790, 590))
+            assert miss is None, "a click far from every mark must miss"
+            target_mark = lqwin._live_measuring_marks[0]
+            hit_pos = lqwin._live_measuring_view_point(target_mark["points"][0])
+            hit = lqwin._live_measuring_hit_test(hit_pos)
+            assert hit is target_mark, \
+                "a click on a real mark's own geometry must hit it"
+
+            # Delete Point / Delete All -- driven directly (same reason Part
+            # 05's own check calls _live_measure_delete_entry directly rather
+            # than driving the actual, blocking QMenu.exec_).
+            before = len(lqwin._live_measuring_marks)
+            lqwin._live_measuring_delete_point(target_mark)
+            assert len(lqwin._live_measuring_marks) == before - 1
+            assert target_mark not in lqwin._live_measuring_marks
+            lqwin._live_measuring_delete_all()
+            assert lqwin._live_measuring_marks == []
+
+            # Closing discards everything -- nothing here is ever durable, so
+            # unlike Part 05's own close, there is nothing committed to
+            # preserve.
+            lqwin._live_measuring_marks = [{"type": "distance",
+                                            "points": [(0.0, 0.0), (1.0, 1.0)]}]
+            lqwin._live_measuring_pending_points = [(2.0, 2.0)]
+            lqwin._live_measuring_panel.close()
+            assert lqwin._live_measuring_marks == []
+            assert lqwin._live_measuring_pending_points == []
+            assert lqwin._live_measuring_tool is None
+            assert not lqwin._live_measuring_active
+        finally:
+            lqcam.stop()
+        print("Live Measuring check PASS: the module-boundary self-check "
+              "runs clean; the panel opens/reuses like every other launcher "
+              "in this file; opening either Live Measuring or Measure's own "
+              "live panel (Part 05) closes the other first, in both "
+              "directions; a real click through the real eventFilter "
+              "converts to the correct LORES_RES-space point and suppresses "
+              "ordinary box-drag; distance/angle auto-finish at their own "
+              "point count while polygon needs an explicit double-click past "
+              "(and not before) its minimum; Escape cancels an in-progress "
+              "shape without touching a finished one; the overlay push "
+              "actually reaches camera.set_overlay with the aid off; "
+              "hit-test misses empty space and finds a real mark by its own "
+              "geometry; Delete Point/All really mutate the mark list; "
+              "closing discards every mark and pending point")
+        # --- end Live Measuring check -----------------------------------------
 
     provenance.PROFILE_PATH = _orig_profile_path_for_render_check
 

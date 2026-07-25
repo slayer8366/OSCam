@@ -59,6 +59,90 @@ resolutions/formats Part 02's own standalone verification already found.
 Full `--render-check` sweep across all 16 `--render-check`-bearing modules
 plus `camera_backend.py`'s own self-check: all pass.
 
+### Build: Live Measuring (quick ruler)
+
+A new, separate feature — full design in a user-provided
+`PLAN_quick_ruler.md` (not checked into the repo) — not to be confused with
+Measure/Part 05's own "Live measure panel" above, though it deliberately
+borrows that feature's interaction shape. Live Measuring is a pixel-only
+overlay on the LIVE, moving feed: no freeze, no calibration, nothing ever
+committed to a store. A floating panel (Options > Measure > "Live
+Measuring...", alongside the two existing actions) offers the same four
+shape tools (distance/angle/polygon/ellipse), but every result reads in
+plain pixels (or degrees) — `"143.2 px"`, never a calibrated µm figure —
+so a screenshot of it can never be mistaken for a measurement. Marks draw
+straight into the existing focus-box overlay buffer (no separate canvas
+widget); closing the panel discards everything, since nothing here was
+ever durable in the first place.
+
+**Module-boundary rule, enforced structurally**: Live Measuring must never
+import or call into `calibrate.py`/`annotations.py`/`provenance.py`, or
+reuse Part 05's own preview-to-sensor conversion
+(`native_point_from_preview_click`) — `assert_live_measuring_has_no_
+calibration_dependency()` scans every Live Measuring function/method's own
+source for those names, the same way `assert_only_camera_backend_imports_
+picamera2()` polices the camera-import boundary.
+
+**Picked up this session from a build that had dropped mid-flight** (same
+pattern as Part 05's own session before it): the feature's code — the
+pixel-math helpers, `LiveMeasuringPanel`, the `_live_measuring_*` state
+machine on `FocusPreviewWindow`, the overlay-drawing and signature-folding
+changes, the `eventFilter`/`keyPressEvent` wiring — was already written and
+looked complete by inspection. It was not. **Two real bugs found and
+fixed, both in the structural self-check itself, neither previously run
+even once:**
+1. `assert_live_measuring_has_no_calibration_dependency()` was defined but
+   never called from anywhere — not from `render_check()`, not from
+   anywhere else. An assertion nobody runs is not a guard, it only reads
+   like one. It is now called at the top of `render_check()`'s own new
+   Live Measuring section.
+2. Once actually run, it immediately failed — on itself.
+   `lores_point_from_preview_click`'s own docstring *explains*, by name,
+   why it deliberately does NOT reuse `native_point_from_preview_click`
+   (Part 05's function) — and the self-check's naive `word in
+   inspect.getsource(...)` scan can't distinguish a docstring mentioning a
+   forbidden name from code actually calling it. Fixed with a new
+   `_source_without_docs_and_comments()` helper (tokenizes the source and
+   drops every `COMMENT`/`STRING` token before scanning) — a real
+   reference always survives this strip, since it's an attribute access or
+   a call, never a string literal, so this only removes the false
+   positive, not real coverage.
+
+No render_check coverage existed for this feature at all before this
+session; none of the above would have surfaced without writing it. The new
+"Live Measuring check" block (`qt_shell.py --render-check`) proves: the
+module-boundary self-check now genuinely runs clean; the panel opens/reuses
+like every other launcher in this file; opening either Live Measuring or
+Measure's own live panel (Part 05) closes the other first, in both
+directions (both repurpose `self.preview`'s clicks); a real click routed
+through the real `eventFilter` converts to the correct LORES_RES-space
+point via `frac_from_point` (computed independently in the test, not a
+hand-typed literal) and suppresses ordinary box-drag; distance (2 points)
+and angle (3 points) auto-finish at their own count while polygon needs an
+explicit double-click at or past its own minimum (and a double-click
+*before* the minimum is a no-op, not a short shape); Escape cancels an
+in-progress shape without touching an already-finished one; the overlay
+push actually reaches `camera.set_overlay` with the focus aid off (proving
+`_live_measuring_notify_changed`'s direct-push path is really wired, not
+just present); the hit test misses empty space and finds a real mark by
+its own segment geometry; `_live_measuring_delete_point`/`_delete_all`
+(pulled out of the context-menu handler specifically so this could be
+tested without driving the actual, blocking `QMenu.exec_` — the same
+reason Part 05's own commit/delete are already separate methods) really
+mutate the mark list; closing discards every mark and pending point. Full
+`--render-check` sweep, all 16 modules: no regressions.
+
+Three bugs in a row now that a passing self-check proved a mechanism works
+in isolation while the actual integration point stayed broken (this one;
+Part 05's orphaned `eventFilter` wiring; Part 02's `get_capabilities()`
+crash) — written up as a durable rule in a new `PHILOSOPHY.md`, rather than
+left as three separate one-off HANDOFF.md notes. Rig verification for this
+feature is explicitly still open, and specifically needs to confirm marks
+stay pinned to their own screen position and visibly do NOT track the
+specimen once the stage moves — `FakeCamera` cannot produce a moving feed
+to exercise that claim, and it's the one this whole feature's design rests
+on.
+
 ### Build: Live measure panel (Preferences-dialog plan set, Part 05)
 
 Builds the intent recorded below. Full `--render-check` sweep passes
