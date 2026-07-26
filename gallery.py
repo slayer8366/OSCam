@@ -221,6 +221,32 @@ def capture_has_annotation(raw_path):
         return False
 
 
+def known_green_hashes(out_root=None):
+    """The pixel_sha256 of every real on-disk capture's green plane under
+    out_root -- the capture-side half of Export's orphan-evidence
+    known_hashes set (annotations.find_orphans's known_hashes argument).
+    The other half, cache-only planes committed through Live Measuring
+    (Part 05) that never exist as a capture session under out_root, comes
+    from plane_cache.list_cached_hashes() -- unioned at the qt_shell.py
+    call site, not here, since this module has no existing dependency on
+    plane_cache.py and shouldn't gain one just for this. Decodes every
+    real capture's raw mosaic (same cost as capture_has_annotation, just
+    for the whole tree at once), so this is deliberately not run on a
+    tight loop; a decode failure for one entry is skipped, not fatal to
+    the scan, same defensive contract as capture_has_annotation."""
+    measure = _lazy_measure()
+    hashes = set()
+    for entry in list_gallery_entries(out_root):
+        if entry.raw_path is None:
+            continue
+        try:
+            plane = measure.load_measurement_plane(entry.raw_path)
+            hashes.add(_pixel_hash.pixel_sha256(plane))
+        except Exception:
+            continue
+    return hashes
+
+
 try:
     from PyQt5.QtWidgets import (QWidget, QDialog, QVBoxLayout, QHBoxLayout,
                                  QPushButton, QListWidget, QListWidgetItem,
@@ -574,6 +600,56 @@ def render_check():
           "hash (measure.py's own load_measurement_plane substrate), "
           "correctly distinguishes an annotated plane from an unannotated "
           "sibling")
+
+    # known_green_hashes: the capture-side half of Export's orphan-evidence
+    # known_hashes union (see qt_shell.py's Export action / HANDOFF.md's
+    # step-3 section) -- must return exactly the real green-plane hashes
+    # of every capture under out_root, cross-checked against independently
+    # computed hashes, not just "returns something non-empty."
+    kh_root = tmp_root / "known_hashes"
+    kh_cap_root = kh_root / "captures"
+    kh_prov_root = kh_root / "provenance"
+    kh_cap_root.mkdir(parents=True)
+    kh_prov_root.mkdir(parents=True)
+    _orig_out_root2, _orig_prov_root2 = provenance.OUT_ROOT, provenance.PROVENANCE_ROOT
+    provenance.OUT_ROOT, provenance.PROVENANCE_ROOT = kh_cap_root, kh_prov_root
+    try:
+        ks1 = kh_cap_root / "2024-02-01_000001"
+        ks1.mkdir()
+        kp1 = kh_prov_root / "2024-02-01_000001"
+        kp1.mkdir()
+        kcap1 = {"index": 0, "kind": "snap", "file_prefix": "snap_",
+                 "frame_count": 1, "timestamp": "2024-02-01T00:00:01+00:00"}
+        (kp1 / "session.json").write_text(
+            json.dumps({"capture_dir": str(ks1), "captures": [kcap1]}))
+        plane1 = np.random.default_rng(2).integers(
+            0, 4096, size=(green_h, green_w)).astype(np.uint16)
+        tifffile.imwrite(str(ks1 / "snap_frame_0000.tif"), plane1)
+        h1 = _pixel_hash.pixel_sha256(plane1)
+
+        ks2 = kh_cap_root / "2024-02-01_000002"
+        ks2.mkdir()
+        kp2 = kh_prov_root / "2024-02-01_000002"
+        kp2.mkdir()
+        kcap2 = {"index": 0, "kind": "snap", "file_prefix": "snap_",
+                 "frame_count": 1, "timestamp": "2024-02-01T00:00:02+00:00"}
+        (kp2 / "session.json").write_text(
+            json.dumps({"capture_dir": str(ks2), "captures": [kcap2]}))
+        plane2 = np.random.default_rng(3).integers(
+            0, 4096, size=(green_h, green_w)).astype(np.uint16)
+        tifffile.imwrite(str(ks2 / "snap_frame_0000.tif"), plane2)
+        h2 = _pixel_hash.pixel_sha256(plane2)
+
+        result = known_green_hashes(kh_cap_root)
+        assert result == {h1, h2}, \
+            "must return exactly the real green-plane hashes of every capture, no more, no less"
+        assert known_green_hashes(kh_cap_root) == known_green_hashes(), \
+            "out_root=None must default to provenance.OUT_ROOT, same as list_gallery_entries"
+    finally:
+        provenance.OUT_ROOT, provenance.PROVENANCE_ROOT = _orig_out_root2, _orig_prov_root2
+    print("known_green_hashes check PASS: returns exactly the independently "
+          "computed green-plane hashes of every real capture under out_root, "
+          "defaults to provenance.OUT_ROOT when out_root is None")
 
     shutil.rmtree(tmp_root, ignore_errors=True)
 

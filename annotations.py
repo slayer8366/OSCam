@@ -189,6 +189,25 @@ def calibration_ref_for(objective, store=None):
     }
 
 
+def stored_calibration_ref(pixel_sha256, store=None):
+    """The calibration_ref recorded on pixel_sha256's own image record, or
+    None if no record exists. This is the record's FIRST-COMMIT snapshot
+    (new_image_record/save_mark set it once, at the record's creation, and
+    never touch it again) -- accurate for the common case (all of an
+    image's marks made in one calibration epoch), but NOT authoritative if
+    the same objective is recalibrated mid-record: no mark builder here
+    (build_distance_mark/build_angle_mark/build_polygon_mark/
+    build_ellipse_mark) stores its own entry_id or calibration pointer, so
+    there is no way to tell, after the fact, whether a later mark on this
+    same image was actually made under a different entry than the one
+    stored here. A known, documented schema gap, not one this function
+    closes -- closing it would mean adding a per-mark calibration pointer
+    to commit_measurement()'s mark schema (see HANDOFF.md's
+    MeasureWindow-extraction step-3 section)."""
+    record = image_record_for(pixel_sha256, store)
+    return record.get("calibration_ref") if record else None
+
+
 # ---------------------------------------------------------------------------
 # Mark builders: distance, angle, polygon (pure geometry, no fit),
 # and ellipse (schema for a fit's RESULT; the fit itself is not built here)
@@ -448,6 +467,53 @@ def render_check():
             assert abs(ref["um_per_px"] - 1.0) < 1e-9
             print("calibration_ref_for check PASS: None for an uncalibrated "
                   "objective, names the exact current entry_id once calibrated")
+
+            # stored_calibration_ref: the record-level snapshot, pinned at
+            # first commit -- must diverge from calibration_ref_for's
+            # ALWAYS-current lookup once the same objective is
+            # recalibrated. This is the explicit, testable proof this
+            # function's whole premise rests on (see its own docstring).
+            ref1 = calibration_ref_for("40x")
+            green2 = np.arange(64, dtype=np.uint16).reshape(8, 8) + 1000
+            h2 = _pixel_hash.pixel_sha256(green2)
+            orig_annotation_path2 = ANNOTATION_PATH
+            tmp_dir2 = Path("/tmp/zynergy_annotations_render_check_stored_ref")
+            if tmp_dir2.exists():
+                import shutil
+                shutil.rmtree(tmp_dir2)
+            ANNOTATION_PATH = tmp_dir2 / "annotations.json"
+            try:
+                save_mark(h2, d, record_defaults={
+                    "shape": [8, 8], "dtype": "uint16", "kind": "green",
+                    "calibration_ref": ref1, "source_sha256": None})
+                assert stored_calibration_ref(h2) == ref1, \
+                    "must return the record's first-commit calibration_ref"
+                assert stored_calibration_ref(h2) == calibration_ref_for("40x"), \
+                    "at first commit, the stored ref and the current ref agree"
+
+                # Recalibrate "40x" to a new entry -- calibration_ref_for
+                # must now reflect it; stored_calibration_ref must NOT.
+                new_entry = _calibrate.build_calibration_entry(
+                    Path("/tmp/fake2.dng"), (0.0, 0.0), (1000.0, 0.0), 1000.0,
+                    objective="40x", target_type="stage micrometer", focus_score=300.0)
+                _calibrate.save_calibration("40x", new_entry)
+                ref2 = calibration_ref_for("40x")
+                assert ref2["entry_id"] != ref1["entry_id"], \
+                    "recalibrating must actually produce a new entry_id"
+                assert stored_calibration_ref(h2) == ref1, \
+                    "stored_calibration_ref must stay pinned to the record's " \
+                    "original calibration, not silently track the recalibration"
+                assert stored_calibration_ref(h2) != calibration_ref_for("40x"), \
+                    "the whole point: the two functions must now DISAGREE"
+
+                assert stored_calibration_ref("0" * 64) is None, \
+                    "no record at all must give None, not raise"
+                print("stored_calibration_ref check PASS: pinned to the record's "
+                      "first-commit calibration_ref, diverges from "
+                      "calibration_ref_for after a mid-record recalibration, "
+                      "None for a hash with no record")
+            finally:
+                ANNOTATION_PATH = orig_annotation_path2
         finally:
             _calibrate.CALIBRATION_PATH = orig_calib_path
     else:
