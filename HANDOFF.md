@@ -1687,13 +1687,13 @@ by the monkeypatched render-check case above, not by an actual human
 click; that on-rig confirmation is still outstanding, same standing
 limitation as the rest of this file's Qt-facing work.
 
-### Live Measure frozen canvas must fit its frame on first freeze — intent recorded, not yet built
+### Live Measure frozen canvas must fit its frame on first freeze — BUILT
 
-Phase 1 of 3 (record intent). Full plan in a user-provided
-`live_measure_canvas_fit_three_phases.md` (not checked into the repo).
-Found during on-rig testing of the freeze-on-first-click fix — the core
-behavior is confirmed working (first click froze the frame and registered
-a real 14.885 µm distance from that same click) — `qt_shell.py` only.
+Full plan in a user-provided `live_measure_canvas_fit_three_phases.md`
+(not checked into the repo). Found during on-rig testing of the
+freeze-on-first-click fix — the core behavior is confirmed working (first
+click froze the frame and registered a real 14.885 µm distance from that
+same click) — `qt_shell.py` only, entirely inside `_LiveMeasureCanvas`.
 
 **Two residual, cosmetic-but-disruptive defects**:
 1. The first freeze of a session renders the frozen plane as a small
@@ -1731,42 +1731,78 @@ real geometry retained from the first time it was ever shown.
   freeze would mean carrying the full RGB still alongside the green plane;
   parked deliberately, out of scope here.
 
-**Plan**:
-1. Factor the fit into one small `_fit_to_view` method (no-ops when
+**Landed exactly as planned in three of four steps; the fourth was
+confirmed not applicable, not silently skipped**:
+1. The fit is factored into one small `_fit_to_view` method (no-ops when
    `_pixmap_item is None`), called from `set_image` (unchanged) and two
-   new overrides, `resizeEvent`/`showEvent`, so real geometry arriving
-   after `set_image` actually triggers a refit.
-2. Don't fight the user's existing `wheelEvent` zoom: a new
-   `self._user_zoomed` flag, set `True` in `wheelEvent`, makes
-   `_fit_to_view` a no-op; reset to `False` in `set_image`, since a new
-   frozen plane is a fresh view that should fit again.
-3. Match the live preview's appearance: `setBackgroundBrush(QColor("black"))`,
-   `setFrameShape(QFrame.NoFrame)`, scrollbars off in both directions.
-4. Update the CALIBRATION INTEGRATION banner's removal list only if any of
-   the above lands inside a block it already lists (it doesn't — this is
-   entirely inside Part 05's own `_LiveMeasureCanvas`, a separate feature).
+   new overrides, `resizeEvent`/`showEvent` — real geometry arriving after
+   `set_image` now actually triggers a refit. This is the direct fix.
+2. `self._user_zoomed`, set `True` in `wheelEvent`, makes `_fit_to_view` a
+   no-op; reset to `False` in `set_image`, since a new frozen plane is a
+   fresh view that should fit again.
+3. `setBackgroundBrush(QColor("black"))`, `setFrameShape(QFrame.NoFrame)`,
+   both scrollbar policies off — matches the live preview's own
+   appearance. `QFrame` added to the existing guarded PyQt5 import.
+4. **Confirmed not applicable**: checked whether any of the above lands
+   inside a block the CALIBRATION INTEGRATION banner (~926) already lists
+   for removal — it doesn't. `_LiveMeasureCanvas` is entirely inside Part
+   05's own feature, unrelated to that banner's separable calibration
+   block. No banner update needed; recorded here so a future reader
+   doesn't wonder whether this was missed.
 
-**Non-goals**: do not reorder `set_image`/`setCurrentWidget` in
-`_on_live_measure_freeze_done` — that ordering is the freeze fix's own
-load-bearing invariant (`_live_measure_frozen = True` only after a
-verified swap); fix the fit inside the canvas class instead. No change to
-green-plane extraction, no color path, no touching `measure.py`/
-`camera_backend.py`/`calibrate.py`, no change to the capture latency.
+**Where the build diverged from intent — the one real deviation, worth
+flagging on its own**: render-check case 5's first draft followed the plan
+literally — simulate a click via `mapFromScene`/`mapToScene` at two
+different zoom levels and assert the round-tripped scene points (and the
+um values built from them) were identical. **It failed, and the failure
+was correct, not a bug in the fix**: `QGraphicsView.mapFromScene` rounds
+to an integer view pixel, so a "click" at a small (mis-fitted) zoom
+genuinely lands less precisely than the same nominal scene point clicked
+at a larger zoom — that IS the click-imprecision mechanism phase 1's own
+note describes, not a violation of transform-independence. The test was
+measuring the wrong thing (click precision, which correctly *does* vary
+with zoom) instead of the actual phase-1 claim (that *already-recorded*
+scene coordinates measure identically regardless of the canvas's zoom at
+measurement time). Rewritten to test that directly: `add_point_
+programmatic` stores the exact scene coordinate it's handed, and
+`build_distance_mark` run on those stored points is bit-identical across
+two different zoom levels, since neither function ever reads
+`self.transform()`. Same shape of finding as the onboarding-gate build's
+own step 4 (a plan-literal approach revealing something the diagnosis
+under-specified) — the value of a three-phase record is exactly that the
+build entry can say this rather than quietly conforming to the plan's
+literal wording.
 
-**Render-check coverage planned**: first-show fit (the direct regression
-test — set_image before any real layout, then a forced resize/show must
-refit rather than keep the stale transform); repeat freeze still fits
-(guards the already-working path); user zoom survives a resize; a new
-`set_image` re-enables auto-fit; and the transform-independence of
-measurement values (locks in the "not a bug" finding above).
+**Non-goals, honored**: `set_image`/`setCurrentWidget`'s ordering in
+`_on_live_measure_freeze_done` is untouched — the freeze fix's own
+load-bearing invariant; no green-plane/color changes; `measure.py`/
+`camera_backend.py`/`calibrate.py` untouched; capture latency unchanged.
 
-**Definition of done**: full `--render-check` sweep passes including the
-five new cases; explicitly **not** done until confirmed on-rig — first
-freeze fills the frame, the swap reads as continuous rather than a
-different widget appearing, and manual zoom still behaves.
+**Render-check coverage added**: first-show fit (the direct regression
+test — `set_image` before any real layout, then a forced resize/show
+correctly refits rather than keeping the stale transform); repeat freeze
+still fits (guards the already-working path); user zoom survives a
+resize; a new `set_image` re-enables auto-fit; and transform-independent
+measurement (see the deviation note above for what this actually checks).
 
-No code has changed for this yet — see the matching Build entry once it
-lands.
+**Verified**: full `qt_shell.py --render-check` sweep passes (exit 0),
+including all five new "Live measure canvas-fit check PASS" lines.
+**Explicitly not done until confirmed on-rig** — self-check cannot prove
+any of: first freeze fills the frame at correct scale; the live-to-frozen
+swap reads as continuous (no gray flash, no border, no visible relayout);
+second and later freezes still correct after moving the stage; wheel-zoom
+survives a window resize; closing and reopening the Live measure box
+fits correctly on the reopened view. Carried forward to the pending bench
+session as its own checklist, not treated as done:
+- [ ] First freeze of a fresh session fills the frame at correct scale.
+- [ ] Swap from live to frozen reads as continuous — no gray flash, no
+      border, no visible relayout.
+- [ ] Second and later freezes still correct, including after moving the
+      stage.
+- [ ] Wheel-zoom on the frozen plane, then resize the window — zoom is
+      preserved.
+- [ ] Close and reopen the Live measure box — canvas fits correctly on
+      the reopened view.
 
 ## Things that will bite you if you don't know them
 

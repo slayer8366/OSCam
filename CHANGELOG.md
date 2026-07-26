@@ -7,6 +7,48 @@ this file is the historical record of what happened and why.
 
 ## 2026-07-26
 
+### Build: fit frozen Live Measure canvas to its frame, match preview letterboxing
+
+Builds the intent recorded in the prior commit — landed exactly as
+planned in three of four steps; the fourth (CALIBRATION INTEGRATION
+banner update) was confirmed not applicable, not silently skipped:
+`_LiveMeasureCanvas` isn't part of that banner's removal list at all.
+`qt_shell.py` only, entirely inside `_LiveMeasureCanvas`.
+
+`_fit_to_view` factors the fit out, called from `set_image` (unchanged)
+plus new `resizeEvent`/`showEvent` overrides — this is the direct fix
+for the reported first-freeze thumbnail: `set_image` runs before the
+stack-layout swap gives the canvas real geometry, so the old code's
+inline `fitInView` call computed against stale/absent geometry once and
+never got a chance to recompute. `self._user_zoomed` (set in
+`wheelEvent`, cleared in `set_image`) stops the new auto-refit from
+fighting a manual zoom. `setBackgroundBrush(QColor("black"))` +
+`setFrameShape(QFrame.NoFrame)` + both scrollbar policies off match the
+live preview's own appearance. `QFrame` added to the existing guarded
+PyQt5 import.
+
+**Where the build diverged from intent**: render-check case 5's first
+draft followed the plan literally — simulate a click via `mapFromScene`/
+`mapToScene` at two zoom levels and expect identical round-tripped
+points. It failed, correctly: `mapFromScene` rounds to an integer view
+pixel, so a "click" at a small (mis-fitted) zoom is genuinely less
+precise than the same nominal point at a larger zoom — real click
+imprecision, not a transform-independence bug. The test was checking
+click precision (which correctly varies with zoom), not the actual
+phase-1 claim (that already-recorded scene coordinates measure
+identically regardless of zoom at measurement time). Rewritten to test
+that directly: `add_point_programmatic` stores the exact scene
+coordinate it's handed, and `build_distance_mark` on those stored points
+is identical across zoom levels, since neither reads the view
+transform.
+
+**Verification**: full `qt_shell.py --render-check` sweep passes (exit
+0), including all five new "Live measure canvas-fit check PASS" lines.
+Not yet exercised on-rig — carried forward as its own checklist (first
+freeze fills the frame; swap reads as continuous; later freezes and
+wheel-zoom-across-resize still behave; reopening the box re-fits
+correctly).
+
 ### Intent: Live Measure frozen canvas must fit its frame on first freeze
 
 Recording intent before building, per this repo's two-phase documentation
