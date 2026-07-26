@@ -200,6 +200,27 @@ except ImportError:
     except ImportError:
         _pixel_hash = None
 
+# export.py / publish.py (MeasureWindow extraction, step 3): dedicated
+# File-menu actions for the store-wide Export and the per-image Publish,
+# relocated out of MeasureWindow (which is not deleted this step -- see
+# HANDOFF.md's step-3 section). None (the menu action reports unavailable
+# rather than crashing) if either module is not alongside this file.
+try:
+    from . import export as _export
+except ImportError:
+    try:
+        import export as _export
+    except ImportError:
+        _export = None
+
+try:
+    from . import publish as _publish
+except ImportError:
+    try:
+        import publish as _publish
+    except ImportError:
+        _publish = None
+
 # The green plane calibrate.py measures on: half the sensor's resolution each
 # axis (see debayer.py's extract_green / the build checklist's own invariant).
 # The ruler's field-of-view-in-microns is derived from THIS width/height, not
@@ -2218,6 +2239,15 @@ if _HAVE_QT:
         # hashing/caching and the preview<->canvas swap actually happen.
         live_measure_freeze_done_signal = pyqtSignal(object)
 
+        # EXPORT / PUBLISH (MeasureWindow extraction, step 3): both run on a
+        # worker thread, same shape as green_extract_done_signal above --
+        # export is store-wide (no open image dependency), publish resolves
+        # its own image via GalleryPickDialog rather than any open
+        # MeasureWindow's self._plane, since neither has one once triggered
+        # from this menu.
+        export_results_done_signal = pyqtSignal(object)
+        publish_package_done_signal = pyqtSignal(object)
+
         def __init__(self, camera, meter, tick_ms=33, display_flags=None):
             super().__init__()
             self.camera = camera
@@ -2614,6 +2644,8 @@ if _HAVE_QT:
             filemenu.addAction("Archive session raws...", self._open_archive_wizard)
             filemenu.addAction("Browse captures...", self._open_gallery_browser)
             filemenu.addAction("Extract green plane...", self._open_green_extraction)
+            filemenu.addAction("Export measurement results...", self._open_export_results)
+            filemenu.addAction("Publish package...", self._open_publish_package)
             filemenu.addAction("Quit", self.close)
             view = self.menuBar().addMenu("View")
             view.addAction("Reset field (R)").triggered.connect(self.meter.reset_field)
@@ -2726,6 +2758,8 @@ if _HAVE_QT:
             self.record_stop_done_signal.connect(self._on_record_stop_finished)
             self.zstack_plane_done_signal.connect(self._on_zstack_plane_finished)
             self.green_extract_done_signal.connect(self._on_green_extract_finished)
+            self.export_results_done_signal.connect(self._on_export_results_finished)
+            self.publish_package_done_signal.connect(self._on_publish_package_finished)
 
             self.camera.start()
             startup_on = bool(load_pref("focus_aid_at_startup", False))
@@ -4878,6 +4912,200 @@ if _HAVE_QT:
                     "green extraction failed",
                     "green extraction failed:\n\n{}".format(detail))
 
+        def _open_export_results(self):
+            # EXPORT MEASUREMENT RESULTS (MeasureWindow extraction, step 3):
+            # store-wide, no dependency on any open image -- a File-menu
+            # action rather than something that needs a MeasureWindow open.
+            # MeasureWindow._on_export_results itself is untouched; this is
+            # a second, independent call site for the same underlying
+            # export.export_measurements.
+            if self._capturing:
+                return
+            if _export is None or _annotations is None:
+                self._set_capture_status(
+                    "export unavailable",
+                    "export.py or annotations.py not found beside this file, skipped")
+                return
+            out_path, _ = QFileDialog.getSaveFileName(
+                self, "Export measurement results", "measurements.json",
+                "JSON (*.json);;All files (*)")
+            if not out_path:
+                return
+            self._run_export_results_cmd(Path(out_path))
+
+        def _run_export_results_cmd(self, out_path):
+            self._capturing = True   # reuse the same busy-guard the capture path uses
+            self._set_capture_controls(enabled=False, label="Exporting ...")
+            self._set_capture_status("exporting measurement results ...",
+                                     "writing {}".format(out_path))
+
+            def _worker():
+                try:
+                    store = _annotations.load_annotations()
+                    result = _export.export_measurements(
+                        store=store, out_path=str(out_path))
+                except Exception as exc:
+                    self.export_results_done_signal.emit(
+                        (False, str(out_path), 0, None, str(exc)))
+                    return
+                total_measurements = result["total_measurements"]
+
+                # Orphan evidence, never a gate: the write above already
+                # landed regardless of what happens below (see
+                # HANDOFF.md's step-3 section). known_hashes is the union
+                # of every real on-disk capture's green-plane hash
+                # (gallery.py's known_green_hashes) and every cache-only
+                # plane a Live Measuring commit may point at
+                # (plane_cache.list_cached_hashes) -- either source
+                # missing or failing means the known set is PARTIAL, which
+                # would report real, committed marks as false-positive
+                # orphans just as confidently as an empty set would, so
+                # that case is treated as "coverage unavailable," not
+                # silently computed anyway.
+                capture_scan_ok = False
+                cache_scan_ok = False
+                capture_hashes = set()
+                cache_hashes = set()
+                if _gallery is not None:
+                    try:
+                        capture_hashes = _gallery.known_green_hashes(provenance.OUT_ROOT)
+                        capture_scan_ok = True
+                    except Exception:
+                        capture_scan_ok = False
+                if _plane_cache is not None:
+                    try:
+                        cache_hashes = set(_plane_cache.list_cached_hashes())
+                        cache_scan_ok = True
+                    except Exception:
+                        cache_scan_ok = False
+
+                if capture_scan_ok and cache_scan_ok:
+                    known_hashes = capture_hashes | cache_hashes
+                    orphan_status = {"orphans": _annotations.find_orphans(store, known_hashes)}
+                else:
+                    missing = []
+                    if not capture_scan_ok:
+                        missing.append("capture-root scan (gallery.py)")
+                    if not cache_scan_ok:
+                        missing.append("plane-cache scan (plane_cache.py)")
+                    orphan_status = {
+                        "unavailable": "orphan scan unavailable: {}".format(
+                            ", ".join(missing))}
+
+                self.export_results_done_signal.emit(
+                    (True, str(out_path), total_measurements, orphan_status, None))
+
+            threading.Thread(target=_worker, daemon=True).start()
+
+        def _on_export_results_finished(self, payload):
+            self._capturing = False
+            self._set_capture_controls(enabled=True, label="Capture")
+            ok, out_path, total_measurements, orphan_status, error = payload
+            if not ok:
+                self._set_capture_status(
+                    "export failed", "export failed:\n\n{}".format(error))
+                return
+            detail = "wrote {} ({} measurement(s))".format(out_path, total_measurements)
+            if "orphans" in orphan_status:
+                orphans = orphan_status["orphans"]
+                # Evidence, never a gate (same temperament as
+                # poly2_flag/sharpness_relative_flag/calibration_staleness):
+                # the write already succeeded either way. A clean scan with
+                # zero orphans stays silent about it here, same as those
+                # other detectors report nothing when there's nothing to
+                # flag -- only "unavailable" gets its own explicit note,
+                # since that (not a clean scan) is the case that must never
+                # be mistaken for "0 orphans."
+                if orphans:
+                    detail += "\n\n{} orphaned record(s) (no matching capture " \
+                              "or cache plane found):\n{}".format(
+                                  len(orphans), "\n".join(orphans))
+            else:
+                detail += "\n\n{}".format(orphan_status["unavailable"])
+            self._set_capture_status("measurements exported", detail)
+
+        def _open_publish_package(self):
+            # PUBLISH PACKAGE (MeasureWindow extraction, step 3): image-
+            # specific, but this menu action has no open MeasureWindow (or
+            # its self._plane) to work from -- picks its own image via
+            # GalleryPickDialog, the same input-picking step
+            # _open_green_extraction already uses. calibration_ref is
+            # Option B+ (see HANDOFF.md's step-3 section): the record's
+            # OWN stored calibration_ref, not whatever is currently active
+            # for some objective -- there is no objective picker here at
+            # all, deliberately.
+            if self._capturing:
+                return
+            if _gallery is None:
+                self._set_capture_status(
+                    "publish unavailable",
+                    "gallery.py not found beside this file, skipped")
+                return
+            if _publish is None or _measure is None or _pixel_hash is None:
+                self._set_capture_status(
+                    "publish unavailable",
+                    "publish.py, measure.py, or pixel_hash.py not found "
+                    "beside this file, skipped")
+                return
+            dlg = _gallery.GalleryPickDialog(provenance.OUT_ROOT, self)
+            if dlg.exec_() != QDialog.Accepted:
+                return
+            paths = dlg.selected_paths()
+            if not paths:
+                return
+            raw_path = paths[0]
+            out_dir = QFileDialog.getExistingDirectory(
+                self, "Create publication package in directory")
+            if not out_dir:
+                return
+            self._run_publish_package_cmd(raw_path, Path(out_dir))
+
+        def _run_publish_package_cmd(self, raw_path, out_dir):
+            self._capturing = True
+            self._set_capture_controls(enabled=False, label="Publishing ...")
+            self._set_capture_status("publishing package ...",
+                                     "publishing {} to {}".format(raw_path, out_dir))
+
+            def _worker():
+                try:
+                    plane = _measure.load_measurement_plane(raw_path)
+                    pixel_sha256 = _pixel_hash.pixel_sha256(plane)
+                    calib_ref = (_annotations.stored_calibration_ref(pixel_sha256)
+                                if _annotations is not None else None)
+                    import tifffile
+                    Path(out_dir).mkdir(parents=True, exist_ok=True)
+                    green_path = Path(out_dir) / "green_plane.tif"
+                    tifffile.imwrite(str(green_path), plane, compression="deflate")
+                    manifest = _publish.publish_measurements(
+                        green_path, calibration_ref=calib_ref, out_dir=str(out_dir))
+                    self.publish_package_done_signal.emit(
+                        (True, str(out_dir), manifest, None))
+                except Exception as exc:
+                    self.publish_package_done_signal.emit(
+                        (False, str(out_dir), None, str(exc)))
+
+            threading.Thread(target=_worker, daemon=True).start()
+
+        def _on_publish_package_finished(self, payload):
+            self._capturing = False
+            self._set_capture_controls(enabled=True, label="Capture")
+            ok, out_dir, manifest, error = payload
+            if not ok:
+                self._set_capture_status(
+                    "publish failed", "publish failed:\n\n{}".format(error))
+                return
+            no_calib = "objective" not in manifest.get("calibration", {})
+            detail = ("wrote package to {}:\n"
+                      "  green_plane.tif (pixel_sha256 {}...)\n"
+                      "  results.json ({} measurement(s) for this image)\n"
+                      "  manifest.json (provenance chain{})").format(
+                out_dir,
+                manifest["green_plane"]["pixel_sha256"][:16],
+                manifest["results"]["total_measurements"],
+                "; NO calibration on record -- results are pixel-only"
+                if no_calib else "")
+            self._set_capture_status("package published", detail)
+
         def _open_gallery_browser(self):
             # Standalone browse mode (gallery.py): just looking, no commit.
             # Independent of self._capturing -- it only reads the filesystem,
@@ -5244,6 +5472,13 @@ def main(argv=None):
 # Headless self-check for the pure parts (no PyQt, no camera)
 # ---------------------------------------------------------------------------
 def render_check():
+    # Declared up front (Python requires `global` to precede every use of
+    # a name in the function, including reads) -- rebound later, briefly,
+    # by the Export absent-vs-empty coverage and forced-failure checks
+    # (temporarily setting _gallery/_plane_cache/_export, always restored
+    # in their own finally blocks).
+    global _gallery, _plane_cache, _export
+
     # Never touch the REAL ~/imx/profile.json for the whole duration of this
     # function, no matter how many FocusPreviewWindow instances get built
     # below or what triggers save_profile's own probe-and-save fallback --
@@ -6234,6 +6469,186 @@ def render_check():
               "debayer.py --green subprocess call produces a real, "
               "correctly-provenanced green-plane file, and a failed "
               "extraction is reported rather than swallowed")
+
+        # Export / Publish menu actions (MeasureWindow extraction, step 3):
+        # workers driven directly (bypassing GalleryPickDialog.exec_, which
+        # can't run headless, same reason the green-extraction check above
+        # calls its worker directly), processEvents() pumped until
+        # _capturing clears since both done signals are genuinely queued
+        # cross-thread connections too.
+        ex_root = Path("/tmp/zynergy_render_check_export_publish")
+        if ex_root.exists():
+            shutil.rmtree(ex_root)
+        ex_cap_root = ex_root / "captures"
+        ex_prov_root = ex_root / "provenance"
+        ex_cap_root.mkdir(parents=True)
+        ex_prov_root.mkdir(parents=True)
+
+        _orig_out_root4, _orig_prov_root4 = provenance.OUT_ROOT, provenance.PROVENANCE_ROOT
+        provenance.OUT_ROOT, provenance.PROVENANCE_ROOT = ex_cap_root, ex_prov_root
+        orig_annotation_path2 = _annotations.ANNOTATION_PATH
+        _annotations.ANNOTATION_PATH = ex_root / "annotations.json"
+        excam = FakeCamera(async_delay_s=0.0)
+        exwin = FocusPreviewWindow(excam, FocusMeter())
+        try:
+            green_h2, green_w2 = GREEN_PLANE_RES[1], GREEN_PLANE_RES[0]
+
+            # A cache-only plane -- committed through Live Measuring, never
+            # written as a capture session under OUT_ROOT -- is exactly the
+            # regression case the known_green_hashes/list_cached_hashes
+            # union exists to catch: it must NOT show up as an orphan.
+            cache_plane = np.random.default_rng(5).integers(
+                0, 4096, size=(green_h2, green_w2)).astype(np.uint16)
+            _cache_path, cache_hash = _plane_cache.store_plane(cache_plane)
+            _annotations.save_mark(
+                cache_hash, {"type": "distance", "note": "render_check"},
+                record_defaults={"shape": [green_h2, green_w2], "dtype": "uint16",
+                                 "kind": "green", "calibration_ref": None,
+                                 "source_sha256": None})
+
+            # A genuinely orphaned record: no matching capture, no cached
+            # plane -- must be the ONLY hash reported when both scans run.
+            orphan_hash = "0" * 64
+            _annotations.save_mark(
+                orphan_hash, {"type": "distance", "note": "render_check orphan"},
+                record_defaults={"shape": [4, 4], "dtype": "uint16",
+                                 "kind": "green", "calibration_ref": None,
+                                 "source_sha256": None})
+
+            ex_out_path = ex_root / "measurements.json"
+            exwin._run_export_results_cmd(ex_out_path)
+            _pump_deadline = time.time() + 15.0
+            while exwin._capturing and time.time() < _pump_deadline:
+                qtapp.processEvents()
+                time.sleep(0.005)
+            assert not exwin._capturing, "export never completed"
+            assert ex_out_path.is_file(), "export must write the file"
+            exported = json.loads(ex_out_path.read_text())
+            assert exported["total_measurements"] == 2
+            status_text = exwin.capture_status.toolTip()
+            assert orphan_hash in status_text, \
+                "the genuinely orphaned record must be reported"
+            assert cache_hash not in status_text, \
+                "a cache-only plane with a real committed mark must NOT be " \
+                "reported as an orphan -- this is the union-of-hashes regression test"
+
+            # Absent vs empty: with _gallery/_plane_cache unavailable, the
+            # write must still land, but orphan evidence must say
+            # "unavailable", never an empty (or any) orphan list -- a
+            # partial known-hashes set is worse than no evidence at all.
+            orig_gallery, orig_plane_cache_mod = _gallery, _plane_cache
+            _gallery = None
+            _plane_cache = None
+            try:
+                ex_out_path2 = ex_root / "measurements2.json"
+                exwin._run_export_results_cmd(ex_out_path2)
+                _pump_deadline = time.time() + 15.0
+                while exwin._capturing and time.time() < _pump_deadline:
+                    qtapp.processEvents()
+                    time.sleep(0.005)
+                assert not exwin._capturing
+                assert ex_out_path2.is_file(), \
+                    "the write must still happen even with no orphan-scan coverage"
+                status_text2 = exwin.capture_status.toolTip()
+                assert "unavailable" in status_text2.lower(), \
+                    "coverage unavailable must be reported explicitly"
+                assert orphan_hash not in status_text2, \
+                    "an empty/absent known-hashes set must never masquerade " \
+                    "as a real orphan list"
+            finally:
+                _gallery, _plane_cache = orig_gallery, orig_plane_cache_mod
+
+            # A failure (export.export_measurements raising) must be
+            # reported, not silently swallowed.
+            orig_export_mod = _export
+
+            class _FailingExport:
+                @staticmethod
+                def export_measurements(store=None, out_path=None):
+                    raise RuntimeError("forced export failure")
+
+            _export = _FailingExport
+            try:
+                ex_out_path3 = ex_root / "measurements3.json"
+                exwin._run_export_results_cmd(ex_out_path3)
+                _pump_deadline = time.time() + 15.0
+                while exwin._capturing and time.time() < _pump_deadline:
+                    qtapp.processEvents()
+                    time.sleep(0.005)
+                assert not exwin._capturing
+                assert "failed" in exwin.capture_status.text().lower()
+            finally:
+                _export = orig_export_mod
+
+            print("Export measurement results check PASS: writes the "
+                  "results file, a cache-only plane with a real committed "
+                  "mark is not reported as an orphan (the union-of-hashes "
+                  "regression test), a genuinely orphaned record is, "
+                  "coverage-unavailable is distinguishable from a clean "
+                  "scan, and a forced failure is reported rather than "
+                  "swallowed")
+
+            # Publish: pick a real on-disk capture (GalleryPickDialog would
+            # do this interactively; driven directly here), publish it, and
+            # confirm the package's calibration_ref comes from the
+            # RECORD'S OWN stored ref (Option B+), not whatever is
+            # currently active for some objective.
+            pub_session = ex_cap_root / "2024-03-01_000001"
+            pub_session.mkdir()
+            pub_prov = ex_prov_root / "2024-03-01_000001"
+            pub_prov.mkdir()
+            pub_cap = {"index": 0, "kind": "snap", "file_prefix": "snap_",
+                      "frame_count": 1, "timestamp": "2024-03-01T00:00:01+00:00"}
+            (pub_prov / "session.json").write_text(
+                json.dumps({"capture_dir": str(pub_session), "captures": [pub_cap]}))
+            pub_plane = np.random.default_rng(6).integers(
+                0, 4096, size=(green_h2, green_w2)).astype(np.uint16)
+            pub_raw = pub_session / "snap_frame_0000.tif"
+            tifffile.imwrite(str(pub_raw), pub_plane)
+            pub_hash = _pixel_hash.pixel_sha256(pub_plane)
+            stored_ref = {"objective": "40x", "entry_id": "fit_render_check",
+                         "um_per_px": 0.5}
+            _annotations.save_mark(
+                pub_hash, {"type": "distance", "note": "render_check publish"},
+                record_defaults={"shape": [green_h2, green_w2], "dtype": "uint16",
+                                 "kind": "green", "calibration_ref": stored_ref,
+                                 "source_sha256": None})
+
+            pub_out_dir = ex_root / "package"
+            exwin._run_publish_package_cmd(pub_raw, pub_out_dir)
+            _pump_deadline = time.time() + 15.0
+            while exwin._capturing and time.time() < _pump_deadline:
+                qtapp.processEvents()
+                time.sleep(0.005)
+            assert not exwin._capturing, "publish never completed"
+            assert (pub_out_dir / "green_plane.tif").is_file()
+            manifest = json.loads((pub_out_dir / "manifest.json").read_text())
+            assert manifest["calibration"] == stored_ref, \
+                "publish must use the record's OWN stored calibration_ref " \
+                "(Option B+), not whatever is currently active"
+            assert manifest["results"]["total_measurements"] == 1
+            assert "published" in exwin.capture_status.text().lower()
+
+            # Forced-failure case (bad input path): must be reported, not
+            # left looking like it's still running.
+            exwin._run_publish_package_cmd(ex_root / "does_not_exist.tif", pub_out_dir)
+            _pump_deadline = time.time() + 15.0
+            while exwin._capturing and time.time() < _pump_deadline:
+                qtapp.processEvents()
+                time.sleep(0.005)
+            assert not exwin._capturing
+            assert "failed" in exwin.capture_status.text().lower()
+
+            print("Publish package check PASS: picks its own image, writes "
+                  "a real green_plane.tif/results.json/manifest.json, the "
+                  "manifest's calibration_ref comes from the record's own "
+                  "stored ref (Option B+), and a forced failure is "
+                  "reported rather than hanging")
+        finally:
+            excam.stop()
+            provenance.OUT_ROOT, provenance.PROVENANCE_ROOT = _orig_out_root4, _orig_prov_root4
+            _annotations.ANNOTATION_PATH = orig_annotation_path2
+            shutil.rmtree(ex_root, ignore_errors=True)
 
         # _score_capture_sharpness (section 13's post-capture QC): a real
         # FakeCamera burst, scored against its OWN written frame via

@@ -1496,7 +1496,7 @@ stops the write rather than merely looking plausible. Full 16-module sweep
 still passes with no regressions.
 
 **`MeasureWindow` extraction (2026-07-26) — Step 3, Export and Publish menu
-actions, intent recorded, not yet built.** Relocates
+actions, now built.** Relocates
 `MeasureWindow._on_export_results`/`_on_publish_package` into dedicated
 `qt_shell.py` File-menu actions: Export is store-wide with no dependency on
 any open image; Publish, while image-specific, has no open
@@ -1522,6 +1522,56 @@ assumed: no mark carries its own calibration pointer, only a baked-in
 across a mid-record recalibration — a genuine, pre-existing schema gap
 this step documents, not closes. See `CHANGELOG.md`'s matching Intent
 entry for the full reasoning.
+
+**Built and verified**: `gallery.known_green_hashes(out_root=None)` (next
+to `capture_has_annotation`) and `annotations.stored_calibration_ref(
+pixel_sha256, store=None)` (next to `calibration_ref_for`) both landed as
+designed. `qt_shell.py` gained `Export measurement results...` and
+`Publish package...` File-menu actions, following the existing
+`_open_X`/`_run_X_cmd`/`_on_X_finished` triad
+(`_open_green_extraction`/`_run_green_extract_cmd`/
+`_on_green_extract_finished`) and reporting through `_set_capture_status`,
+not `measure.py`'s `QMessageBox` convention — both are fire-and-forget
+background jobs from a menu, not a synchronous confirmation inside an open
+canvas. Export writes the results file first, orphan-scans second (the
+write is the deliverable; the scan is comparatively expensive evidence,
+never a gate). `capture_scan_ok`/`cache_scan_ok` are tracked
+independently; `find_orphans` only runs when BOTH actually completed — a
+partial `known_hashes` set produces false-positive orphans exactly as
+confidently as an empty one, so partial coverage degrades to
+`{"unavailable": "..."}`, the same absent-vs-empty split Part 02 drew for
+`get_capabilities()`, never a silent `{"orphans": []}` that could be
+mistaken for a clean scan. Publish picks its own image via
+`GalleryPickDialog` (mirroring `_open_green_extraction`'s input step), then
+builds `calibration_ref` via `stored_calibration_ref` with no objective
+picker at all. `measure.py`'s `MeasureWindow._on_publish_package` converges
+onto the exact same call, replacing its old currently-active-calibration
+lookup — one way this gets built across the whole codebase, not two.
+
+Found and fixed while building, before it ever shipped:
+`_run_publish_package_cmd` wrote `green_plane.tif` straight into `out_dir`
+without creating it first — harmless when the input actually comes from
+`QFileDialog.getExistingDirectory` (which only ever returns an existing
+directory), but a real gap for any other caller, including this step's own
+`--render-check`, that hands it a directory that doesn't exist yet. Fixed
+with a `mkdir(parents=True, exist_ok=True)` before the write, matching
+`publish.publish_measurements`'s own defensive `out_dir.mkdir`.
+
+`qt_shell.py --render-check` gained a full pass for both actions, driving
+the worker methods directly (bypassing `GalleryPickDialog.exec_`, which
+can't run headless): a cache-only plane with a real committed mark proves
+NOT an orphan (the direct regression test for the union-of-hashes
+finding), a genuinely orphaned record proves reported, `_gallery`/
+`_plane_cache` temporarily unavailable proves the write still lands while
+orphan evidence reports `"unavailable"` rather than an empty or partial
+list, a forced `export.export_measurements` failure proves reported rather
+than swallowed, and Publish's manifest is checked against the record's own
+stored ref end to end, plus a forced-failure (bad input path) case for
+each action. `gallery.py --render-check` and `annotations.py
+--render-check` each gained matching direct coverage for the two new
+functions. Full `--render-check` sweep passes (all 16 modules), no
+regressions. **Self-check-verified only** — nothing in this step has been
+exercised on real hardware or as a live GUI on-rig.
 
 ## Things that will bite you if you don't know them
 

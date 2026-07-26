@@ -1103,17 +1103,16 @@ if _HAVE_QT:
             if not out_dir:
                 return
             try:
-                obj = self.objective_combo.currentText().strip()
-                um_per_px = current_um_per_px(obj)
-                calib_ref = None
-                if um_per_px is not None and _calibrate is not None:
-                    entry = _calibrate.current_calibration(obj)
-                    if entry:
-                        calib_ref = {
-                            "objective": obj,
-                            "entry_id": entry.get("entry_id"),
-                            "um_per_px": um_per_px,
-                        }
+                # Publish's calibration_ref names the calibration a mark's
+                # microns were actually computed under, not whatever is
+                # currently active for the objective in objective_combo --
+                # if the objective is recalibrated after marks were made,
+                # "currently active" would misreport a manifest as if the
+                # marks used a calibration they never did (see
+                # HANDOFF.md's MeasureWindow-extraction step-3 section).
+                pixel_sha256 = _pixel_hash.pixel_sha256(self._plane)
+                calib_ref = (_annotations.stored_calibration_ref(pixel_sha256)
+                            if _annotations is not None else None)
                 import tifffile
                 green_path = Path(out_dir) / "green_plane.tif"
                 tifffile.imwrite(str(green_path), self._plane, compression="deflate")

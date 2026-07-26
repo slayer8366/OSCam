@@ -7,6 +7,87 @@ this file is the historical record of what happened and why.
 
 ## 2026-07-26
 
+### Build: `MeasureWindow` extraction, step 3 — Export and Publish menu actions
+
+Builds the intent recorded in the prior commit.
+
+**`gallery.known_green_hashes(out_root=None)`** (next to
+`capture_has_annotation`) walks `list_gallery_entries`, decodes each
+capture's real green plane via `measure.load_measurement_plane`, and
+returns the set of hashes — a decode failure for one entry is skipped, not
+fatal to the scan, same defensive contract as `capture_has_annotation`.
+`gallery.py --render-check` gained matching coverage: two real capture
+sessions, hashes cross-checked against independently computed values, plus
+an `out_root=None` defaults-to-`provenance.OUT_ROOT` check.
+
+**`annotations.stored_calibration_ref(pixel_sha256, store=None)`** (next to
+`calibration_ref_for`) returns a record's own first-commit
+`calibration_ref`, `None` if no record exists. `annotations.py
+--render-check` gained the explicit, testable proof this function's
+premise rests on: save a mark under one calibration entry, confirm
+`stored_calibration_ref` matches `calibration_ref_for` at that point,
+recalibrate the same objective, confirm `calibration_ref_for` now reflects
+the new entry while `stored_calibration_ref` stays pinned to the original.
+
+**`qt_shell.py`** gained two new File-menu actions, `Export measurement
+results...` and `Publish package...`, right after `Extract green
+plane...`, following the existing `_open_X`/`_run_X_cmd`/`_on_X_finished`
+triad (`_open_green_extraction`/`_run_green_extract_cmd`/
+`_on_green_extract_finished`) and two new `pyqtSignal(object)`s for the
+worker-thread hand-off. Both report through `_set_capture_status`,
+matching "Extract green plane..." — not `measure.py`'s `QMessageBox`
+convention, since these are fire-and-forget background jobs from a menu,
+not a synchronous confirmation inside an open canvas.
+
+Export writes the results file first, then scans for orphan evidence
+second — the write is the deliverable, the scan is comparatively expensive
+and is evidence, never a gate, so a slow or failing scan degrades to
+"missing evidence in the report," never to a delayed or blocked write.
+`capture_scan_ok`/`cache_scan_ok` are tracked independently; `find_orphans`
+only runs when BOTH scans actually completed — a partial `known_hashes`
+set produces false-positive orphans exactly as confidently as an empty
+one, so partial coverage is treated the same as no coverage
+(`{"unavailable": "..."}`) rather than surfaced with a caveat, never a
+silent `{"orphans": []}` that could be mistaken for a clean scan (same
+absent-vs-empty split Part 02 drew for `get_capabilities()`).
+
+Publish picks its own image via `GalleryPickDialog` (mirroring
+`_open_green_extraction`'s input step), then builds `calibration_ref` via
+`stored_calibration_ref` — Option B+, no objective picker, no UI.
+`measure.py`'s `MeasureWindow._on_publish_package` converges onto the
+exact same call (`_pixel_hash.pixel_sha256(self._plane)` +
+`_annotations.stored_calibration_ref`), replacing its old
+currently-active-calibration lookup — one way this gets built across the
+whole codebase, not two.
+
+`qt_shell.py --render-check` gained a full pass for both actions, driving
+the worker methods directly (bypassing `GalleryPickDialog.exec_`, which
+can't run headless, same reason the existing green-extraction check does
+this): a cache-only plane with a real committed mark proves NOT an orphan
+(the direct regression test for the union-of-hashes finding), a genuinely
+orphaned record proves reported, `_gallery`/`_plane_cache` temporarily
+unavailable proves the write still lands while orphan evidence reports
+`"unavailable"` rather than an empty or partial list, a forced
+`export.export_measurements` failure proves reported rather than
+swallowed, and Publish's manifest is checked against the record's own
+stored ref end to end, plus a forced-failure (bad input path) case.
+
+Found and fixed while building, before it ever shipped:
+`_run_publish_package_cmd` wrote `green_plane.tif` straight into `out_dir`
+without creating it first — harmless when the input actually comes from
+`QFileDialog.getExistingDirectory` (which only ever returns an existing
+directory), but a real gap for any other caller (this step's own
+render-check included) that hands it a directory that doesn't exist yet.
+Fixed with a `mkdir(parents=True, exist_ok=True)` before the write,
+matching `publish.publish_measurements`'s own defensive `out_dir.mkdir`.
+
+Full `--render-check` sweep passes (`gallery`, `annotations`, `pixel_hash`,
+`export`, `publish`, `calibrate`, `measure`, `ca_measure`, `wizard_pages`,
+`qt_shell`, `stacks`, `focus`, `plane_cache`, `provenance`, and
+`process_wizard` all green), no regressions. **Self-check-verified only**
+— nothing in this step has been exercised on real hardware or as a live
+GUI on-rig.
+
 ### Intent: `MeasureWindow` extraction, step 3 — Export and Publish menu actions
 
 Recording intent before building, per the project's two-phase documentation
