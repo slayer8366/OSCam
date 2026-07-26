@@ -328,6 +328,148 @@ tool selected (frame freezes and point 1 lands where clicked); click with
 no tool selected (status prompts, no zoom, no capture); a simulated freeze
 failure on-rig (feed stays live, next click works). Render-check alone
 cannot prove any of this; it is not done until exercised live.
+### Build: `MeasureWindow` extraction, step 3 — Export and Publish menu actions
+
+Builds the intent recorded in the prior commit.
+
+**`gallery.known_green_hashes(out_root=None)`** (next to
+`capture_has_annotation`) walks `list_gallery_entries`, decodes each
+capture's real green plane via `measure.load_measurement_plane`, and
+returns the set of hashes — a decode failure for one entry is skipped, not
+fatal to the scan, same defensive contract as `capture_has_annotation`.
+`gallery.py --render-check` gained matching coverage: two real capture
+sessions, hashes cross-checked against independently computed values, plus
+an `out_root=None` defaults-to-`provenance.OUT_ROOT` check.
+
+**`annotations.stored_calibration_ref(pixel_sha256, store=None)`** (next to
+`calibration_ref_for`) returns a record's own first-commit
+`calibration_ref`, `None` if no record exists. `annotations.py
+--render-check` gained the explicit, testable proof this function's
+premise rests on: save a mark under one calibration entry, confirm
+`stored_calibration_ref` matches `calibration_ref_for` at that point,
+recalibrate the same objective, confirm `calibration_ref_for` now reflects
+the new entry while `stored_calibration_ref` stays pinned to the original.
+
+**`qt_shell.py`** gained two new File-menu actions, `Export measurement
+results...` and `Publish package...`, right after `Extract green
+plane...`, following the existing `_open_X`/`_run_X_cmd`/`_on_X_finished`
+triad (`_open_green_extraction`/`_run_green_extract_cmd`/
+`_on_green_extract_finished`) and two new `pyqtSignal(object)`s for the
+worker-thread hand-off. Both report through `_set_capture_status`,
+matching "Extract green plane..." — not `measure.py`'s `QMessageBox`
+convention, since these are fire-and-forget background jobs from a menu,
+not a synchronous confirmation inside an open canvas.
+
+Export writes the results file first, then scans for orphan evidence
+second — the write is the deliverable, the scan is comparatively expensive
+and is evidence, never a gate, so a slow or failing scan degrades to
+"missing evidence in the report," never to a delayed or blocked write.
+`capture_scan_ok`/`cache_scan_ok` are tracked independently; `find_orphans`
+only runs when BOTH scans actually completed — a partial `known_hashes`
+set produces false-positive orphans exactly as confidently as an empty
+one, so partial coverage is treated the same as no coverage
+(`{"unavailable": "..."}`) rather than surfaced with a caveat, never a
+silent `{"orphans": []}` that could be mistaken for a clean scan (same
+absent-vs-empty split Part 02 drew for `get_capabilities()`).
+
+Publish picks its own image via `GalleryPickDialog` (mirroring
+`_open_green_extraction`'s input step), then builds `calibration_ref` via
+`stored_calibration_ref` — Option B+, no objective picker, no UI.
+`measure.py`'s `MeasureWindow._on_publish_package` converges onto the
+exact same call (`_pixel_hash.pixel_sha256(self._plane)` +
+`_annotations.stored_calibration_ref`), replacing its old
+currently-active-calibration lookup — one way this gets built across the
+whole codebase, not two.
+
+`qt_shell.py --render-check` gained a full pass for both actions, driving
+the worker methods directly (bypassing `GalleryPickDialog.exec_`, which
+can't run headless, same reason the existing green-extraction check does
+this): a cache-only plane with a real committed mark proves NOT an orphan
+(the direct regression test for the union-of-hashes finding), a genuinely
+orphaned record proves reported, `_gallery`/`_plane_cache` temporarily
+unavailable proves the write still lands while orphan evidence reports
+`"unavailable"` rather than an empty or partial list, a forced
+`export.export_measurements` failure proves reported rather than
+swallowed, and Publish's manifest is checked against the record's own
+stored ref end to end, plus a forced-failure (bad input path) case.
+
+Found and fixed while building, before it ever shipped:
+`_run_publish_package_cmd` wrote `green_plane.tif` straight into `out_dir`
+without creating it first — harmless when the input actually comes from
+`QFileDialog.getExistingDirectory` (which only ever returns an existing
+directory), but a real gap for any other caller (this step's own
+render-check included) that hands it a directory that doesn't exist yet.
+Fixed with a `mkdir(parents=True, exist_ok=True)` before the write,
+matching `publish.publish_measurements`'s own defensive `out_dir.mkdir`.
+
+Full `--render-check` sweep passes (`gallery`, `annotations`, `pixel_hash`,
+`export`, `publish`, `calibrate`, `measure`, `ca_measure`, `wizard_pages`,
+`qt_shell`, `stacks`, `focus`, `plane_cache`, `provenance`, and
+`process_wizard` all green), no regressions. **Self-check-verified only**
+— nothing in this step has been exercised on real hardware or as a live
+GUI on-rig.
+
+### Intent: `MeasureWindow` extraction, step 3 — Export and Publish menu actions
+
+Recording intent before building, per the project's two-phase documentation
+rule. Full design is the user-approved step-3 plan (not checked into the
+repo, same standing as `PLAN_measurewindow_extraction.md` itself),
+continuing step 2's extract-then-remove migration.
+
+Relocates `MeasureWindow._on_export_results`/`_on_publish_package`
+(`measure.py`) into their own `qt_shell.py` File-menu actions: Export needs
+no open image at all (store-wide); Publish needs an image but has no open
+`MeasureWindow`/`self._plane` to source one from once triggered from a
+menu, so it picks its own via `gallery.GalleryPickDialog`. `MeasureWindow`
+is not deleted this step (shell removal is a later step).
+
+Investigation surfaced two things that reshape this step beyond a straight
+relocation:
+
+**Orphan evidence is a real dependency, not an afterthought.**
+`annotations.find_orphans` exists and is tested but has zero production
+callers anywhere in the repo — a store-wide Export is its first real use.
+The `known_hashes` set it needs has no existing source: a new
+`gallery.known_green_hashes(out_root=None)` is required. It must also
+union with `plane_cache.list_cached_hashes()`, caught before
+implementation — Part 05's Live Measure Panel freezes a live plane and
+commits marks against its hash, and that plane lives only in the
+green-plane cache (Part 04), never as a capture session with a JPG
+preview. A `known_hashes` set built from a capture-root scan alone would
+report every mark ever committed through Live Measuring — the primary
+calibrated measuring workflow — as a permanent orphan on every export.
+Unioned at the `qt_shell.py` call site (which already imports both
+`gallery` and `plane_cache`), not inside `gallery.py`, which has no
+existing dependency on `plane_cache.py` and shouldn't gain one just for
+this.
+
+**Publish's `calibration_ref` has a pre-existing correctness gap.**
+`MeasureWindow._on_publish_package` derives it from whatever calibration
+is *currently* active for the selected objective, not from
+`record["calibration_ref"]` (set once, at a record's first commit, never
+touched again) — if the same objective is recalibrated after marks were
+made, publishing later reports a manifest claiming those marks were
+computed under a calibration they never used. **Decision, made by the
+user this session: fix this (Option B+), not replicate it.** Distinct from
+step 2's strict-gate call (over-restrictive, but never wrote anything
+false) — this writes a manifest asserting a calibration relationship that
+isn't true, in the one place a number leaves the system and becomes
+something someone cites. `PHILOSOPHY.md`'s own framing — recalibration
+must never let historical measurements "quietly re-interpret themselves
+against a number they were never computed with" — applies directly. A new
+`annotations.stored_calibration_ref(pixel_sha256, store=None)` will
+return the record's own first-commit ref instead. Checked, not assumed:
+no mark builder stores a per-mark calibration pointer (only a baked-in
+`um_per_px`), so this is accurate for the common case (all of an image's
+marks made in one calibration epoch) but not authoritative across a
+mid-record recalibration — a genuine, pre-existing schema gap this step
+will document, not close (closing it means touching
+`commit_measurement()`'s mark schema, out of scope here). An unset stored
+ref already degrades correctly today (`publish.py`'s own "no calibration
+on record" note) — nothing to fix there.
+
+See `HANDOFF.md`'s `MeasureWindow` extraction section for the full step-3
+account.
 
 ### Fix: real-store pollution in `measure.py`'s pre-existing status-line check
 
