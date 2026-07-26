@@ -29,6 +29,13 @@ Two ways to run:
                                        that finally exercises the ON-RIG lines in
                                        camera_backend.py.
 
+--no-onboarding suppresses the one-time "calibrate now?" prompt even on a
+launch that does have a real display -- for a scripted/automated launch that
+shouldn't be interrupted. The prompt already self-suppresses automatically on
+a headless/offscreen/no-display launch (see should_show_onboarding_gate /
+_onboarding_session_is_interactive); this flag is for the separate case of a
+real display that should still skip it.
+
 render_overlay, the geometry helpers, the shutter stop table, and record_capture
 are pure and Qt-free, so they are tested by --render-check without a display.
 The window and the fake preview are the only Qt-bound parts.
@@ -931,11 +938,16 @@ def _draw_ruler_ticks_into(ov, x_ticks, y_ticks, col=(230, 230, 230),
 # To pull it back out entirely: delete this function and its render_check
 # block, the "Calibrate" menu block in __init__, the _launch_calibrate and
 # _maybe_show_onboarding_gate methods, and the one singleShot() call that
-# triggers the gate. calibrate.py itself needs no changes either way; it
+# triggers the gate. Also delete _onboarding_session_is_interactive
+# (introduced solely to keep the gate from hanging a non-interactive
+# launch), its render_check coverage, the --no-onboarding argparse entry
+# and its mention in the module docstring's usage block, and the
+# no_onboarding constructor parameter/self._no_onboarding attribute on
+# FocusPreviewWindow. calibrate.py itself needs no changes either way; it
 # already runs standalone, unmodified, exactly as before.
 # ============================================================================
 
-def should_show_onboarding_gate(already_shown, any_calibration_exists):
+def should_show_onboarding_gate(already_shown, any_calibration_exists, interactive=True):
     """The onboarding gate's decision (checklist section 4), pure and
     testable apart from any Qt or filesystem state: show the "calibrate now
     or skip" prompt at most ONCE EVER. already_shown gates it out regardless
@@ -943,9 +955,55 @@ def should_show_onboarding_gate(already_shown, any_calibration_exists):
     a "not yet" that gets asked again next launch -- and it never shows at
     all once ANYTHING has been calibrated for any objective, shown or not.
     The "Calibrate" menu action is the whenever-you're-ready path either
-    way, so a one-time miss here costs nothing."""
-    return (not already_shown) and (not any_calibration_exists)
+    way, so a one-time miss here costs nothing.
+
+    interactive (default True, so every pre-existing call site keeps its
+    old behavior): whether anything is actually able to dismiss a modal
+    dialog right now. False for a headless/offscreen/CI/no-display launch,
+    where the real QMessageBox this gates would otherwise block the event
+    loop forever with no one able to click it -- see
+    _onboarding_session_is_interactive, which computes this. Suppression
+    for non-interactivity must read as "not now, nobody's here," never as
+    "asked and answered": the caller (_maybe_show_onboarding_gate) only
+    ever records the prompt as shown on the branch this function's own
+    early-return skips, so a non-interactive launch cannot burn the user's
+    real one-time prompt."""
+    return (not already_shown) and (not any_calibration_exists) and interactive
 # ============================================================================
+
+
+def _onboarding_session_is_interactive(no_onboarding_flag=False):
+    """Conservative, mostly Qt-free detector for whether this process can
+    present and dismiss a real modal dialog right now (used only to decide
+    whether the onboarding gate above may fire). Errs toward True: a missed
+    one-time prompt costs nothing (the Calibrate menu action always covers
+    "whenever"), while wrongly suppressing a real one means a user silently
+    never learns they need to calibrate. Only returns False for the
+    specific conditions this project has confirmed are non-interactive --
+    an unusual platform plugin or an SSH session with real display
+    forwarding is left alone, not guessed at.
+
+    All three checks the plan calls for, in one place:
+    - no_onboarding_flag: the explicit --no-onboarding opt-out (main()'s own
+      argparse), for a scripted launch that has a real display but should
+      not be interrupted.
+    - QT_QPA_PLATFORM is offscreen/minimal -- these platforms cannot render
+      or receive input at all, so a modal dialog can structurally never be
+      dismissed. Read live via os.environ (never cached: --render-check and
+      a real launch can differ within the same process), and compared on
+      the platform name alone -- QT_QPA_PLATFORM may carry backend options
+      after a colon (e.g. "offscreen:some=option").
+    - no live QApplication instance: defensive only (QMessageBox.question
+      itself requires one to exist), and Qt-free when PyQt5 isn't even
+      importable here."""
+    if no_onboarding_flag:
+        return False
+    platform_name = os.environ.get("QT_QPA_PLATFORM", "").split(":", 1)[0].strip().lower()
+    if platform_name in ("offscreen", "minimal"):
+        return False
+    if _HAVE_QT and QApplication.instance() is None:
+        return False
+    return True
 
 
 def render_overlay_into(ov, box, state, line=3, ruler_ticks=None,
@@ -2218,10 +2276,14 @@ if _HAVE_QT:
         # hashing/caching and the preview<->canvas swap actually happen.
         live_measure_freeze_done_signal = pyqtSignal(object)
 
-        def __init__(self, camera, meter, tick_ms=33, display_flags=None):
+        def __init__(self, camera, meter, tick_ms=33, display_flags=None, no_onboarding=False):
             super().__init__()
             self.camera = camera
             self.meter = meter
+            # CALIBRATION INTEGRATION (separable, see the banner comment near
+            # should_show_onboarding_gate): main()'s own --no-onboarding
+            # opt-out, read at gate-check time by _maybe_show_onboarding_gate.
+            self._no_onboarding = bool(no_onboarding)
             self._drag = None
             self._aspect = LORES_RES[0] / LORES_RES[1]
             self._tick_ms = tick_ms
@@ -3556,12 +3618,24 @@ if _HAVE_QT:
             whether to calibrate now, using should_show_onboarding_gate's pure
             decision. Skipping (or closing the dialog without choosing) just
             continues into the GUI exactly as it would otherwise; the
-            Calibrate menu action covers "whenever" either way."""
+            Calibrate menu action covers "whenever" either way.
+
+            interactive is computed fresh on every call, never cached on
+            self -- QT_QPA_PLATFORM (the dominant signal) can only be
+            fixed for the life of a process anyway, but reading it live
+            here (rather than once at construction) keeps this method's
+            own behavior obvious from its body alone, matching
+            _onboarding_session_is_interactive's own "never cached"
+            contract. self._no_onboarding is the one per-launch override
+            (main()'s --no-onboarding), not a live environment signal, so
+            it's threaded through as an explicit argument rather than
+            folded into the environment check itself."""
             if _calibrate is None:
                 return
             already_shown = bool(load_pref("onboarding_calibration_prompt_shown", False))
             any_calibration_exists = bool(_calibrate.load_calibrations())
-            if not should_show_onboarding_gate(already_shown, any_calibration_exists):
+            interactive = _onboarding_session_is_interactive(self._no_onboarding)
+            if not should_show_onboarding_gate(already_shown, any_calibration_exists, interactive):
                 return
             save_pref("onboarding_calibration_prompt_shown", True)
             resp = QMessageBox.question(
@@ -5223,6 +5297,9 @@ def main(argv=None):
     ap.add_argument("--shadow-deepen", action="store_true")
     ap.add_argument("--archive-raws", action="store_true",
                     help="tar+remove raws after a process offer (no prompt)")
+    ap.add_argument("--no-onboarding", action="store_true",
+                    help="suppress the one-time 'calibrate now?' prompt even on "
+                         "a display-capable launch (see should_show_onboarding_gate)")
     a = ap.parse_args(argv)
     if not _HAVE_QT:
         sys.exit("PyQt5 not available. Use --render-check for the headless self-check "
@@ -5269,7 +5346,8 @@ def main(argv=None):
     # second window class. Casual Mode used to pick between window classes
     # here; that branch is gone.
     display_flags = build_display_flags(a)
-    win = FocusPreviewWindow(camera, FocusMeter(), display_flags=display_flags)
+    win = FocusPreviewWindow(camera, FocusMeter(), display_flags=display_flags,
+                              no_onboarding=a.no_onboarding)
     win.setWindowTitle("Zynergy capture GUI" + ("" if a.camera else "  (fake)"))
     win.resize(1550, 760)          # fallback size if the window manager ever
                                     # ignores the maximize request below
@@ -5386,15 +5464,212 @@ def render_check():
     print("overlay_signature ruler-sensitivity check PASS")
 
     # --- onboarding gate (calibration integration) --------------------------
-    assert should_show_onboarding_gate(already_shown=False, any_calibration_exists=False) is True, \
-        "never shown before, nothing calibrated -> should show"
-    assert should_show_onboarding_gate(already_shown=True, any_calibration_exists=False) is False, \
-        "already shown once -> never show again, regardless of calibration state"
-    assert should_show_onboarding_gate(already_shown=False, any_calibration_exists=True) is False, \
-        "something already calibrated -> no nudge needed even if never shown"
-    assert should_show_onboarding_gate(already_shown=True, any_calibration_exists=True) is False
+    # PLAN_onboarding_gate_headless.md (a user-provided intent doc, not
+    # checked into the repo): the gate must never fire when nothing can
+    # dismiss it. Full 8-combination truth table for the predicate --
+    # True only when genuinely unshown AND uncalibrated AND interactive.
+    for _og_shown, _og_calib, _og_interactive, _og_expected in [
+        (False, False, True,  True),
+        (False, False, False, False),
+        (False, True,  True,  False),
+        (False, True,  False, False),
+        (True,  False, True,  False),
+        (True,  False, False, False),
+        (True,  True,  True,  False),
+        (True,  True,  False, False),
+    ]:
+        _og_got = should_show_onboarding_gate(_og_shown, _og_calib, _og_interactive)
+        assert _og_got is _og_expected, (
+            "should_show_onboarding_gate(already_shown={}, any_calibration_exists={}, "
+            "interactive={}) must be {}, got {}".format(
+                _og_shown, _og_calib, _og_interactive, _og_expected, _og_got))
     print("should_show_onboarding_gate check PASS: one-time nudge only when "
-          "genuinely both unshown and uncalibrated, never a recurring nag")
+          "genuinely unshown, uncalibrated, AND interactive -- never a recurring "
+          "nag, and never a prompt nothing can dismiss")
+
+    # _onboarding_session_is_interactive: errs toward True by design -- only
+    # offscreen/minimal and the explicit opt-out read as non-interactive; an
+    # unrecognized platform name is left alone, never guessed at, since a
+    # wrongly-suppressed prompt (a user who silently never learns to
+    # calibrate) is worse than a wrongly-shown one (costs nothing -- the
+    # Calibrate menu action is always there). Checked BEFORE this function
+    # constructs its own QApplication below, on purpose: this is the one
+    # point in render_check() where "no live QApplication instance" is
+    # actually true and testable for real, not simulated.
+    if _HAVE_QT and QApplication.instance() is None:
+        assert _onboarding_session_is_interactive(no_onboarding_flag=False) is False, \
+            "no live QApplication instance must read as non-interactive"
+        print("_onboarding_session_is_interactive check PASS (no QApplication yet): "
+              "correctly non-interactive before any QApplication exists")
+    qtapp_og = QApplication.instance() or QApplication([])
+    _orig_qt_qpa_og = os.environ.get("QT_QPA_PLATFORM")
+    try:
+        os.environ["QT_QPA_PLATFORM"] = "xcb"
+        assert _onboarding_session_is_interactive(no_onboarding_flag=False) is True, \
+            "a real display-capable platform with no opt-out must read as interactive"
+        assert _onboarding_session_is_interactive(no_onboarding_flag=True) is False, \
+            "the explicit --no-onboarding opt-out must always suppress, regardless of platform"
+        os.environ["QT_QPA_PLATFORM"] = "offscreen"
+        assert _onboarding_session_is_interactive(no_onboarding_flag=False) is False, \
+            "offscreen must never be treated as interactive"
+        os.environ["QT_QPA_PLATFORM"] = "offscreen:some=option"
+        assert _onboarding_session_is_interactive(no_onboarding_flag=False) is False, \
+            "a platform value with backend options after a colon must still " \
+            "match on the platform name alone"
+        os.environ["QT_QPA_PLATFORM"] = "minimal"
+        assert _onboarding_session_is_interactive(no_onboarding_flag=False) is False, \
+            "minimal must never be treated as interactive"
+        os.environ["QT_QPA_PLATFORM"] = "some-unrecognized-platform"
+        assert _onboarding_session_is_interactive(no_onboarding_flag=False) is True, \
+            "an unrecognized platform must default to interactive, never be " \
+            "guessed non-interactive"
+    finally:
+        if _orig_qt_qpa_og is None:
+            os.environ.pop("QT_QPA_PLATFORM", None)
+        else:
+            os.environ["QT_QPA_PLATFORM"] = _orig_qt_qpa_og
+    print("_onboarding_session_is_interactive check PASS: errs toward interactive "
+          "-- only offscreen/minimal (matched on the platform name alone, ignoring "
+          "any ':'-separated backend option) and the explicit --no-onboarding flag "
+          "suppress; an unrecognized platform is left alone, never guessed "
+          "non-interactive")
+
+    if _calibrate is None:
+        print("Onboarding gate non-interactive-suppression check SKIPPED: "
+              "calibrate.py not importable here")
+    else:
+        # This is the real regression coverage for the freeze-fix session's
+        # own side finding: a genuinely fresh environment (no calibration on
+        # record, prompt never shown) used to hang --render-check forever.
+        # Redirect both PREFS_PATH and CALIBRATION_PATH so this can run
+        # against a real, isolated "nothing on record" state without ever
+        # touching ~/.zynergy/gui_prefs.json or ~/.zynergy/calibration.json.
+        # `global PREFS_PATH` declared ONCE here (Python disallows a second
+        # `global X` anywhere later in the same function once X has been
+        # used -- moved the Preferences dialog check's own redundant
+        # declaration out for exactly that reason; both sections reference
+        # the same module attribute regardless of which block declares it).
+        global PREFS_PATH
+        _orig_prefs_path_og = PREFS_PATH
+        PREFS_PATH = Path("/tmp/zynergy_render_check_onboarding_prefs.json")
+        _orig_calib_path_og = _calibrate.CALIBRATION_PATH
+        _calibrate.CALIBRATION_PATH = Path(
+            "/tmp/zynergy_render_check_onboarding_calibration.json")
+        try:
+            # Case: suppression (via --no-onboarding here, the same code path
+            # a genuinely non-interactive platform takes) must construct no
+            # dialog AND must leave the one-time-prompt pref completely
+            # unwritten -- "nobody's here" is not "asked and answered." This
+            # is the assertion that actually matters: the suppression path
+            # not writing the pref is invisible if it regresses (nothing
+            # fails loudly, a user just quietly loses their one-time prompt),
+            # so this checks the pref file's real key set, not merely that
+            # no dialog appeared.
+            PREFS_PATH.unlink(missing_ok=True)
+            _calibrate.CALIBRATION_PATH.unlink(missing_ok=True)
+            og_cam1 = FakeCamera(async_delay_s=0.0)
+            og_win1 = FocusPreviewWindow(og_cam1, FocusMeter(), no_onboarding=True)
+            try:
+                og_calls1 = []
+                real_question1 = QMessageBox.question
+                def _stub_question1(*a, **kw):
+                    og_calls1.append(1)
+                    return QMessageBox.No
+                QMessageBox.question = _stub_question1
+                try:
+                    og_win1._maybe_show_onboarding_gate()
+                finally:
+                    QMessageBox.question = real_question1
+                assert og_calls1 == [], \
+                    "a suppressed (non-interactive) gate must never construct " \
+                    "the dialog at all"
+                assert "onboarding_calibration_prompt_shown" not in load_prefs(), \
+                    "suppression must NOT write the one-time-prompt pref -- " \
+                    "writing it here would silently burn the user's real " \
+                    "prompt for their eventual first interactive launch"
+            finally:
+                og_cam1.stop()
+            print("Onboarding gate suppression check PASS: a suppressed gate "
+                  "shows no dialog and, critically, leaves the one-time-prompt "
+                  "pref file completely unwritten")
+
+            # Case: the interactive path must still write the pref BEFORE the
+            # dialog -- a regression guard on that exact ordering, since a
+            # crash/force-quit mid-dialog must not re-prompt on every later
+            # launch. Forced interactive here (xcb) purely so this path runs
+            # at all under this function's own offscreen process; the real
+            # blocking QMessageBox.question is stubbed out (never actually
+            # shown) so this doesn't hang the very check that proves it won't.
+            PREFS_PATH.unlink(missing_ok=True)
+            _calibrate.CALIBRATION_PATH.unlink(missing_ok=True)
+            og_cam2 = FakeCamera(async_delay_s=0.0)
+            og_win2 = FocusPreviewWindow(og_cam2, FocusMeter(), no_onboarding=False)
+            _orig_qt_qpa_og2 = os.environ.get("QT_QPA_PLATFORM")
+            try:
+                os.environ["QT_QPA_PLATFORM"] = "xcb"
+                og_pref_state_at_dialog = []
+                real_question2 = QMessageBox.question
+                def _stub_question2(*a, **kw):
+                    og_pref_state_at_dialog.append(
+                        bool(load_pref("onboarding_calibration_prompt_shown", False)))
+                    return QMessageBox.No
+                QMessageBox.question = _stub_question2
+                try:
+                    og_win2._maybe_show_onboarding_gate()
+                finally:
+                    QMessageBox.question = real_question2
+            finally:
+                if _orig_qt_qpa_og2 is None:
+                    os.environ.pop("QT_QPA_PLATFORM", None)
+                else:
+                    os.environ["QT_QPA_PLATFORM"] = _orig_qt_qpa_og2
+                og_cam2.stop()
+            assert og_pref_state_at_dialog == [True], \
+                "the interactive path must call save_pref BEFORE the dialog " \
+                "runs -- the pref must already read True by the time the " \
+                "dialog function is invoked"
+            print("Onboarding gate interactive-ordering check PASS: save_pref "
+                  "fires before the dialog on a real interactive path, "
+                  "preserving crash-mid-dialog safety")
+
+            # Case: --no-onboarding suppresses even an otherwise-interactive
+            # (display-capable) session -- the explicit opt-out, not the
+            # platform auto-detection, is what's under test here.
+            PREFS_PATH.unlink(missing_ok=True)
+            _calibrate.CALIBRATION_PATH.unlink(missing_ok=True)
+            og_cam3 = FakeCamera(async_delay_s=0.0)
+            og_win3 = FocusPreviewWindow(og_cam3, FocusMeter(), no_onboarding=True)
+            _orig_qt_qpa_og3 = os.environ.get("QT_QPA_PLATFORM")
+            try:
+                os.environ["QT_QPA_PLATFORM"] = "xcb"   # otherwise genuinely interactive
+                og_calls3 = []
+                real_question3 = QMessageBox.question
+                def _stub_question3(*a, **kw):
+                    og_calls3.append(1)
+                    return QMessageBox.No
+                QMessageBox.question = _stub_question3
+                try:
+                    og_win3._maybe_show_onboarding_gate()
+                finally:
+                    QMessageBox.question = real_question3
+            finally:
+                if _orig_qt_qpa_og3 is None:
+                    os.environ.pop("QT_QPA_PLATFORM", None)
+                else:
+                    os.environ["QT_QPA_PLATFORM"] = _orig_qt_qpa_og3
+                og_cam3.stop()
+            assert og_calls3 == [], \
+                "--no-onboarding must suppress the gate even on an otherwise " \
+                "display-capable platform"
+            assert "onboarding_calibration_prompt_shown" not in load_prefs(), \
+                "the --no-onboarding path must not write the pref either"
+            print("Onboarding gate --no-onboarding check PASS: the explicit "
+                  "opt-out suppresses the prompt even when the platform itself "
+                  "would otherwise read as interactive")
+        finally:
+            PREFS_PATH = _orig_prefs_path_og
+            _calibrate.CALIBRATION_PATH = _orig_calib_path_og
+    # --- end onboarding gate (calibration integration) -----------------------
 
     # Shutter stop table: standard photographic full stops within the sensor's
     # range, endpoints reachable, monotonic, and every position round-trips to
@@ -6040,7 +6315,10 @@ def render_check():
         # the old standalone Video resolution/Theme/Casual Mode menu entries
         # with one sectioned dialog, populated from camera.get_capabilities()
         # (PLAN_02) rather than a hardcoded list.
-        global PREFS_PATH
+        # (No `global PREFS_PATH` here -- the onboarding gate check earlier
+        # in this same function already declares it; Python disallows a
+        # second `global X` statement anywhere later in a function once X
+        # has been used, so this section relies on that earlier one.)
         orig_prefs_path = PREFS_PATH
         PREFS_PATH = Path("/tmp/zynergy_render_check_prefs_dialog.json")
         PREFS_PATH.unlink(missing_ok=True)
