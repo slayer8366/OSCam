@@ -5,6 +5,50 @@ dump — each entry names the commit(s) it corresponds to for traceability.
 See `HANDOFF.md` for what a fresh agent needs to know before working here;
 this file is the historical record of what happened and why.
 
+## 2026-07-26
+
+### Intent: `MeasureWindow` extraction, step 2 — recall/review (editable) + commit-orchestration extraction
+
+Recording intent before building, per the project's two-phase
+documentation rule. Full design in `PLAN_measurewindow_extraction.md`
+(user-drafted, not checked into the repo) plus this session's own step-1
+investigation and step-2 design pass.
+
+Step 1 (investigation) confirmed the extraction plan's five-way capability
+split against the real code, and corrected one claim in it: Part 05's Live
+Measure Panel does not actually call `MeasureWindow.commit_mark` as the
+plan asserted — it independently reimplements the same sequence against
+the same underlying primitives. Two copies of the commit orchestration
+exist today, not one shared path with one dependent. Also found
+wizard-restart dead in the in-app Measure-menu path (`qt_shell.py`'s
+`_launch_measure` never connects `MeasureWindow.restart_requested`), and
+answered the plan's open Export/Publish question: they're already two
+independent, self-contained dialogs, no shared-vs-split decision to make.
+
+Step 2 was originally scoped read-only; approved as **editable** this
+session, which is what makes the commit-orchestration extraction necessary
+now rather than later — an editable viewer needs to commit marks, and
+writing that fresh would have made a third copy.
+
+**Decision**: extract the orchestration into `commit_measurement()`, a new
+Qt-free, module-level function in `measure.py`, called by both
+`MeasureWindow` (rewritten) and a new `ReviewWindow`. Its calibration gate
+stays **strict** — matching `MeasureWindow`'s current behavior exactly,
+including blocking angle marks without calibration even though angle is
+scale-invariant and doesn't need `um_per_px` at all. Part 05's panel
+exempts angle from this gate in its own separate copy; adopting that here
+would be a silent behavior change riding on a refactor, so it's deferred.
+Flagged explicitly for whoever later migrates Part 05 to call this
+function: that migration will need to *decide* whether to carry the
+exemption forward, not discover after the fact that it silently vanished.
+
+Part 05's panel is explicitly **not** touched or migrated in this step —
+it ships, works, and stays exactly as-is; migrating it to
+`commit_measurement()` is separate future work.
+
+See `HANDOFF.md`'s new `MeasureWindow` extraction section for the full
+account.
+
 ## 2026-07-25
 
 ### Fix: Preferences dialog crash on `get_capabilities()`

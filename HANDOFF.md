@@ -1369,6 +1369,56 @@ way to produce a moving feed to exercise that against. Confirm this before
 trusting the feature, not just that the panel opens and clicks land where
 expected.
 
+**`MeasureWindow` extraction (2026-07-26) — Step 2, recall/review, now
+intent recorded, not yet built.** A new, separate migration
+(`PLAN_measurewindow_extraction.md`, drafted, not checked into the repo)
+breaks `measure.py`'s monolithic `MeasureWindow` apart, extract-then-remove
+style: each capability gets a new home while `MeasureWindow` keeps working,
+verified independently, the shell deleted only once everything else is
+proven (a later step). Step 1 (investigation, already done) confirmed the
+plan's five-way capability split against the real code, answered the
+Export/Publish UI question (two already-independent dialogs, no
+consolidation decision to make), and found wizard-restart
+(`_on_restart_wizard`/`restart_requested`/`MeasureWizard`/`_SetupPage`/
+`main()`'s wizard loop) dead in the in-app path — `qt_shell.py`'s own
+`_launch_measure` never connects `restart_requested`, so clicking "Restart
+wizard..." from the Measure menu silently closes the window and does
+nothing. Confirmed for full deletion at this migration's shell-removal
+step, not fixed (there's nothing to fix once the whole shell goes).
+
+Step 2 (recall/review) was originally scoped read-only; approved as
+**editable** after the plan was written. Editable means it needs the same
+commit-mark orchestration `MeasureWindow.commit_mark` already has — which
+already existed in two independent copies (`MeasureWindow.commit_mark`, and
+`qt_shell.py`'s Part-05 Live Measure Panel, which reimplements the same
+sequence inline against the same primitives rather than calling
+`commit_mark` — the original extraction plan's claim that Part 05 "already
+calls into" `commit_mark` was wrong, corrected during step 1). A third copy
+was ruled out. **Decision**: extract the orchestration into one shared,
+Qt-free module-level function, `commit_measurement()`, that both
+`MeasureWindow` and the new `ReviewWindow` call; Part 05's panel is
+deliberately **not** migrated to it in this step (it ships, works, and
+stays untouched — migrating it is separate future work). This also
+satisfies `PHILOSOPHY.md`'s "pure logic is Qt-free" rule, since
+`commit_mark` was bound to `self.objective_combo`/`self._plane`/etc.
+
+`commit_measurement()`'s calibration gate is **strict** (unconditional
+`if um_per_px is None:`), matching `MeasureWindow`'s pre-extraction
+behavior exactly — not the looser gate Part 05's panel uses, which exempts
+angle marks (since `build_angle_mark` never uses `um_per_px` — angle is
+scale-invariant, so gating it on calibration blocks nothing that needed
+blocking). The looser gate is probably the correct end state, but adopting
+it now would be a silent behavior change riding on a refactor, and this
+step is meant to be behavior-neutral. **This is a decision, not an
+oversight, and it has a real consequence to flag**: once `commit_measurement()`
+is strict, migrating Part 05's panel to call it later becomes a silent
+behavior *regression* for Part 05 (which exempts angles today) unless
+whoever does that migration consciously decides to carry the exemption
+forward. Direct project precedent for this kind of split: `measure.py`'s
+`DEFAULT_CAPTURES_ROOT` hand-duplicates `provenance.OUT_ROOT` on purpose,
+with switching to an import left as its own deliberate follow-up rather
+than folded into the phase-1 move.
+
 ## Things that will bite you if you don't know them
 
 **`qt_shell.py`'s `render_check()` now monkeypatches `PROFILE_PATH` for
