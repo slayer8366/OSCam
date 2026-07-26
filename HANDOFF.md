@@ -1573,6 +1573,315 @@ functions. Full `--render-check` sweep passes (all 16 modules), no
 regressions. **Self-check-verified only** — nothing in this step has been
 exercised on real hardware or as a live GUI on-rig.
 
+### Live measure freeze-on-first-click fix — BUILT
+
+Full diagnosis and plan in a user-provided `PLAN_live_measure_freeze_fix.md`
+(not checked into the repo; see `CHANGELOG.md`'s matching Intent/Build
+entries for the full plan text and what landed). Fixes a real,
+reproducible bug in Part 05's freeze-on-first-click design (see "Live
+measure panel" above) — not a new feature.
+
+**Reported symptom**: clicking the live feed with the Live measure panel
+open zooms in slightly, doesn't freeze, registers no point, and bricks
+every click after that. The zoom is real Picamera2 behavior (the still
+capture switches to `full_res`, changing the FoV) — not the bug, just
+confirmation the click really does reach `_live_measure_freeze`.
+
+**The bug**: `_on_live_measure_freeze_done` sets
+`self._live_measure_frozen = True` before the pixmap/`set_image`/stack-swap
+block that can actually fail, and its availability guard checks only
+`_measure is None`, never `_calibrate is None` — which is just as
+legitimately `None` as `_measure` elsewhere in this file. A `calibrate.py`
+import failure makes `array_to_qimage` raise on `None`; the exception
+escapes the slot with the flag already `True`, and
+`_live_measure_preview_event`'s own `_live_measure_frozen` short-circuit
+then swallows every click forever — exactly the reported "first click
+zooms, doesn't freeze, then everything is dead" symptom. Separately, the
+freeze click's own point was discarded whenever no tool was armed at click
+time.
+
+**The fix, as built**: guard `_calibrate is None` the same way
+`_measure is None` already is; set `_live_measure_frozen` only after the
+swap actually succeeds, restoring the live preview on any failure instead
+of leaving the mode bricked; require a tool to be armed before a click can
+start a freeze at all (a click with no tool now prompts for one and never
+captures); with that guarantee in place, always register the
+freeze-triggering click as point 1 — a real behavior change: the first
+click both freezes the frame and places the first measurement point, not
+just the former; and actually set/clear `self._capturing` during a
+freeze, which the code's own docstring already claimed but never did.
+Landed exactly as planned, no deviations. `measure.py`, `camera_backend.py`,
+`plane_cache.py`, and `pixel_hash.py` are all untouched, as scoped.
+
+**Render-check coverage** (`qt_shell.py --render-check`, appended right
+after the existing "Live measure panel" check, five fresh camera/window
+fixtures so a failure in one case can't mask a bug in another): a
+`_calibrate is None` freeze (frozen stays `False`, live preview stays the
+current stack widget, status reports the real reason, `_capturing`
+clears, and a later click still completes a real freeze — not bricked); a
+forced `set_image` exception (same four postconditions — this is the
+direct regression test for the reported bug); the happy path (the
+triggering click's own converted coordinate — via
+`native_point_from_preview_click`, not a hand-typed literal — lands as the
+frozen canvas's sole pending point); no tool armed (a spied
+`capture_still_async` is never called, the click is still consumed, and
+status prompts for a tool); and the `_capturing` lifecycle on the two
+exit paths the first three cases don't already cover — a freeze failure
+(the delivered result is itself an `Exception`), a `measure.
+load_measurement_plane` failure, and a synchronous `capture_still_async`
+raise (before any worker starts). Full `--render-check` sweep passes,
+including this file's own 6 new "Live measure freeze-fix" PASS lines.
+
+**Environment gap found while verifying, not fixed (out of scope for this
+plan)**: in a genuinely fresh environment — no `~/.zynergy/gui_prefs.json`,
+no calibration on record — `--render-check` hangs forever the first time
+any `FocusPreviewWindow` gets constructed and pumped, well before this
+fix's own new coverage runs. Root cause: `_maybe_show_onboarding_gate`
+(checklist §4's first-launch prompt, unrelated to this plan) fires a real
+blocking `QMessageBox.question` the first time
+`should_show_onboarding_gate` sees both "not shown yet" and "no
+calibration exists" — true by construction in a brand-new environment —
+and a headless/offscreen run has no way to click it, so the whole process
+sits polling forever (confirmed via `py-spy dump`, not guessed: the stack
+showed `_maybe_show_onboarding_gate` under `_pump_until_idle`'s
+`qtapp.processEvents()`). Worked around for this session by pre-seeding
+the real `onboarding_calibration_prompt_shown` pref to `True` before
+running the check — environment setup, not a code change, and exactly the
+state any machine that has run this app once before would already be in
+(which is presumably why this has never surfaced before). Flagging here
+rather than silently fixing it: `render_check()`'s own test isolation
+already redirects `PROFILE_PATH`/`CALIBRATION_PATH`/`ANNOTATION_PATH` for
+exactly this class of problem elsewhere in the file (see "Things that will
+bite you," below) — this one spot doesn't, and should get the same
+treatment in a dedicated fix, not bundled into this plan's scope. **Now
+fixed** — see "Onboarding gate must not block a non-interactive launch"
+below. **Closed.**
+
+**Verified**: self-check first (as above), then manually driven against a
+real `should_show_onboarding_gate` fresh environment to actually observe
+and diagnose the hang above (not merely inferred). **Not yet exercised as
+a live GUI on-rig** — same standing limitation as the rest of Part 05; the
+plan's own three on-rig checks (tool selected → freeze + point 1 lands
+correctly; no tool selected → prompt, no zoom, no capture; a simulated
+on-rig freeze failure → feed stays live, next click works) are still
+outstanding.
+
+### Onboarding gate must not block a non-interactive launch — BUILT
+
+Full plan in a user-provided `INTENT_onboarding_gate_headless.md` (not
+checked into the repo). Follow-up to the environment gap flagged (not
+fixed) during the Live Measure freeze fix, above — now closed.
+`qt_shell.py` only.
+
+**Problem**: `_maybe_show_onboarding_gate` (~3551) fires via
+`QTimer.singleShot(0, ...)` from `MainWindow.__init__` (~2772). On a
+genuinely fresh install (no `onboarding_calibration_prompt_shown` pref, no
+calibration on record) `should_show_onboarding_gate` correctly returns
+True and a real modal `QMessageBox.question` appears — that part is
+working as designed. **The defect is that it fires regardless of whether
+anything can dismiss it.** With no one at the keyboard — offscreen Qt,
+CI, a container, an SSH session with no display — the modal blocks the
+event loop forever, with no output and no timeout; this is exactly the
+hang `py-spy dump` diagnosed in the freeze-fix session above.
+
+**Scope correction, made explicitly in the intent doc**: an earlier
+description of this overstated it as hitting "every fresh rig." On a real
+rig with a display, a human clicks the dialog and nothing is broken. The
+hang is specific to non-interactive contexts — narrower than first
+described, but still the actual blocker for clean-environment testing,
+which is the reason to fix it at all.
+
+**Landed exactly as planned, no deviations** (five parts):
+1. `should_show_onboarding_gate` gains a third parameter, `interactive`
+   (default `True`, so every pre-existing call site keeps its old
+   behavior) — returns True only when not-shown AND no-calibration AND
+   interactive. Stays the existing pure, Qt-free predicate, fully testable
+   without a display.
+2. New `_onboarding_session_is_interactive(no_onboarding_flag=False)`
+   helper, in one place: non-interactive when `QT_QPA_PLATFORM` is
+   `offscreen`/`minimal` (name compared alone, ignoring any
+   `:`-separated backend option), when the new opt-out flag is passed, or
+   when no live `QApplication` instance exists yet. Reads the *effective*
+   `QT_QPA_PLATFORM` live via `os.environ`, never cached — the file's own
+   `os.environ.setdefault(..., "xcb")` (~76) is untouched, so an
+   explicitly-set value still wins. Errs toward `True` everywhere else, by
+   design: an unrecognized platform or a real SSH session with display
+   forwarding is left alone, not guessed at, since a missed one-time
+   prompt costs nothing (the Calibrate menu action always covers
+   "whenever") while wrongly suppressing a real one means a user silently
+   never learns they need to calibrate.
+3. New `--no-onboarding` CLI flag (`main()`'s argparse) for a scripted
+   launch that has a real display but shouldn't be interrupted — threaded
+   through a new `no_onboarding` constructor parameter on
+   `FocusPreviewWindow` (`self._no_onboarding`, read fresh on every gate
+   check, never cached), documented in the module docstring's usage block
+   alongside `--render-check`.
+4. **The ordering detail most likely to get lost if this had been done
+   casually**: `save_pref("onboarding_calibration_prompt_shown", True)`
+   still fires *before* the dialog is shown on the interactive path
+   (unchanged — a crash mid-dialog must not re-prompt on every later
+   launch). Suppression for non-interactivity writes nothing — and this
+   fell out for free from `should_show_onboarding_gate`'s own early
+   return, since `save_pref` already only ever ran downstream of that
+   check; no separate guard needed.
+5. The freeze-fix session's pref pre-seeding workaround is no longer
+   needed and was never actually code (it was a one-off manual step
+   against this sandbox's real `~/.zynergy/gui_prefs.json`, not anything
+   checked into `render_check()` itself) — nothing to remove from the
+   suite. The "Environment gap found" note above is marked closed.
+
+**Explicit non-goals, honored**: the gate's one-time-ever semantics for
+real interactive users are unchanged; `calibrate.py` is untouched — the
+CALIBRATION INTEGRATION banner's (~926) "delete these blocks and nothing
+else" separability contract still holds (the banner's own removal list is
+updated to include the new helper, flag, and constructor parameter); no
+other blocking-dialog site was touched in this pass.
+
+**Render-check coverage added**: the predicate's full eight-combination
+truth table; the interactivity helper's own branches (offscreen/minimal,
+a platform value with backend options after a colon, the opt-out flag,
+an unrecognized platform defaulting to interactive, and — checked before
+this function constructs its own `QApplication`, the one point in
+`render_check()` where this is genuinely true — no live instance yet);
+suppression leaving the real pref file completely unwritten (not merely
+"no dialog shown" — the assertion that actually matters, since a
+regression here is otherwise invisible); the interactive path still
+writing the pref before the dialog (via a monkeypatched
+`QMessageBox.question`, since a real one would hang this exact check);
+and `--no-onboarding` suppressing an otherwise-interactive session.
+
+**Verified**: full `qt_shell.py --render-check` sweep passes (exit 0) on
+a genuinely fresh environment — `~/.zynergy/gui_prefs.json` and
+`calibration.json` both deleted before the run, no pre-seeding of any
+kind. The resulting `gui_prefs.json` (written to by other, unrelated
+render-check sections that don't redirect `PREFS_PATH` themselves — a
+pre-existing characteristic, out of scope here) has **no**
+`onboarding_calibration_prompt_shown` key at all afterward, confirming
+suppression held across the *entire* sweep's real `FocusPreviewWindow`
+construction, not just the isolated test block. **Not yet exercised as a
+live GUI on-rig** — this sandbox has no real display, so the interactive
+path (prompt shows exactly once, honors both Yes and No) is verified only
+by the monkeypatched render-check case above, not by an actual human
+click; that on-rig confirmation is still outstanding, same standing
+limitation as the rest of this file's Qt-facing work.
+
+### Live Measure frozen canvas must fit its frame on first freeze — BUILT
+
+Full plan in a user-provided `live_measure_canvas_fit_three_phases.md`
+(not checked into the repo). Found during on-rig testing of the
+freeze-on-first-click fix — the core behavior is confirmed working (first
+click froze the frame and registered a real 14.885 µm distance from that
+same click) — `qt_shell.py` only, entirely inside `_LiveMeasureCanvas`.
+
+**Two residual, cosmetic-but-disruptive defects**:
+1. The first freeze of a session renders the frozen plane as a small
+   thumbnail in a large empty area rather than filling the frame. Closing
+   and reopening the Live measure box restores normal appearance; the
+   second and every later freeze in the same session are already correct,
+   including after moving the stage.
+2. The frozen canvas doesn't visually match the live preview — Qt's
+   default gray background plus a visible view frame, instead of the live
+   feed's own black letterboxing — so the swap reads as a different,
+   patchier widget appearing rather than the same frame freezing in place.
+
+**Root cause of (1)**: `_LiveMeasureCanvas.set_image` ends with
+`resetTransform()` + `fitInView(..., Qt.KeepAspectRatio)`, but `set_image`
+runs from `_on_live_measure_freeze_done` *before*
+`_preview_stack_layout.setCurrentWidget(self._live_measure_canvas)` — at
+that moment the canvas isn't the stack's current widget yet and has no
+real laid-out geometry, so `fitInView` computes against stale/absent
+geometry and lands on a much-too-small transform. The class defines no
+`resizeEvent`, so the bad fit is never recomputed once real geometry
+actually arrives. Later freezes are fine because the canvas already has
+real geometry retained from the first time it was ever shown.
+
+**Not a bug — recorded here specifically so it doesn't get "fixed" later**:
+- A 174.652 µm reading taken on the mis-fitted first-freeze view is an
+  imprecise *click*, not a scale error. Clicks convert through
+  `mapToScene`, so scene coordinates — and therefore µm values — are
+  independent of the view's current zoom. Case 5 of the render-check
+  coverage below exists specifically to lock this in.
+- The ~1 second click-to-freeze lag (the real `switch_mode` full-res
+  capture) is expected and explicitly accepted by the user, not a defect
+  of this plan.
+- The frozen plane is greyscale because it's literally the green plane —
+  inherent to what gets frozen, not a rendering defect. A future color
+  freeze would mean carrying the full RGB still alongside the green plane;
+  parked deliberately, out of scope here.
+
+**Landed exactly as planned in three of four steps; the fourth was
+confirmed not applicable, not silently skipped**:
+1. The fit is factored into one small `_fit_to_view` method (no-ops when
+   `_pixmap_item is None`), called from `set_image` (unchanged) and two
+   new overrides, `resizeEvent`/`showEvent` — real geometry arriving after
+   `set_image` now actually triggers a refit. This is the direct fix.
+2. `self._user_zoomed`, set `True` in `wheelEvent`, makes `_fit_to_view` a
+   no-op; reset to `False` in `set_image`, since a new frozen plane is a
+   fresh view that should fit again.
+3. `setBackgroundBrush(QColor("black"))`, `setFrameShape(QFrame.NoFrame)`,
+   both scrollbar policies off — matches the live preview's own
+   appearance. `QFrame` added to the existing guarded PyQt5 import.
+4. **Confirmed not applicable**: checked whether any of the above lands
+   inside a block the CALIBRATION INTEGRATION banner (~926) already lists
+   for removal — it doesn't. `_LiveMeasureCanvas` is entirely inside Part
+   05's own feature, unrelated to that banner's separable calibration
+   block. No banner update needed; recorded here so a future reader
+   doesn't wonder whether this was missed.
+
+**Where the build diverged from intent — the one real deviation, worth
+flagging on its own**: render-check case 5's first draft followed the plan
+literally — simulate a click via `mapFromScene`/`mapToScene` at two
+different zoom levels and assert the round-tripped scene points (and the
+um values built from them) were identical. **It failed, and the failure
+was correct, not a bug in the fix**: `QGraphicsView.mapFromScene` rounds
+to an integer view pixel, so a "click" at a small (mis-fitted) zoom
+genuinely lands less precisely than the same nominal scene point clicked
+at a larger zoom — that IS the click-imprecision mechanism phase 1's own
+note describes, not a violation of transform-independence. The test was
+measuring the wrong thing (click precision, which correctly *does* vary
+with zoom) instead of the actual phase-1 claim (that *already-recorded*
+scene coordinates measure identically regardless of the canvas's zoom at
+measurement time). Rewritten to test that directly: `add_point_
+programmatic` stores the exact scene coordinate it's handed, and
+`build_distance_mark` run on those stored points is bit-identical across
+two different zoom levels, since neither function ever reads
+`self.transform()`. Same shape of finding as the onboarding-gate build's
+own step 4 (a plan-literal approach revealing something the diagnosis
+under-specified) — the value of a three-phase record is exactly that the
+build entry can say this rather than quietly conforming to the plan's
+literal wording.
+
+**Non-goals, honored**: `set_image`/`setCurrentWidget`'s ordering in
+`_on_live_measure_freeze_done` is untouched — the freeze fix's own
+load-bearing invariant; no green-plane/color changes; `measure.py`/
+`camera_backend.py`/`calibrate.py` untouched; capture latency unchanged.
+
+**Render-check coverage added**: first-show fit (the direct regression
+test — `set_image` before any real layout, then a forced resize/show
+correctly refits rather than keeping the stale transform); repeat freeze
+still fits (guards the already-working path); user zoom survives a
+resize; a new `set_image` re-enables auto-fit; and transform-independent
+measurement (see the deviation note above for what this actually checks).
+
+**Verified**: full `qt_shell.py --render-check` sweep passes (exit 0),
+including all five new "Live measure canvas-fit check PASS" lines.
+**Explicitly not done until confirmed on-rig** — self-check cannot prove
+any of: first freeze fills the frame at correct scale; the live-to-frozen
+swap reads as continuous (no gray flash, no border, no visible relayout);
+second and later freezes still correct after moving the stage; wheel-zoom
+survives a window resize; closing and reopening the Live measure box
+fits correctly on the reopened view. Carried forward to the pending bench
+session as its own checklist, not treated as done:
+- [ ] First freeze of a fresh session fills the frame at correct scale.
+- [ ] Swap from live to frozen reads as continuous — no gray flash, no
+      border, no visible relayout.
+- [ ] Second and later freezes still correct, including after moving the
+      stage.
+- [ ] Wheel-zoom on the frozen plane, then resize the window — zoom is
+      preserved.
+- [ ] Close and reopen the Live measure box — canvas fits correctly on
+      the reopened view.
+
 ## Things that will bite you if you don't know them
 
 **`qt_shell.py`'s `render_check()` now monkeypatches `PROFILE_PATH` for

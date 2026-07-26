@@ -29,6 +29,13 @@ Two ways to run:
                                        that finally exercises the ON-RIG lines in
                                        camera_backend.py.
 
+--no-onboarding suppresses the one-time "calibrate now?" prompt even on a
+launch that does have a real display -- for a scripted/automated launch that
+shouldn't be interrupted. The prompt already self-suppresses automatically on
+a headless/offscreen/no-display launch (see should_show_onboarding_gate /
+_onboarding_session_is_interactive); this flag is for the separate case of a
+real display that should still skip it.
+
 render_overlay, the geometry helpers, the shutter stop table, and record_capture
 are pure and Qt-free, so they are tested by --render-check without a display.
 The window and the fake preview are the only Qt-bound parts.
@@ -362,7 +369,7 @@ try:
                                  QDialog, QComboBox, QActionGroup, QFileDialog,
                                  QFormLayout, QGroupBox, QSpinBox, QLineEdit,
                                  QDialogButtonBox, QStackedLayout, QMenu,
-                                 QGraphicsView, QGraphicsScene, QButtonGroup)
+                                 QGraphicsView, QGraphicsScene, QButtonGroup, QFrame)
     from PyQt5.QtCore import QTimer, Qt, QRect, QEvent, pyqtSignal, QObject, QPointF
     from PyQt5.QtGui import (QImage, QPainter, QKeyEvent, QCloseEvent, QPen,
                              QColor, QPolygonF, QMouseEvent)
@@ -952,11 +959,16 @@ def _draw_ruler_ticks_into(ov, x_ticks, y_ticks, col=(230, 230, 230),
 # To pull it back out entirely: delete this function and its render_check
 # block, the "Calibrate" menu block in __init__, the _launch_calibrate and
 # _maybe_show_onboarding_gate methods, and the one singleShot() call that
-# triggers the gate. calibrate.py itself needs no changes either way; it
+# triggers the gate. Also delete _onboarding_session_is_interactive
+# (introduced solely to keep the gate from hanging a non-interactive
+# launch), its render_check coverage, the --no-onboarding argparse entry
+# and its mention in the module docstring's usage block, and the
+# no_onboarding constructor parameter/self._no_onboarding attribute on
+# FocusPreviewWindow. calibrate.py itself needs no changes either way; it
 # already runs standalone, unmodified, exactly as before.
 # ============================================================================
 
-def should_show_onboarding_gate(already_shown, any_calibration_exists):
+def should_show_onboarding_gate(already_shown, any_calibration_exists, interactive=True):
     """The onboarding gate's decision (checklist section 4), pure and
     testable apart from any Qt or filesystem state: show the "calibrate now
     or skip" prompt at most ONCE EVER. already_shown gates it out regardless
@@ -964,9 +976,55 @@ def should_show_onboarding_gate(already_shown, any_calibration_exists):
     a "not yet" that gets asked again next launch -- and it never shows at
     all once ANYTHING has been calibrated for any objective, shown or not.
     The "Calibrate" menu action is the whenever-you're-ready path either
-    way, so a one-time miss here costs nothing."""
-    return (not already_shown) and (not any_calibration_exists)
+    way, so a one-time miss here costs nothing.
+
+    interactive (default True, so every pre-existing call site keeps its
+    old behavior): whether anything is actually able to dismiss a modal
+    dialog right now. False for a headless/offscreen/CI/no-display launch,
+    where the real QMessageBox this gates would otherwise block the event
+    loop forever with no one able to click it -- see
+    _onboarding_session_is_interactive, which computes this. Suppression
+    for non-interactivity must read as "not now, nobody's here," never as
+    "asked and answered": the caller (_maybe_show_onboarding_gate) only
+    ever records the prompt as shown on the branch this function's own
+    early-return skips, so a non-interactive launch cannot burn the user's
+    real one-time prompt."""
+    return (not already_shown) and (not any_calibration_exists) and interactive
 # ============================================================================
+
+
+def _onboarding_session_is_interactive(no_onboarding_flag=False):
+    """Conservative, mostly Qt-free detector for whether this process can
+    present and dismiss a real modal dialog right now (used only to decide
+    whether the onboarding gate above may fire). Errs toward True: a missed
+    one-time prompt costs nothing (the Calibrate menu action always covers
+    "whenever"), while wrongly suppressing a real one means a user silently
+    never learns they need to calibrate. Only returns False for the
+    specific conditions this project has confirmed are non-interactive --
+    an unusual platform plugin or an SSH session with real display
+    forwarding is left alone, not guessed at.
+
+    All three checks the plan calls for, in one place:
+    - no_onboarding_flag: the explicit --no-onboarding opt-out (main()'s own
+      argparse), for a scripted launch that has a real display but should
+      not be interrupted.
+    - QT_QPA_PLATFORM is offscreen/minimal -- these platforms cannot render
+      or receive input at all, so a modal dialog can structurally never be
+      dismissed. Read live via os.environ (never cached: --render-check and
+      a real launch can differ within the same process), and compared on
+      the platform name alone -- QT_QPA_PLATFORM may carry backend options
+      after a colon (e.g. "offscreen:some=option").
+    - no live QApplication instance: defensive only (QMessageBox.question
+      itself requires one to exist), and Qt-free when PyQt5 isn't even
+      importable here."""
+    if no_onboarding_flag:
+        return False
+    platform_name = os.environ.get("QT_QPA_PLATFORM", "").split(":", 1)[0].strip().lower()
+    if platform_name in ("offscreen", "minimal"):
+        return False
+    if _HAVE_QT and QApplication.instance() is None:
+        return False
+    return True
 
 
 def render_overlay_into(ov, box, state, line=3, ruler_ticks=None,
@@ -1906,9 +1964,31 @@ if _HAVE_QT:
             self.window_ = window
             self.setRenderHint(QPainter.Antialiasing)
             self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
+            # Match self.preview's own appearance (black letterbox, no
+            # border, no scrollbars) so the freeze reads as the same frame
+            # freezing in place, not a different, patchier widget appearing
+            # underneath it (PLAN_live_measure_canvas_fit).
+            self.setBackgroundBrush(QColor("black"))
+            self.setFrameShape(QFrame.NoFrame)
+            self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
             self._pixmap_item = None
             self._pending_points = []   # native green-plane (x, y) floats
             self._pending_items = []    # scene items for the in-progress shape
+            # First-freeze mis-fit fix (PLAN_live_measure_canvas_fit): set_image
+            # is called from _on_live_measure_freeze_done BEFORE the stack
+            # layout swap makes this canvas the current widget, so on the
+            # very first freeze fitInView computes against stale/no geometry
+            # and lands on a much-too-small transform. resizeEvent/showEvent
+            # below refit once real geometry actually arrives; _user_zoomed
+            # stops that refit from fighting a manual wheelEvent zoom.
+            self._user_zoomed = False
+
+        def _fit_to_view(self):
+            if self._pixmap_item is None or self._user_zoomed:
+                return
+            self.resetTransform()
+            self.fitInView(self._pixmap_item, Qt.KeepAspectRatio)
 
         def set_image(self, pixmap):
             self.scene_.clear()
@@ -1916,10 +1996,19 @@ if _HAVE_QT:
             self.scene_.setSceneRect(self._pixmap_item.boundingRect())
             self._pending_points = []
             self._pending_items = []
-            self.resetTransform()
-            self.fitInView(self._pixmap_item, Qt.KeepAspectRatio)
+            self._user_zoomed = False   # a new frozen plane is a fresh view
+            self._fit_to_view()
+
+        def resizeEvent(self, ev):
+            super().resizeEvent(ev)
+            self._fit_to_view()
+
+        def showEvent(self, ev):
+            super().showEvent(ev)
+            self._fit_to_view()
 
         def wheelEvent(self, ev):
+            self._user_zoomed = True
             factor = 1.15 if ev.angleDelta().y() > 0 else 1 / 1.15
             self.scale(factor, factor)
 
@@ -2248,10 +2337,14 @@ if _HAVE_QT:
         export_results_done_signal = pyqtSignal(object)
         publish_package_done_signal = pyqtSignal(object)
 
-        def __init__(self, camera, meter, tick_ms=33, display_flags=None):
+        def __init__(self, camera, meter, tick_ms=33, display_flags=None, no_onboarding=False):
             super().__init__()
             self.camera = camera
             self.meter = meter
+            # CALIBRATION INTEGRATION (separable, see the banner comment near
+            # should_show_onboarding_gate): main()'s own --no-onboarding
+            # opt-out, read at gate-check time by _maybe_show_onboarding_gate.
+            self._no_onboarding = bool(no_onboarding)
             self._drag = None
             self._aspect = LORES_RES[0] / LORES_RES[1]
             self._tick_ms = tick_ms
@@ -3172,6 +3265,15 @@ if _HAVE_QT:
             if self._live_measure_frozen or self._live_measure_freezing:
                 return True
             if ev.type() == QEvent.MouseButtonPress and ev.button() == Qt.LeftButton:
+                if self._live_measure_tool is None:
+                    # No tool armed yet -- a freeze click with nothing to do
+                    # with the resulting point would either strand it (the
+                    # old bug) or require a second click on the frozen plane.
+                    # Consume the click, prompt for a tool, and never start
+                    # the capture at all.
+                    if self._live_measure_panel is not None:
+                        self._live_measure_panel.set_status(_live_measure_tool_hint(None))
+                    return True
                 native = native_point_from_preview_click(
                     ev.x(), ev.y(), self._disp_rect(), GREEN_PLANE_RES)
                 self._live_measure_freeze(native)
@@ -3194,6 +3296,7 @@ if _HAVE_QT:
                     "a capture or recording is already in progress")
                 return
             self._live_measure_freezing = True
+            self._capturing = True   # reuse the same busy-guard the capture path uses
             self._live_measure_pending_first_point = first_point
             self._set_capture_status(
                 "Freezing...", "Live measure: pulling a green plane to measure on")
@@ -3206,12 +3309,14 @@ if _HAVE_QT:
             try:
                 self.camera.capture_still_async(tmp_dir, "freeze", _on_done)
             except Exception as exc:
+                self._capturing = False
                 self.live_measure_freeze_done_signal.emit(exc)
 
         def _on_live_measure_freeze_done(self, result):
             tmp_dir = self._live_measure_tmp_dir
             self._live_measure_tmp_dir = None
             self._live_measure_freezing = False
+            self._capturing = False   # matches the guard set in _live_measure_freeze
             pending_pt = self._live_measure_pending_first_point
             self._live_measure_pending_first_point = None
             try:
@@ -3222,6 +3327,10 @@ if _HAVE_QT:
                     self._set_capture_status(
                         "Live measure unavailable", "measure.py not importable")
                     return
+                if _calibrate is None:
+                    self._set_capture_status(
+                        "Live measure unavailable", "calibrate.py not importable")
+                    return
                 try:
                     plane = _measure.load_measurement_plane(str(result.raw))
                 except Exception as exc:
@@ -3231,12 +3340,33 @@ if _HAVE_QT:
                                 if _pixel_hash is not None else None)
                 if _plane_cache is not None and pixel_sha256 is not None:
                     _plane_cache.store_plane(plane, pixel_sha256=pixel_sha256)
+                # _live_measure_frozen is set only after the pixmap/set_image/
+                # swap below all succeed -- never before. A failure here must
+                # leave the feature retryable, not stuck reporting a frozen
+                # state that was never actually reached (the original bug:
+                # the flag was set FIRST, so an exception in this block left
+                # it True forever, and _live_measure_preview_event swallowed
+                # every click after that unconditionally).
+                try:
+                    pixmap = _calibrate.array_to_qimage(_calibrate.stretch_to_uint8(plane))
+                    self._live_measure_canvas.set_image(pixmap)
+                    self._preview_stack_layout.setCurrentWidget(self._live_measure_canvas)
+                except Exception as exc:
+                    self._preview_stack_layout.setCurrentWidget(self.preview)
+                    self._set_capture_status("Live measure freeze failed", str(exc))
+                    return
                 self._live_measure_plane = plane
                 self._live_measure_pixel_sha256 = pixel_sha256
                 self._live_measure_frozen = True
-                pixmap = _calibrate.array_to_qimage(_calibrate.stretch_to_uint8(plane))
-                self._live_measure_canvas.set_image(pixmap)
-                self._preview_stack_layout.setCurrentWidget(self._live_measure_canvas)
+                # pending_pt is the freeze-triggering click's own coordinate --
+                # it must always become point 1 of the mark, never be dropped,
+                # per the required-behavior change: a user clicking a spore
+                # edge expects that edge to be point 1, not a second click on
+                # the frozen plane. _live_measure_preview_event now requires a
+                # tool before it will start a freeze at all, so
+                # _live_measure_tool is guaranteed non-None here in normal
+                # use; the None check is defensive belt-and-braces only (the
+                # panel closing mid-capture), not a reachable silent-drop path.
                 if pending_pt is not None and self._live_measure_tool is not None:
                     self._live_measure_canvas.add_point_programmatic(
                         pending_pt[0], pending_pt[1])
@@ -3553,12 +3683,24 @@ if _HAVE_QT:
             whether to calibrate now, using should_show_onboarding_gate's pure
             decision. Skipping (or closing the dialog without choosing) just
             continues into the GUI exactly as it would otherwise; the
-            Calibrate menu action covers "whenever" either way."""
+            Calibrate menu action covers "whenever" either way.
+
+            interactive is computed fresh on every call, never cached on
+            self -- QT_QPA_PLATFORM (the dominant signal) can only be
+            fixed for the life of a process anyway, but reading it live
+            here (rather than once at construction) keeps this method's
+            own behavior obvious from its body alone, matching
+            _onboarding_session_is_interactive's own "never cached"
+            contract. self._no_onboarding is the one per-launch override
+            (main()'s --no-onboarding), not a live environment signal, so
+            it's threaded through as an explicit argument rather than
+            folded into the environment check itself."""
             if _calibrate is None:
                 return
             already_shown = bool(load_pref("onboarding_calibration_prompt_shown", False))
             any_calibration_exists = bool(_calibrate.load_calibrations())
-            if not should_show_onboarding_gate(already_shown, any_calibration_exists):
+            interactive = _onboarding_session_is_interactive(self._no_onboarding)
+            if not should_show_onboarding_gate(already_shown, any_calibration_exists, interactive):
                 return
             save_pref("onboarding_calibration_prompt_shown", True)
             resp = QMessageBox.question(
@@ -5414,6 +5556,9 @@ def main(argv=None):
     ap.add_argument("--shadow-deepen", action="store_true")
     ap.add_argument("--archive-raws", action="store_true",
                     help="tar+remove raws after a process offer (no prompt)")
+    ap.add_argument("--no-onboarding", action="store_true",
+                    help="suppress the one-time 'calibrate now?' prompt even on "
+                         "a display-capable launch (see should_show_onboarding_gate)")
     a = ap.parse_args(argv)
     if not _HAVE_QT:
         sys.exit("PyQt5 not available. Use --render-check for the headless self-check "
@@ -5460,7 +5605,8 @@ def main(argv=None):
     # second window class. Casual Mode used to pick between window classes
     # here; that branch is gone.
     display_flags = build_display_flags(a)
-    win = FocusPreviewWindow(camera, FocusMeter(), display_flags=display_flags)
+    win = FocusPreviewWindow(camera, FocusMeter(), display_flags=display_flags,
+                              no_onboarding=a.no_onboarding)
     win.setWindowTitle("Zynergy capture GUI" + ("" if a.camera else "  (fake)"))
     win.resize(1550, 760)          # fallback size if the window manager ever
                                     # ignores the maximize request below
@@ -5584,15 +5730,212 @@ def render_check():
     print("overlay_signature ruler-sensitivity check PASS")
 
     # --- onboarding gate (calibration integration) --------------------------
-    assert should_show_onboarding_gate(already_shown=False, any_calibration_exists=False) is True, \
-        "never shown before, nothing calibrated -> should show"
-    assert should_show_onboarding_gate(already_shown=True, any_calibration_exists=False) is False, \
-        "already shown once -> never show again, regardless of calibration state"
-    assert should_show_onboarding_gate(already_shown=False, any_calibration_exists=True) is False, \
-        "something already calibrated -> no nudge needed even if never shown"
-    assert should_show_onboarding_gate(already_shown=True, any_calibration_exists=True) is False
+    # PLAN_onboarding_gate_headless.md (a user-provided intent doc, not
+    # checked into the repo): the gate must never fire when nothing can
+    # dismiss it. Full 8-combination truth table for the predicate --
+    # True only when genuinely unshown AND uncalibrated AND interactive.
+    for _og_shown, _og_calib, _og_interactive, _og_expected in [
+        (False, False, True,  True),
+        (False, False, False, False),
+        (False, True,  True,  False),
+        (False, True,  False, False),
+        (True,  False, True,  False),
+        (True,  False, False, False),
+        (True,  True,  True,  False),
+        (True,  True,  False, False),
+    ]:
+        _og_got = should_show_onboarding_gate(_og_shown, _og_calib, _og_interactive)
+        assert _og_got is _og_expected, (
+            "should_show_onboarding_gate(already_shown={}, any_calibration_exists={}, "
+            "interactive={}) must be {}, got {}".format(
+                _og_shown, _og_calib, _og_interactive, _og_expected, _og_got))
     print("should_show_onboarding_gate check PASS: one-time nudge only when "
-          "genuinely both unshown and uncalibrated, never a recurring nag")
+          "genuinely unshown, uncalibrated, AND interactive -- never a recurring "
+          "nag, and never a prompt nothing can dismiss")
+
+    # _onboarding_session_is_interactive: errs toward True by design -- only
+    # offscreen/minimal and the explicit opt-out read as non-interactive; an
+    # unrecognized platform name is left alone, never guessed at, since a
+    # wrongly-suppressed prompt (a user who silently never learns to
+    # calibrate) is worse than a wrongly-shown one (costs nothing -- the
+    # Calibrate menu action is always there). Checked BEFORE this function
+    # constructs its own QApplication below, on purpose: this is the one
+    # point in render_check() where "no live QApplication instance" is
+    # actually true and testable for real, not simulated.
+    if _HAVE_QT and QApplication.instance() is None:
+        assert _onboarding_session_is_interactive(no_onboarding_flag=False) is False, \
+            "no live QApplication instance must read as non-interactive"
+        print("_onboarding_session_is_interactive check PASS (no QApplication yet): "
+              "correctly non-interactive before any QApplication exists")
+    qtapp_og = QApplication.instance() or QApplication([])
+    _orig_qt_qpa_og = os.environ.get("QT_QPA_PLATFORM")
+    try:
+        os.environ["QT_QPA_PLATFORM"] = "xcb"
+        assert _onboarding_session_is_interactive(no_onboarding_flag=False) is True, \
+            "a real display-capable platform with no opt-out must read as interactive"
+        assert _onboarding_session_is_interactive(no_onboarding_flag=True) is False, \
+            "the explicit --no-onboarding opt-out must always suppress, regardless of platform"
+        os.environ["QT_QPA_PLATFORM"] = "offscreen"
+        assert _onboarding_session_is_interactive(no_onboarding_flag=False) is False, \
+            "offscreen must never be treated as interactive"
+        os.environ["QT_QPA_PLATFORM"] = "offscreen:some=option"
+        assert _onboarding_session_is_interactive(no_onboarding_flag=False) is False, \
+            "a platform value with backend options after a colon must still " \
+            "match on the platform name alone"
+        os.environ["QT_QPA_PLATFORM"] = "minimal"
+        assert _onboarding_session_is_interactive(no_onboarding_flag=False) is False, \
+            "minimal must never be treated as interactive"
+        os.environ["QT_QPA_PLATFORM"] = "some-unrecognized-platform"
+        assert _onboarding_session_is_interactive(no_onboarding_flag=False) is True, \
+            "an unrecognized platform must default to interactive, never be " \
+            "guessed non-interactive"
+    finally:
+        if _orig_qt_qpa_og is None:
+            os.environ.pop("QT_QPA_PLATFORM", None)
+        else:
+            os.environ["QT_QPA_PLATFORM"] = _orig_qt_qpa_og
+    print("_onboarding_session_is_interactive check PASS: errs toward interactive "
+          "-- only offscreen/minimal (matched on the platform name alone, ignoring "
+          "any ':'-separated backend option) and the explicit --no-onboarding flag "
+          "suppress; an unrecognized platform is left alone, never guessed "
+          "non-interactive")
+
+    if _calibrate is None:
+        print("Onboarding gate non-interactive-suppression check SKIPPED: "
+              "calibrate.py not importable here")
+    else:
+        # This is the real regression coverage for the freeze-fix session's
+        # own side finding: a genuinely fresh environment (no calibration on
+        # record, prompt never shown) used to hang --render-check forever.
+        # Redirect both PREFS_PATH and CALIBRATION_PATH so this can run
+        # against a real, isolated "nothing on record" state without ever
+        # touching ~/.zynergy/gui_prefs.json or ~/.zynergy/calibration.json.
+        # `global PREFS_PATH` declared ONCE here (Python disallows a second
+        # `global X` anywhere later in the same function once X has been
+        # used -- moved the Preferences dialog check's own redundant
+        # declaration out for exactly that reason; both sections reference
+        # the same module attribute regardless of which block declares it).
+        global PREFS_PATH
+        _orig_prefs_path_og = PREFS_PATH
+        PREFS_PATH = Path("/tmp/zynergy_render_check_onboarding_prefs.json")
+        _orig_calib_path_og = _calibrate.CALIBRATION_PATH
+        _calibrate.CALIBRATION_PATH = Path(
+            "/tmp/zynergy_render_check_onboarding_calibration.json")
+        try:
+            # Case: suppression (via --no-onboarding here, the same code path
+            # a genuinely non-interactive platform takes) must construct no
+            # dialog AND must leave the one-time-prompt pref completely
+            # unwritten -- "nobody's here" is not "asked and answered." This
+            # is the assertion that actually matters: the suppression path
+            # not writing the pref is invisible if it regresses (nothing
+            # fails loudly, a user just quietly loses their one-time prompt),
+            # so this checks the pref file's real key set, not merely that
+            # no dialog appeared.
+            PREFS_PATH.unlink(missing_ok=True)
+            _calibrate.CALIBRATION_PATH.unlink(missing_ok=True)
+            og_cam1 = FakeCamera(async_delay_s=0.0)
+            og_win1 = FocusPreviewWindow(og_cam1, FocusMeter(), no_onboarding=True)
+            try:
+                og_calls1 = []
+                real_question1 = QMessageBox.question
+                def _stub_question1(*a, **kw):
+                    og_calls1.append(1)
+                    return QMessageBox.No
+                QMessageBox.question = _stub_question1
+                try:
+                    og_win1._maybe_show_onboarding_gate()
+                finally:
+                    QMessageBox.question = real_question1
+                assert og_calls1 == [], \
+                    "a suppressed (non-interactive) gate must never construct " \
+                    "the dialog at all"
+                assert "onboarding_calibration_prompt_shown" not in load_prefs(), \
+                    "suppression must NOT write the one-time-prompt pref -- " \
+                    "writing it here would silently burn the user's real " \
+                    "prompt for their eventual first interactive launch"
+            finally:
+                og_cam1.stop()
+            print("Onboarding gate suppression check PASS: a suppressed gate "
+                  "shows no dialog and, critically, leaves the one-time-prompt "
+                  "pref file completely unwritten")
+
+            # Case: the interactive path must still write the pref BEFORE the
+            # dialog -- a regression guard on that exact ordering, since a
+            # crash/force-quit mid-dialog must not re-prompt on every later
+            # launch. Forced interactive here (xcb) purely so this path runs
+            # at all under this function's own offscreen process; the real
+            # blocking QMessageBox.question is stubbed out (never actually
+            # shown) so this doesn't hang the very check that proves it won't.
+            PREFS_PATH.unlink(missing_ok=True)
+            _calibrate.CALIBRATION_PATH.unlink(missing_ok=True)
+            og_cam2 = FakeCamera(async_delay_s=0.0)
+            og_win2 = FocusPreviewWindow(og_cam2, FocusMeter(), no_onboarding=False)
+            _orig_qt_qpa_og2 = os.environ.get("QT_QPA_PLATFORM")
+            try:
+                os.environ["QT_QPA_PLATFORM"] = "xcb"
+                og_pref_state_at_dialog = []
+                real_question2 = QMessageBox.question
+                def _stub_question2(*a, **kw):
+                    og_pref_state_at_dialog.append(
+                        bool(load_pref("onboarding_calibration_prompt_shown", False)))
+                    return QMessageBox.No
+                QMessageBox.question = _stub_question2
+                try:
+                    og_win2._maybe_show_onboarding_gate()
+                finally:
+                    QMessageBox.question = real_question2
+            finally:
+                if _orig_qt_qpa_og2 is None:
+                    os.environ.pop("QT_QPA_PLATFORM", None)
+                else:
+                    os.environ["QT_QPA_PLATFORM"] = _orig_qt_qpa_og2
+                og_cam2.stop()
+            assert og_pref_state_at_dialog == [True], \
+                "the interactive path must call save_pref BEFORE the dialog " \
+                "runs -- the pref must already read True by the time the " \
+                "dialog function is invoked"
+            print("Onboarding gate interactive-ordering check PASS: save_pref "
+                  "fires before the dialog on a real interactive path, "
+                  "preserving crash-mid-dialog safety")
+
+            # Case: --no-onboarding suppresses even an otherwise-interactive
+            # (display-capable) session -- the explicit opt-out, not the
+            # platform auto-detection, is what's under test here.
+            PREFS_PATH.unlink(missing_ok=True)
+            _calibrate.CALIBRATION_PATH.unlink(missing_ok=True)
+            og_cam3 = FakeCamera(async_delay_s=0.0)
+            og_win3 = FocusPreviewWindow(og_cam3, FocusMeter(), no_onboarding=True)
+            _orig_qt_qpa_og3 = os.environ.get("QT_QPA_PLATFORM")
+            try:
+                os.environ["QT_QPA_PLATFORM"] = "xcb"   # otherwise genuinely interactive
+                og_calls3 = []
+                real_question3 = QMessageBox.question
+                def _stub_question3(*a, **kw):
+                    og_calls3.append(1)
+                    return QMessageBox.No
+                QMessageBox.question = _stub_question3
+                try:
+                    og_win3._maybe_show_onboarding_gate()
+                finally:
+                    QMessageBox.question = real_question3
+            finally:
+                if _orig_qt_qpa_og3 is None:
+                    os.environ.pop("QT_QPA_PLATFORM", None)
+                else:
+                    os.environ["QT_QPA_PLATFORM"] = _orig_qt_qpa_og3
+                og_cam3.stop()
+            assert og_calls3 == [], \
+                "--no-onboarding must suppress the gate even on an otherwise " \
+                "display-capable platform"
+            assert "onboarding_calibration_prompt_shown" not in load_prefs(), \
+                "the --no-onboarding path must not write the pref either"
+            print("Onboarding gate --no-onboarding check PASS: the explicit "
+                  "opt-out suppresses the prompt even when the platform itself "
+                  "would otherwise read as interactive")
+        finally:
+            PREFS_PATH = _orig_prefs_path_og
+            _calibrate.CALIBRATION_PATH = _orig_calib_path_og
+    # --- end onboarding gate (calibration integration) -----------------------
 
     # Shutter stop table: standard photographic full stops within the sensor's
     # range, endpoints reachable, monotonic, and every position round-trips to
@@ -6238,7 +6581,10 @@ def render_check():
         # the old standalone Video resolution/Theme/Casual Mode menu entries
         # with one sectioned dialog, populated from camera.get_capabilities()
         # (PLAN_02) rather than a hardcoded list.
-        global PREFS_PATH
+        # (No `global PREFS_PATH` here -- the onboarding gate check earlier
+        # in this same function already declares it; Python disallows a
+        # second `global X` statement anywhere later in a function once X
+        # has been used, so this section relies on that earlier one.)
         orig_prefs_path = PREFS_PATH
         PREFS_PATH = Path("/tmp/zynergy_render_check_prefs_dialog.json")
         PREFS_PATH.unlink(missing_ok=True)
@@ -7149,6 +7495,390 @@ def render_check():
                   "color; Delete is a no-op against a committed mark; closing "
                   "discards every uncommitted entry, restores the live preview, "
                   "and never touches a mark already committed")
+
+            # --- Freeze-fix regression coverage (freeze-on-first-click) ------
+            # PLAN_live_measure_freeze_fix.md's own five cases. Each gets a
+            # fresh camera/window so a failure in one cannot mask a bug in
+            # another:
+            #   1. _calibrate is None -> fails clean, mode is not bricked.
+            #   2. set_image raises -> same postconditions; the direct
+            #      regression test for the reported freeze-forever bug.
+            #   3. happy path -> the triggering click's own point lands as
+            #      the frozen canvas's first pending point.
+            #   4. no tool armed -> no capture at all, click still consumed.
+            #   5. _capturing lifecycle on the two exit paths not already
+            #      proven by cases 1-3 (freeze failure, load failure, and a
+            #      synchronous capture_still_async raise).
+            def _fresh_live_measure_window():
+                cam = FakeCamera(async_delay_s=0.0,
+                                  capture_shape=(GREEN_PLANE_RES[1], GREEN_PLANE_RES[0]))
+                win = FocusPreviewWindow(cam, FocusMeter())
+                win.ruler_objective_combo.setCurrentText("40x")
+                win._launch_live_measure()
+                win._live_measure_panel.distance_btn.setChecked(True)
+                win.preview.resize(800, 600)
+                return cam, win
+
+            def _pump_until_not_freezing(win, timeout_s=15.0):
+                deadline = time.time() + timeout_s
+                while win._live_measure_freezing and time.time() < deadline:
+                    qtapp.processEvents()
+                    time.sleep(0.005)
+
+            orig_calib_path_ff = _calibrate.CALIBRATION_PATH
+            orig_annot_path_ff = _annotations.ANNOTATION_PATH
+            _calibrate.CALIBRATION_PATH = Path(
+                "/tmp/zynergy_render_check_live_measure_freeze_fix_calibration.json")
+            _annotations.ANNOTATION_PATH = Path(
+                "/tmp/zynergy_render_check_live_measure_freeze_fix_annotations.json")
+            _calibrate.CALIBRATION_PATH.unlink(missing_ok=True)
+            _annotations.ANNOTATION_PATH.unlink(missing_ok=True)
+            try:
+                calib_entry_ff = _calibrate.build_calibration_entry(
+                    Path("/tmp/fake_freeze_fix.dng"), (0.0, 0.0), (500.0, 0.0), 500.0,
+                    objective="40x", target_type="stage micrometer", focus_score=300.0)
+                _calibrate.save_calibration("40x", calib_entry_ff)
+
+                # Case 1: _calibrate is None.
+                cam1, win1 = _fresh_live_measure_window()
+                try:
+                    real_calibrate_ff = globals()['_calibrate']
+                    globals()['_calibrate'] = None
+                    try:
+                        press = QMouseEvent(QEvent.MouseButtonPress, QPointF(200, 300),
+                                            Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+                        win1.eventFilter(win1.preview, press)
+                        _pump_until_not_freezing(win1)
+                    finally:
+                        globals()['_calibrate'] = real_calibrate_ff
+                    assert not win1._live_measure_frozen, \
+                        "a _calibrate-is-None freeze must not set _live_measure_frozen"
+                    assert win1._preview_stack_layout.currentWidget() is win1.preview, \
+                        "the live preview must stay the visible stack widget on failure"
+                    assert win1.capture_status.text() == "Live measure unavailable", \
+                        "status must report the real unavailable reason"
+                    assert not win1._capturing, \
+                        "_capturing must clear after a _calibrate-is-None failure"
+
+                    # Not bricked: _calibrate is restored above, so a later
+                    # click must still be able to complete a real freeze.
+                    press2 = QMouseEvent(QEvent.MouseButtonPress, QPointF(210, 300),
+                                         Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+                    win1.eventFilter(win1.preview, press2)
+                    _pump_until_not_freezing(win1)
+                    assert win1._live_measure_frozen, \
+                        "a subsequent click must still complete a real freeze -- " \
+                        "the failure above must not have bricked the mode"
+                finally:
+                    cam1.stop()
+                print("Live measure freeze-fix check PASS (case 1): a "
+                      "_calibrate-is-None freeze fails cleanly -- frozen stays "
+                      "False, the live preview stays the visible stack widget, "
+                      "status reports the real reason, _capturing clears, and a "
+                      "later click still completes a real freeze")
+
+                # Case 2: set_image raises -- the direct regression test.
+                cam2, win2 = _fresh_live_measure_window()
+                try:
+                    def _raising_set_image(pixmap):
+                        raise RuntimeError("forced set_image failure (render-check)")
+                    real_set_image = win2._live_measure_canvas.set_image
+                    win2._live_measure_canvas.set_image = _raising_set_image
+                    press = QMouseEvent(QEvent.MouseButtonPress, QPointF(200, 300),
+                                        Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+                    win2.eventFilter(win2.preview, press)
+                    _pump_until_not_freezing(win2)
+                    assert not win2._live_measure_frozen, \
+                        "a set_image failure must not set _live_measure_frozen -- " \
+                        "this is the direct regression case for the reported bug"
+                    assert win2._preview_stack_layout.currentWidget() is win2.preview, \
+                        "the live preview must stay the visible stack widget on failure"
+                    assert win2.capture_status.text() == "Live measure freeze failed", \
+                        "status must report the freeze failure"
+                    assert not win2._capturing, \
+                        "_capturing must clear after a set_image failure"
+
+                    win2._live_measure_canvas.set_image = real_set_image
+                    press2 = QMouseEvent(QEvent.MouseButtonPress, QPointF(210, 300),
+                                         Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+                    win2.eventFilter(win2.preview, press2)
+                    _pump_until_not_freezing(win2)
+                    assert win2._live_measure_frozen, \
+                        "a later click must still complete a real freeze"
+                finally:
+                    cam2.stop()
+                print("Live measure freeze-fix check PASS (case 2): a set_image "
+                      "failure fails cleanly with the same postconditions as "
+                      "case 1 -- the mode is never bricked by a failed swap")
+
+                # Case 3: happy path registers the triggering click as point 1.
+                cam3, win3 = _fresh_live_measure_window()
+                try:
+                    click_x, click_y = 250.0, 320.0
+                    expected = native_point_from_preview_click(
+                        click_x, click_y, win3._disp_rect(), GREEN_PLANE_RES)
+                    press = QMouseEvent(QEvent.MouseButtonPress, QPointF(click_x, click_y),
+                                        Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+                    win3.eventFilter(win3.preview, press)
+                    _pump_until_not_freezing(win3)
+                    assert win3._live_measure_frozen
+                    assert len(win3._live_measure_canvas._pending_points) == 1, \
+                        "a successful freeze with a tool armed must register " \
+                        "the triggering click as the shape's first point"
+                    assert win3._live_measure_canvas._pending_points[0] == expected, \
+                        "the registered point must equal the triggering click's " \
+                        "own converted coordinate, never dropped or substituted"
+                finally:
+                    cam3.stop()
+                print("Live measure freeze-fix check PASS (case 3): the "
+                      "freeze-triggering click's own converted coordinate is "
+                      "always registered as the frozen canvas's first point")
+
+                # Case 4: no tool selected -- no capture, click still consumed.
+                cam4, win4 = _fresh_live_measure_window()
+                try:
+                    win4._live_measure_tool = None
+                    win4._live_measure_panel.set_status("")
+                    calls = []
+                    real_capture = win4.camera.capture_still_async
+                    def _counting_capture(*a, **kw):
+                        calls.append(1)
+                        return real_capture(*a, **kw)
+                    win4.camera.capture_still_async = _counting_capture
+                    press = QMouseEvent(QEvent.MouseButtonPress, QPointF(200, 300),
+                                        Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+                    consumed = win4.eventFilter(win4.preview, press)
+                    assert consumed is True, \
+                        "a click with no tool armed must still be consumed, " \
+                        "never fall through to ordinary box-drag"
+                    assert calls == [], \
+                        "a click with no tool armed must never start a capture"
+                    assert not win4._live_measure_freezing
+                    assert not win4._live_measure_frozen
+                    assert win4._live_measure_panel.status_label.text() == \
+                        _live_measure_tool_hint(None), \
+                        "status must prompt for a tool"
+                finally:
+                    cam4.stop()
+                print("Live measure freeze-fix check PASS (case 4): a click "
+                      "with no tool armed starts no capture, is still "
+                      "consumed, and prompts for a tool")
+
+                # Case 5: _capturing lifecycle on the remaining exit paths
+                # (success and swap-failure already proven by cases 1-3 above).
+                cam5, win5 = _fresh_live_measure_window()
+                try:
+                    # freeze failure: the delivered result is itself an Exception.
+                    win5._capturing = True
+                    win5._live_measure_freezing = True
+                    win5._on_live_measure_freeze_done(RuntimeError("forced (render-check)"))
+                    assert not win5._capturing, \
+                        "_capturing must clear on a freeze failure"
+
+                    # load failure: measure.load_measurement_plane raises.
+                    real_load_plane = _measure.load_measurement_plane
+                    def _raising_load_plane(*a, **kw):
+                        raise RuntimeError("forced load failure (render-check)")
+                    _measure.load_measurement_plane = _raising_load_plane
+                    try:
+                        press = QMouseEvent(QEvent.MouseButtonPress, QPointF(200, 300),
+                                            Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+                        win5.eventFilter(win5.preview, press)
+                        _pump_until_not_freezing(win5)
+                    finally:
+                        _measure.load_measurement_plane = real_load_plane
+                    assert not win5._live_measure_frozen
+                    assert not win5._capturing, \
+                        "_capturing must clear on a load failure"
+
+                    # synchronous capture_still_async raise, before any worker
+                    # ever starts.
+                    win5._live_measure_frozen = False
+                    def _raising_capture(*a, **kw):
+                        raise RuntimeError("forced sync capture failure (render-check)")
+                    win5.camera.capture_still_async = _raising_capture
+                    native_ff = native_point_from_preview_click(
+                        200, 300, win5._disp_rect(), GREEN_PLANE_RES)
+                    win5._live_measure_freeze(native_ff)
+                    assert not win5._capturing, \
+                        "_capturing must clear when capture_still_async raises " \
+                        "synchronously, before any worker starts"
+                finally:
+                    cam5.stop()
+                print("Live measure freeze-fix check PASS (case 5): _capturing "
+                      "is set while a freeze is in flight and clears on every "
+                      "exit path -- freeze failure, load failure, and a "
+                      "synchronous capture_still_async raise (success and "
+                      "swap-failure covered by cases 1-3 above)")
+            finally:
+                _calibrate.CALIBRATION_PATH = orig_calib_path_ff
+                _annotations.ANNOTATION_PATH = orig_annot_path_ff
+
+            # --- Frozen-canvas fit coverage (PLAN_live_measure_canvas_fit) ---
+            # Direct _LiveMeasureCanvas unit tests, not routed through a full
+            # FocusPreviewWindow -- window_ is untouched by set_image/
+            # resizeEvent/showEvent/_fit_to_view/wheelEvent, so None stands
+            # in for it here, same "test at the level the bug actually lives
+            # at" reasoning the rest of this file already follows.
+            qtapp_fit = QApplication.instance() or QApplication([])
+
+            def _fit_expected_scale(view, pixmap):
+                vp = view.viewport().size()
+                return min(vp.width() / float(pixmap.width()),
+                           vp.height() / float(pixmap.height()))
+
+            fit_plane = np.zeros((GREEN_PLANE_RES[1], GREEN_PLANE_RES[0]), dtype=np.float32)
+            fit_pixmap_a = _calibrate.array_to_qimage(_calibrate.stretch_to_uint8(fit_plane))
+            fit_pixmap_b = _calibrate.array_to_qimage(_calibrate.stretch_to_uint8(fit_plane))
+
+            # Case 1: first-show fit -- the direct regression test for the
+            # reported thumbnail bug. set_image runs before the canvas has
+            # ever had real geometry (never resized or shown), matching
+            # _on_live_measure_freeze_done's own real ordering (set_image
+            # before the stack-layout swap makes this canvas the current,
+            # laid-out widget) -- then real geometry arrives via resize+show,
+            # and resizeEvent/showEvent must refit rather than leaving the
+            # stale pre-layout transform in place forever.
+            fit_canvas1 = _LiveMeasureCanvas(None)
+            fit_canvas1.set_image(fit_pixmap_a)
+            transform_before_layout = (fit_canvas1.transform().m11(),
+                                       fit_canvas1.transform().m22())
+            fit_canvas1.resize(800, 600)
+            fit_canvas1.show()
+            qtapp_fit.processEvents()
+            transform_after_layout = (fit_canvas1.transform().m11(),
+                                      fit_canvas1.transform().m22())
+            assert transform_before_layout != transform_after_layout, \
+                "resizeEvent/showEvent must refit once real geometry arrives " \
+                "-- retaining the pre-layout transform forever is the exact " \
+                "reported bug (a small thumbnail on the very first freeze)"
+            expected_800x600 = _fit_expected_scale(fit_canvas1, fit_pixmap_a)
+            assert abs(transform_after_layout[0] - expected_800x600) < 0.05 * expected_800x600, \
+                "once real geometry arrives, the transform must actually fit " \
+                "the pixmap to the real viewport, not merely differ from the bad one"
+            print("Live measure canvas-fit check PASS (case 1, first-show fit): "
+                  "a canvas laid out with real geometry only AFTER set_image "
+                  "(the freeze handler's own real ordering) refits correctly "
+                  "once resizeEvent/showEvent deliver that geometry, instead "
+                  "of keeping the pre-layout thumbnail transform forever")
+
+            # Case 2: repeat freeze still fits -- guards against the fix
+            # regressing the path that was already working (second and later
+            # freezes, per the reported symptom, were never actually broken).
+            fit_canvas1.set_image(fit_pixmap_b)
+            transform_repeat = fit_canvas1.transform().m11()
+            assert abs(transform_repeat - expected_800x600) < 0.05 * expected_800x600, \
+                "a second set_image on an already-laid-out canvas must fit " \
+                "immediately, without waiting for a further resize/show event"
+            print("Live measure canvas-fit check PASS (case 2, repeat freeze): "
+                  "a second set_image on an already-laid-out canvas fits " \
+                  "immediately -- the already-working repeat-freeze path is " \
+                  "unaffected by the fix")
+
+            # Case 3: user zoom survives a resize -- auto-refitting on every
+            # resize must not fight a manual wheelEvent zoom.
+            class _FitFakeAngleDelta:
+                def y(self):
+                    return 120
+            class _FitFakeWheelEvent:
+                def angleDelta(self):
+                    return _FitFakeAngleDelta()
+            fit_canvas1.wheelEvent(_FitFakeWheelEvent())
+            assert fit_canvas1._user_zoomed is True, \
+                "wheelEvent must record that the user has taken manual control of the zoom"
+            transform_after_zoom = (fit_canvas1.transform().m11(), fit_canvas1.transform().m22())
+            fit_canvas1.resize(750, 550)
+            qtapp_fit.processEvents()
+            transform_after_resize_post_zoom = (
+                fit_canvas1.transform().m11(), fit_canvas1.transform().m22())
+            assert transform_after_resize_post_zoom == transform_after_zoom, \
+                "a resize after a manual zoom must NOT refit -- that would " \
+                "silently yank the user's own zoom away on the next window resize"
+            print("Live measure canvas-fit check PASS (case 3, zoom survives "
+                  "resize): a manual wheelEvent zoom is preserved across a "
+                  "later resize, not overridden by auto-fit")
+
+            # Case 4: a new set_image re-enables auto-fit -- a freshly frozen
+            # plane is a new view, not a continuation of the previous zoom.
+            fit_canvas1.set_image(fit_pixmap_a)
+            assert fit_canvas1._user_zoomed is False, \
+                "a new set_image must clear _user_zoomed so the fresh plane " \
+                "gets auto-fit again"
+            expected_750x550 = _fit_expected_scale(fit_canvas1, fit_pixmap_a)
+            assert abs(fit_canvas1.transform().m11() - expected_750x550) < 0.05 * expected_750x550, \
+                "a new set_image must actually re-fit to the current " \
+                "viewport, not merely clear the flag"
+            fit_canvas1.close()
+            print("Live measure canvas-fit check PASS (case 4, new image "
+                  "re-fits): a new set_image clears the manual-zoom flag and "
+                  "actually re-fits the fresh plane to the current viewport")
+
+            # Case 5: measurements are transform-independent -- phase 1's own
+            # "not a bug" finding, locked in so a future reader doesn't go
+            # looking for a calibration/scale bug behind an imprecise click.
+            # A click's pixel-to-scene conversion (mapToScene, exercised by
+            # cases 1-4's own real fit above) happens ONCE, at click time;
+            # what's actually stored afterward (_pending_points, then a
+            # committed mark's "input") is a plain scene-space coordinate
+            # that build_distance_mark/annotations never re-derive from the
+            # view. This proves that downstream stage directly: the exact
+            # coordinate add_point_programmatic is handed (already-converted,
+            # the same contract _on_live_measure_freeze_done and
+            # mousePressEvent both rely on) is stored byte-identical and
+            # produces an identical um reading, regardless of what the
+            # canvas's OWN zoom happens to be when that storage/measurement
+            # step runs -- an imprecise on-rig reading is therefore a
+            # property of the CLICK (bounded by how many scene units one
+            # screen pixel covers at the canvas's current fit/zoom), never a
+            # scale or calibration bug introduced by measuring it afterward.
+            class _FitFakeWindow:
+                _live_measure_tool = None   # None: no auto-finish, just record
+                def _live_measure_on_point_added(self, points):
+                    pass
+            fit_canvas5 = _LiveMeasureCanvas(_FitFakeWindow())
+            fit_canvas5.resize(400, 300)
+            fit_canvas5.show()
+            qtapp_fit.processEvents()
+            fit_canvas5.set_image(fit_pixmap_a)
+            qtapp_fit.processEvents()
+            point_a = (1000.0, 1200.0)
+            point_b = (1500.0, 1200.0)
+
+            fit_canvas5.add_point_programmatic(*point_a)
+            recorded_a_at_fit_zoom = fit_canvas5._pending_points[-1]
+            transform_at_recording_a = fit_canvas5.transform().m11()
+
+            fit_canvas5.scale(2.0, 2.0)   # a manual zoom change, same as wheelEvent would
+            assert fit_canvas5.transform().m11() != transform_at_recording_a, \
+                "sanity check: scale() must actually change the canvas's " \
+                "own transform, or this test would prove nothing"
+            fit_canvas5.add_point_programmatic(*point_b)
+            recorded_b_at_2x_zoom = fit_canvas5._pending_points[-1]
+
+            assert recorded_a_at_fit_zoom == point_a and recorded_b_at_2x_zoom == point_b, \
+                "add_point_programmatic must store the EXACT scene " \
+                "coordinate it is handed, unaffected by the canvas's " \
+                "current zoom at the moment it is recorded"
+
+            mark_at_fit_zoom = _annotations.build_distance_mark(point_a, point_b, 0.5)
+            fit_canvas5.scale(1.0 / 2.0, 1.0 / 2.0)   # back to the fitted zoom
+            mark_at_original_zoom = _annotations.build_distance_mark(point_a, point_b, 0.5)
+            assert (mark_at_fit_zoom["derived"]["distance_um"] ==
+                   mark_at_original_zoom["derived"]["distance_um"]), \
+                "the same two recorded scene points must produce the " \
+                "identical um reading regardless of the canvas's zoom at " \
+                "measurement time -- build_distance_mark operates on scene " \
+                "coordinates alone and never reads the view transform"
+            fit_canvas5.close()
+            print("Live measure canvas-fit check PASS (case 5, transform-"
+                  "independent measurement): add_point_programmatic stores "
+                  "the exact scene coordinate it is handed regardless of the "
+                  "canvas's current zoom, and the resulting um reading for "
+                  "the same two points is identical across two different "
+                  "zoom levels -- locks in that an imprecise on-rig reading "
+                  "is a property of the click, never a calibration or scale "
+                  "bug introduced by measuring it")
+            # --- end frozen-canvas fit coverage -------------------------------
         # --- end live measure panel check ------------------------------------
 
         # --- LIVE MEASURING (PLAN_quick_ruler.md) ----------------------------
