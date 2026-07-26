@@ -1967,8 +1967,29 @@ def render_check():
                 # load_measurement_plane check's own finally: block -- a
                 # fresh, self-contained fixture here, not a reuse of a path
                 # whose lifecycle belongs to that earlier test.
+                #
+                # This check drives real commits (distance, then polygon)
+                # through win.commit_mark -- own isolated annotations store,
+                # same reasoning as the commit_measurement/ReviewWindow
+                # blocks elsewhere in this function. Before this fix, this
+                # was the one gap: every measure.py --render-check run
+                # committed two real marks (a fixed, deterministic
+                # pixel_sha256 -- the fixture array never varies) straight
+                # into the real ~/.zynergy/annotations.json, unredirected.
+                # Found and recorded (not silently patched away) in
+                # CHANGELOG.md/HANDOFF.md for the MeasureWindow extraction,
+                # step 2 entry; this is that fix landing on its own, since
+                # it doesn't depend on how (or whether) the records already
+                # written to any real deployment's store get handled --
+                # PHILOSOPHY.md's append-only rule forbids editing or
+                # deleting store entries outright, "clean up a store" is
+                # named directly as something never to do, so those
+                # existing entries are a separate decision, not resolved
+                # here.
                 status_green_path = Path("/tmp/zynergy_measure_render_check_status.tif")
                 tifffile.imwrite(str(status_green_path), already_green)
+                orig_annot_path_status = _annotations.ANNOTATION_PATH
+                _annotations.ANNOTATION_PATH = tmp_dir / "status_line_annotations.json"
                 try:
                     win._load_image(str(status_green_path))
 
@@ -1997,6 +2018,7 @@ def render_check():
                         "pre-commit 'double-click to finish' text"
                 finally:
                     status_green_path.unlink(missing_ok=True)
+                    _annotations.ANNOTATION_PATH = orig_annot_path_status
                 print("mark-commit status-line reset check PASS: both the "
                       "auto-commit path (distance/angle) and the double-click "
                       "commit path (polygon/ellipse) reset the point-status "

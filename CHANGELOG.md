@@ -7,6 +7,49 @@ this file is the historical record of what happened and why.
 
 ## 2026-07-26
 
+### Fix: real-store pollution in `measure.py`'s pre-existing status-line check
+
+Follow-up to the "found, not fixed" note in the Build entry below, pushed
+on because of what it would have meant for step 3 (Export): that step
+reads the *entire* annotation store with no dependency on any open
+image, so building it before this was settled meant the first real export
+would have included whatever the polluted entries left behind.
+
+Investigated properly rather than assuming: the status-line check's
+fixture plane is built via `np.arange(...) % 4096` — deterministic, no
+randomness or timestamp — so every affected run hashes to the exact same
+`pixel_sha256`
+(`45a24e947a87c7817690b7181efb3eea8a3e8279ed8c0a65a1a8752c0bfd9a67`,
+confirmed by direct computation, cross-checked against a real polluted
+store holding exactly that one key). That hash was never produced by any
+real capture — an orphan in `annotations.py`'s own sense (see
+`find_orphans`), not scattered, not ambiguous. Also traced every
+`CALIBRATION_PATH`/`save_calibration` call site in `measure.py`: the
+calibration-gating block's own redirect already spans this entire section,
+so `~/.zynergy/calibration.json` was never exposed by this — confirmed
+against a real machine, where that file doesn't even exist.
+
+**Decision, not a cleanup**: the entries this already wrote to any real
+`~/.zynergy/annotations.json` are left untouched. `PHILOSOPHY.md`'s strict
+rules are explicit — "Never edit or delete an existing entry. Never 'clean
+up' a store." — and name that exact operation. Sympathetic as the case is
+(synthetic, deterministic, never a real measurement), the rule doesn't
+carve out an exception for it, and the doc's own framing is that an
+apparent need to break a strict rule is a design problem to raise, not
+work around. Raised here: step 3's Export design should surface orphaned
+entries via the existing `find_orphans(store, known_hashes)` — evidence,
+not a silent drop and not a silent include, the same pattern every other
+detector in this project already follows — rather than inventing new
+filtering logic or, worse, pruning the store as part of building it.
+
+**The forward fix**: the status-line check now redirects
+`ANNOTATION_PATH` to its own isolated temp path for its duration, same
+pattern as the checks added in the prior commit. Verified directly, not
+just by re-running the suite — snapshotted a real store's polluted-key
+mark count before and after a fresh `--render-check` run: unchanged,
+confirming the write actually stopped rather than the fix merely looking
+right. Full 16-module sweep still passes, no regressions.
+
 ### Build: `MeasureWindow` extraction, step 2 — recall/review (editable) + commit-orchestration extraction
 
 Builds the intent recorded in the prior commit.
@@ -66,7 +109,10 @@ shape of real-data-clobbered-by-a-self-check risk `HANDOFF.md` already
 documents for `PROFILE_PATH`. Out of scope for this step (unrelated
 pre-existing test, not touched by this extraction), so left as-is rather
 than fixed opportunistically — but worth a dedicated fix before it causes
-the same kind of confusion the `PROFILE_PATH` incident did.
+the same kind of confusion the `PROFILE_PATH` incident did. **Investigated
+and fixed in the next commit** — see the `Fix:` entry above for the
+identifiability findings, the append-only decision on the entries this had
+already written, and the redirect itself.
 
 Full `--render-check` sweep passes across all 16 modules, no regressions.
 **Self-check-verified only** — nothing in this step has been exercised on
