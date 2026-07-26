@@ -7,6 +7,54 @@ this file is the historical record of what happened and why.
 
 ## 2026-07-26
 
+### Build: Onboarding gate must not block a non-interactive launch
+
+Builds the intent recorded in the prior commit — landed exactly as
+planned, no deviations. `qt_shell.py` only: `should_show_onboarding_gate`
+gains a third parameter, `interactive` (default `True`, every pre-existing
+call site unaffected). New `_onboarding_session_is_interactive(
+no_onboarding_flag=False)` helper folds all three non-interactivity
+signals into one place — `offscreen`/`minimal` `QT_QPA_PLATFORM` (name
+compared alone, ignoring any `:`-separated backend option), the new
+opt-out flag, or no live `QApplication` instance — and errs toward `True`
+everywhere else, so an unrecognized platform or a real SSH-with-
+forwarding session is never wrongly suppressed. New `--no-onboarding` CLI
+flag, threaded through a new `no_onboarding` constructor parameter on
+`FocusPreviewWindow`, read fresh on every gate check.
+
+The load-bearing ordering detail: `save_pref(
+"onboarding_calibration_prompt_shown", True)` still fires before the
+dialog on the interactive path (crash-mid-dialog safety, unchanged), but
+suppression writes nothing at all — this fell out for free from
+`should_show_onboarding_gate`'s own early return, since `save_pref` was
+already only ever downstream of that check; no separate guard needed to
+get this right. CALIBRATION INTEGRATION banner's removal list updated to
+include the new helper, flag, and constructor parameter.
+
+Render-check coverage added: the predicate's full 8-combination truth
+table; the interactivity helper's platform-name/opt-out/no-QApplication
+branches (including the one point in `render_check()` where "no live
+QApplication instance yet" is genuinely true, checked before this
+function constructs its own); suppression leaving the real pref file
+completely unwritten — the assertion that actually matters, since this
+regressing is otherwise invisible (nothing fails loudly, a user just
+quietly loses their one-time prompt); the interactive path still writing
+the pref before the dialog (a monkeypatched `QMessageBox.question`, since
+a real one would hang this exact check); and `--no-onboarding` suppressing
+an otherwise-interactive session.
+
+**Verification**: full `qt_shell.py --render-check` sweep passes with
+exit 0 on a genuinely fresh environment — `~/.zynergy/gui_prefs.json` and
+`calibration.json` both deleted before the run, no pre-seeding of any
+kind (this used to hang forever). The resulting `gui_prefs.json`
+(written to by other, unrelated render-check sections that don't
+redirect `PREFS_PATH` themselves) has no
+`onboarding_calibration_prompt_shown` key at all afterward, confirming
+suppression held across the entire sweep's real window construction, not
+just the isolated new test block. Not yet exercised as a live GUI on-rig
+— this sandbox has no real display, so the interactive path is verified
+only via the monkeypatched render-check case, not an actual human click.
+
 ### Intent: Onboarding gate must not block a non-interactive launch
 
 Recording intent before building, per this repo's two-phase documentation
