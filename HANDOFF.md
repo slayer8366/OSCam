@@ -1495,6 +1495,47 @@ store's polluted-key mark count before and after a fresh
 stops the write rather than merely looking plausible. Full 16-module sweep
 still passes with no regressions.
 
+### Live measure freeze-on-first-click fix — intent recorded, not yet built
+
+Two-phase documentation rule: intent before code. Full diagnosis and plan
+in a user-provided `PLAN_live_measure_freeze_fix.md` (not checked into the
+repo; see `CHANGELOG.md`'s matching Intent entry for the full plan text).
+Fixes a real, reproducible bug in Part 05's freeze-on-first-click design
+(see "Live measure panel" above) — not a new feature.
+
+**Reported symptom**: clicking the live feed with the Live measure panel
+open zooms in slightly, doesn't freeze, registers no point, and bricks
+every click after that. The zoom is real Picamera2 behavior (the still
+capture switches to `full_res`, changing the FoV) — not the bug, just
+confirmation the click really does reach `_live_measure_freeze`.
+
+**The bug**: `_on_live_measure_freeze_done` sets
+`self._live_measure_frozen = True` before the pixmap/`set_image`/stack-swap
+block that can actually fail, and its availability guard checks only
+`_measure is None`, never `_calibrate is None` — which is just as
+legitimately `None` as `_measure` elsewhere in this file. A `calibrate.py`
+import failure makes `array_to_qimage` raise on `None`; the exception
+escapes the slot with the flag already `True`, and
+`_live_measure_preview_event`'s own `_live_measure_frozen` short-circuit
+then swallows every click forever — exactly the reported "first click
+zooms, doesn't freeze, then everything is dead" symptom. Separately, the
+freeze click's own point was discarded whenever no tool was armed at click
+time.
+
+**The fix, as planned**: guard `_calibrate is None` the same way
+`_measure is None` already is; set `_live_measure_frozen` only after the
+swap actually succeeds, restoring the live preview on any failure instead
+of leaving the mode bricked; require a tool to be armed before a click can
+start a freeze at all (a click with no tool now prompts for one and never
+captures); with that guarantee in place, always register the
+freeze-triggering click as point 1 — a real behavior change: the first
+click both freezes the frame and places the first measurement point, not
+just the former; and actually set/clear `self._capturing` during a
+freeze, which the code's own docstring already claimed but never did.
+
+No code has changed for this yet — see the matching Build entry below
+once it lands.
+
 ## Things that will bite you if you don't know them
 
 **`qt_shell.py`'s `render_check()` now monkeypatches `PROFILE_PATH` for

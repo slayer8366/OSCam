@@ -7,6 +7,85 @@ this file is the historical record of what happened and why.
 
 ## 2026-07-26
 
+### Intent: Live measure freeze-on-first-click fix
+
+Recording intent before building, per this repo's two-phase documentation
+rule. Full diagnosis and plan in a user-provided
+`PLAN_live_measure_freeze_fix.md` (not checked into the repo). This is a
+bug fix to Part 05's freeze-on-first-click design (see "Live measure
+panel" in `HANDOFF.md`), not a new feature.
+
+**Reported symptom**: clicking the live feed with the Live measure panel
+open zooms in slightly, doesn't freeze, registers no measurement point,
+and every click after that does nothing at all. The zoom is real and
+correct (`Picamera2Camera.capture_still_async` switches to `full_res` for
+the still, changing the FoV) — it confirms the click really does reach
+`_live_measure_freeze` and a capture really does start. The bug is
+entirely downstream, in the completion handler.
+
+**Diagnosis**: `_on_live_measure_freeze_done` sets
+`self._live_measure_frozen = True` *before* building the pixmap, calling
+`set_image`, and swapping `_preview_stack_layout` to the frozen canvas —
+any of which can raise. Its availability guard only checks
+`_measure is None`, never `_calibrate is None`, even though `_calibrate`
+is exactly as legitimately `None` as `_measure` (see the Calibrate
+action's own disabled-when-`None` guard elsewhere in this file). If
+`calibrate.py` failed to import, `array_to_qimage` raises `AttributeError`
+on `None`; the enclosing `try` has only a `finally` (tmp-dir cleanup), so
+the exception escapes the slot with `_live_measure_frozen` already `True`.
+From then on, `_live_measure_preview_event`'s own
+`if self._live_measure_frozen: return True` swallows every subsequent
+click, permanently — the exact reported symptom set, including the
+no-recovery part. Secondary defect, same handler: the freeze click's own
+converted coordinates were discarded whenever no tool was armed at click
+time (`pending_pt is not None and self._live_measure_tool is not None`),
+silently dropping the click that triggered the freeze.
+
+**Required behavior change** (explicit in the plan, not just a bug fix):
+the first click on the live feed must do both things — freeze the frame
+*and* register that same click as point 1 of the measurement. A user
+clicking a spore edge expects that edge to be point 1, not a second click
+on the frozen plane.
+
+**Plan** (`qt_shell.py` only — `measure.py`, `camera_backend.py`,
+`plane_cache.py`, `pixel_hash.py` untouched):
+1. Guard `_calibrate is None` alongside the existing `_measure is None`
+   check, same message style ("Live measure unavailable" /
+   "calibrate.py not importable").
+2. Restructure the success path so `_live_measure_frozen = True` is the
+   *last* thing set — only after the pixmap/set_image/swap block
+   succeeds. On failure: status set, frame stays live (swap back to
+   `self.preview`), pending point discarded, mode left retryable, never
+   bricked.
+3. Require an armed tool before `_live_measure_preview_event` will start a
+   freeze at all — a click with no tool prompts for one
+   (`_live_measure_tool_hint(None)`) and is still consumed, but never
+   triggers a capture. This is what makes step 4 unconditional.
+4. With (3) guaranteeing a tool is always armed when a freeze starts,
+   always register the freeze-triggering click as the tool's first point
+   (`pending_pt is not None` alone, no longer gated on a tool also being
+   set) — defensive-only fallback if the tool somehow clears mid-capture.
+5. Unrelated but cheap, found in the same code: `_live_measure_freeze`'s
+   own docstring claims it shares `self._capturing` with the normal
+   capture path as a busy-guard, but the code only ever *read* that flag,
+   never set it — the claimed mutual exclusion didn't actually hold.
+   Set it when a freeze capture launches, clear it on every exit path
+   (success, freeze failure, load failure, the new step-2 failure path,
+   and a synchronous `capture_still_async` raise).
+
+**Render-check coverage planned**: a `_calibrate is None` freeze (fails
+clean, not bricked); `set_image` raising (the direct regression case for
+the reported bug); the happy-path point registration (freeze + point 1 in
+one click); no tool selected (no capture at all, click still consumed,
+status prompts for a tool); the `_capturing` lifecycle across all of the
+above plus a synchronous `capture_still_async` raise.
+
+**Verification, planned**: self-check first, then on-rig — click with a
+tool selected (frame freezes and point 1 lands where clicked); click with
+no tool selected (status prompts, no zoom, no capture); a simulated freeze
+failure on-rig (feed stays live, next click works). Render-check alone
+cannot prove any of this; it is not done until exercised live.
+
 ### Fix: real-store pollution in `measure.py`'s pre-existing status-line check
 
 Follow-up to the "found, not fixed" note in the Build entry below, pushed
