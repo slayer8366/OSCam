@@ -6655,6 +6655,46 @@ def render_check():
                         "commit must write to the real annotations store, " \
                         "keyed to the frozen plane's own pixel_sha256"
 
+                    # Commit round trip (MeasureWindow extraction, step 2):
+                    # the mark just committed through THIS panel's real click/
+                    # commit dispatch must resolve, by pixel_sha256 alone, in
+                    # measure.ReviewWindow -- the new recall/review capability
+                    # Part 05's own design assumed measure.py would keep
+                    # providing. Never previously confirmed end to end; this
+                    # is that confirmation. Reuses this block's own frozen
+                    # plane, hash, and already-committed mark -- no parallel
+                    # fixture, same "reach the code the way the app does"
+                    # discipline as the freeze click above.
+                    if _measure is None:
+                        print("commit round-trip check SKIPPED: measure.py "
+                              "not importable here")
+                    else:
+                        committed_mark = stored[first_hash]["marks"][0]
+                        import tifffile as _rc_tifffile
+                        rc_tif = Path(
+                            "/tmp/zynergy_render_check_commit_roundtrip_plane.tif")
+                        _rc_tifffile.imwrite(str(rc_tif), lmwin._live_measure_plane)
+                        try:
+                            review_win = _measure.ReviewWindow()
+                            review_win._load_image(str(rc_tif))
+                            assert review_win._pixel_sha256 == first_hash, \
+                                "the same plane opened through two different " \
+                                "windows must hash identically"
+                            record_via_review = _annotations.image_record_for(
+                                review_win._pixel_sha256)
+                            assert record_via_review is not None
+                            assert record_via_review["marks"][0] == committed_mark, \
+                                "the exact mark Part 05's panel committed " \
+                                "must be the one ReviewWindow resolves"
+                        finally:
+                            rc_tif.unlink(missing_ok=True)
+                        print("commit round-trip check PASS: a mark committed "
+                              "through Part 05's real "
+                              "_live_measure_finish_points/"
+                              "_live_measure_commit_entry path resolves by "
+                              "pixel_sha256 in measure.ReviewWindow, exact "
+                              "mark match")
+
                     # Delete never touches a committed mark (the store never
                     # deletes) -- a no-op, not silently swallowed into
                     # looking like it worked.

@@ -1370,7 +1370,7 @@ trusting the feature, not just that the panel opens and clicks land where
 expected.
 
 **`MeasureWindow` extraction (2026-07-26) — Step 2, recall/review, now
-intent recorded, not yet built.** A new, separate migration
+built.** A new, separate migration
 (`PLAN_measurewindow_extraction.md`, drafted, not checked into the repo)
 breaks `measure.py`'s monolithic `MeasureWindow` apart, extract-then-remove
 style: each capability gets a new home while `MeasureWindow` keeps working,
@@ -1418,6 +1418,36 @@ forward. Direct project precedent for this kind of split: `measure.py`'s
 `DEFAULT_CAPTURES_ROOT` hand-duplicates `provenance.OUT_ROOT` on purpose,
 with switching to an import left as its own deliberate follow-up rather
 than folded into the phase-1 move.
+
+**Built and verified**: `commit_measurement()` lives in `measure.py`'s
+pure-logic section (before `_HAVE_QT`), alongside `current_um_per_px`/
+`fit_ellipse`/`build_record_defaults` — same shape as `calibrate.py`'s
+`build_calibration_entry`. `MeasureWindow.commit_mark` is now a thin
+wrapper around it. `ReviewWindow` (new class, same file) is the editable
+recall/review capability — reuses `MeasureView` with zero changes to it
+(satisfies its existing duck-typed `window_` contract), launches via
+`gallery.GalleryPickDialog` exactly the way `MeasureWindow._on_open`
+already does, reachable this step via `measure.py --review`. The commit
+round trip — a mark committed in Part 05's Live Measure Panel resolving by
+`pixel_sha256` in `ReviewWindow` — is now verified end to end, through
+Part 05's real click/commit dispatch, not a hand-simulated equivalent; the
+assertion lives inside `qt_shell.py --render-check`'s existing "Live
+measure panel check" (reuses that check's own frozen plane/hash/committed
+mark, no parallel fixture — `qt_shell.py` already depends on `measure.py`,
+never the reverse). Full `--render-check` sweep passes across all 16
+modules. **Self-check-verified only** — nothing here has been exercised on
+real hardware or as a live GUI on-rig yet.
+
+**Found, not fixed, while building this**: `measure.py`'s own *pre-existing*
+"mark-commit status-line reset check" (already in the repo before this
+session, `BUILD_LIST` Tier 1 item 2's coverage) never redirects
+`annotations.ANNOTATION_PATH` before driving real distance/polygon
+commits — every `measure.py --render-check` run has been writing real
+marks into the actual `~/.zynergy/annotations.json` all along. Same shape
+of risk as the `PROFILE_PATH` incident earlier in this file. Left as-is —
+out of scope for this extraction, a pre-existing and unrelated test — but
+worth a dedicated fix, not a silent discovery next time someone wonders
+why their real annotation store has synthetic marks in it.
 
 ## Things that will bite you if you don't know them
 

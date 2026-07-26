@@ -7,6 +7,72 @@ this file is the historical record of what happened and why.
 
 ## 2026-07-26
 
+### Build: `MeasureWindow` extraction, step 2 — recall/review (editable) + commit-orchestration extraction
+
+Builds the intent recorded in the prior commit.
+
+**`commit_measurement(plane, pixel_sha256, objective, tool, points)`**
+(`measure.py`, pure-logic section, before the `_HAVE_QT` guard) is the
+extracted orchestration: resolves calibration, builds the mark for `tool`,
+saves it, returns `{"mark": mark, "record": record}` — `record` is
+`annotations.save_mark`'s own return value (`store[pixel_sha256]`), not a
+second `image_record_for` re-read, which is what `MeasureWindow.commit_mark`
+did before this change (a small, justified cleanup — every existing caller
+of `save_mark` in the repo already discarded that return value). Raises the
+new `CalibrationMissing(ValueError)` for the strict gate, or `ValueError`
+unchanged from `build_*_mark`/`fit_ellipse` for degenerate input — neither
+caught internally, same shape as `calibrate.py`'s `build_calibration_entry`.
+`MeasureWindow.commit_mark` is now a thin thirteen-line wrapper: pull plain
+values from its own widgets, call in, catch the two exception types, do
+GUI-only follow-up (draw, labels). `MeasureView` needed zero changes.
+
+**`ReviewWindow`** (`measure.py`, new class beside `MeasureWindow`) is the
+new recall/review capability, editable per this session's approval:
+open an image, see its existing marks, place new ones with the same four
+tools. Deliberately smaller than `MeasureWindow` — no filmstrip/z-stack/
+export/publish/wizard-restart, out of scope for this step or being deleted
+outright. Reuses `MeasureView` completely unmodified by presenting the same
+duck-typed contract (`active_tool`, `commit_mark`, `on_point_added`,
+`_reset_tool_hint`) `MeasureView` already expects from its `window_`.
+Launches via `gallery.GalleryPickDialog`, byte-for-byte the same pattern
+`MeasureWindow._on_open` already uses — nothing in `gallery.py` changed.
+Reachable this step via an additive `measure.py --review` CLI flag; a
+permanent menu entry point is a later step's decision.
+
+**Commit round trip, verified end to end for the first time**: a mark
+committed through Part 05's Live Measure Panel — via its real click
+dispatch and real `_live_measure_commit_entry`, not a hand-simulated
+equivalent — now resolves by `pixel_sha256` in `ReviewWindow`, exact mark
+match. This was PLAN_measurewindow_extraction.md's single most important
+unverified claim; the new assertion lives inside `qt_shell.py`'s existing
+"Live measure panel check" (reusing its already-frozen plane, hash, and
+committed mark, not a parallel fixture), since `qt_shell.py` already
+depends on `measure.py` and the reverse import direction is one this
+codebase deliberately avoids (see `measure.py`'s own comment on why it
+doesn't import `qt_shell.py`). `measure.py`'s own `--render-check` gained
+matching coverage: `commit_measurement()` exercised directly for all four
+tools (including proving the strict gate blocks angle, not just the other
+three), and `ReviewWindow`'s own load/commit/recall cycle against a
+temp-redirected annotations store.
+
+**Found, not fixed — flagging per this project's honesty convention**:
+while adding `commit_measurement()`'s own isolated-store checks, noticed
+that `measure.py`'s *pre-existing* "mark-commit status-line reset check"
+(`BUILD_LIST Tier 1 item 2`'s coverage, already in the repo before this
+session) never redirects `annotations.ANNOTATION_PATH` — every
+`measure.py --render-check` run has been committing real distance/polygon
+marks to the actual `~/.zynergy/annotations.json` all along, the same
+shape of real-data-clobbered-by-a-self-check risk `HANDOFF.md` already
+documents for `PROFILE_PATH`. Out of scope for this step (unrelated
+pre-existing test, not touched by this extraction), so left as-is rather
+than fixed opportunistically — but worth a dedicated fix before it causes
+the same kind of confusion the `PROFILE_PATH` incident did.
+
+Full `--render-check` sweep passes across all 16 modules, no regressions.
+**Self-check-verified only** — nothing in this step has been exercised on
+real hardware or as a live GUI on-rig; same standing caveat as everything
+else in `HANDOFF.md` that hasn't been separately hardware-verified.
+
 ### Intent: `MeasureWindow` extraction, step 2 — recall/review (editable) + commit-orchestration extraction
 
 Recording intent before building, per the project's two-phase

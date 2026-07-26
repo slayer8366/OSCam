@@ -400,6 +400,63 @@ def build_record_defaults(plane, objective):
     }
 
 
+class CalibrationMissing(ValueError):
+    """Raised by commit_measurement when the objective has no calibration on
+    record. A ValueError subclass so a bare `except ValueError` still catches
+    it, but a caller that wants a distinct dialog title can catch it first."""
+
+
+def commit_measurement(plane, pixel_sha256, objective, tool, points):
+    """The commit-mark orchestration, Qt-free: build the mark for `tool` from
+    `points`, save it to the annotations store, and hand back both. Shared by
+    MeasureWindow.commit_mark and ReviewWindow's own commit wrapper so there
+    is exactly one place this sequence exists (qt_shell.py's Part-05 Live
+    Measure Panel still has its own independent copy -- not migrated to this
+    function yet, a deliberate later step, not an oversight).
+
+    The calibration gate is unconditional -- even an angle mark, which never
+    actually uses um_per_px, is blocked without a calibration on record. This
+    matches MeasureWindow's pre-extraction behavior exactly, on purpose: a
+    refactor that also changes behavior makes any bug reported afterward
+    ambiguous about which part caused it. Part 05's panel gates angle marks
+    more loosely (exempt from the calibration check, since build_angle_mark
+    takes no um_per_px) -- that is probably the more correct end state, but
+    adopting it here would be a silent behavior change riding on an
+    extraction. Whoever migrates Part 05 to call this function instead of
+    its own inline copy is DECIDING to drop that exemption, not discovering
+    that it was already gone.
+
+    Raises CalibrationMissing if `objective` has no calibration on record,
+    ValueError for degenerate/invalid points (propagated from the
+    build_*_mark functions and fit_ellipse, not caught here -- callers catch
+    it, same as calibrate.py's build_calibration_entry). Returns
+    {"mark": mark, "record": record} where `record` is the exact,
+    already-updated store entry for `pixel_sha256` -- annotations.save_mark
+    already computes and returns this, so no separate image_record_for
+    re-read is needed."""
+    if _annotations is None:
+        raise RuntimeError("annotations.py not importable")
+    um_per_px = current_um_per_px(objective)
+    if um_per_px is None:
+        raise CalibrationMissing(
+            "No calibration on record for {}.".format(objective))
+    if tool == "distance":
+        mark = _annotations.build_distance_mark(points[0], points[1], um_per_px)
+    elif tool == "angle":
+        mark = _annotations.build_angle_mark(points[0], points[1], points[2])
+    elif tool == "polygon":
+        mark = _annotations.build_polygon_mark(points, um_per_px)
+    elif tool == "ellipse":
+        center, axes_px, angle_deg = fit_ellipse(points)
+        mark = _annotations.build_ellipse_mark(
+            points, center, axes_px, angle_deg, um_per_px)
+    else:
+        raise ValueError("unrecognized tool {!r}".format(tool))
+    defaults = build_record_defaults(plane, objective)
+    store = _annotations.save_mark(pixel_sha256, mark, record_defaults=defaults)
+    return {"mark": mark, "record": store[pixel_sha256]}
+
+
 def format_mark_result(mark):
     """A human-readable line for whatever a mark just computed, so the number
     that mattered (a measurement tool exists to produce a trustworthy number)
@@ -1274,38 +1331,247 @@ if _HAVE_QT:
 
         # --- committing a mark --------------------------------------------------
         def commit_mark(self, points):
+            """Thin Qt wrapper around commit_measurement(): pull plain values
+            out of this window's own widgets, call the shared Qt-free
+            orchestration, then do GUI-only follow-up (draw, labels). See
+            commit_measurement's own docstring for why the calibration gate
+            is unconditional (including for angle marks)."""
             if self._plane is None or _annotations is None:
                 return
             obj = self.objective_combo.currentText().strip()
-            um_per_px = current_um_per_px(obj)
-            if um_per_px is None:
-                QMessageBox.warning(self, "No calibration",
-                                   "No calibration on record for {}.".format(obj))
-                return
             tool = self.active_tool
+            if tool not in ("distance", "angle", "polygon", "ellipse"):
+                return
             try:
-                if tool == "distance":
-                    mark = _annotations.build_distance_mark(points[0], points[1], um_per_px)
-                elif tool == "angle":
-                    mark = _annotations.build_angle_mark(points[0], points[1], points[2])
-                elif tool == "polygon":
-                    mark = _annotations.build_polygon_mark(points, um_per_px)
-                elif tool == "ellipse":
-                    center, axes_px, angle_deg = fit_ellipse(points)
-                    mark = _annotations.build_ellipse_mark(
-                        points, center, axes_px, angle_deg, um_per_px)
-                else:
-                    return
+                result = commit_measurement(self._plane, self._pixel_sha256, obj, tool, points)
+            except CalibrationMissing as exc:
+                QMessageBox.warning(self, "No calibration", str(exc))
+                return
             except ValueError as exc:
                 QMessageBox.warning(self, "Cannot measure", str(exc))
                 return
-            defaults = build_record_defaults(self._plane, obj)
-            _annotations.save_mark(self._pixel_sha256, mark, record_defaults=defaults)
-            self._draw_mark(mark)
-            self.result_label.setText(format_mark_result(mark))
-            record = _annotations.image_record_for(self._pixel_sha256)
+            self._draw_mark(result["mark"])
+            self.result_label.setText(format_mark_result(result["mark"]))
             self.mark_count_label.setText(
-                "{} mark(s) on record for this image".format(len(record["marks"])))
+                "{} mark(s) on record for this image".format(len(result["record"]["marks"])))
+
+
+    class ReviewWindow(QMainWindow):
+        """Recall/review (Preferences-dialog plan set, MeasureWindow
+        extraction, step 2): open a previously captured image, see its
+        existing marks, place new ones. Same four tools, same MeasureView
+        canvas, same commit_measurement() orchestration MeasureWindow itself
+        now calls -- deliberately smaller than MeasureWindow: no z-stack/
+        filmstrip/export/publish/wizard-restart, which either belong to
+        other steps of the extraction or are being removed outright (see
+        PLAN_measurewindow_extraction.md). MeasureView needs zero changes to
+        support this window -- it already only expects `.active_tool`,
+        `.commit_mark(points)`, `.on_point_added(points)`, and
+        `._reset_tool_hint()` on whatever `window_` it's given, and this
+        class provides exactly that same shape MeasureWindow does."""
+
+        def __init__(self, image_path=None, objective=None):
+            super().__init__()
+            self.setWindowTitle("Zynergy review")
+            self.active_tool = None
+            self._plane = None
+            self._pixel_sha256 = None
+
+            self.view = MeasureView(self)
+
+            self.objective_combo = QComboBox()
+            self.objective_combo.setEditable(True)
+            for obj in (getattr(_calibrate, "DEFAULT_OBJECTIVES", None)
+                       or ["4x", "10x", "40x", "100x"]):
+                self.objective_combo.addItem(obj)
+            if objective:
+                idx = self.objective_combo.findText(objective)
+                if idx >= 0:
+                    self.objective_combo.setCurrentIndex(idx)
+                else:
+                    self.objective_combo.setCurrentText(objective)
+            self.objective_combo.currentTextChanged.connect(self._refresh_gating)
+
+            self.distance_btn = QPushButton("Distance")
+            self.angle_btn = QPushButton("Angle")
+            self.polygon_btn = QPushButton("Polygon")
+            self.ellipse_btn = QPushButton("Ellipse")
+            for btn in (self.distance_btn, self.angle_btn, self.polygon_btn, self.ellipse_btn):
+                btn.setCheckable(True)
+
+            self.tool_group = QButtonGroup(self)
+            self.tool_group.setExclusive(True)
+            for name, btn in (("distance", self.distance_btn),
+                             ("angle", self.angle_btn),
+                             ("polygon", self.polygon_btn),
+                             ("ellipse", self.ellipse_btn)):
+                self.tool_group.addButton(btn)
+                btn.toggled.connect(lambda checked, n=name: self._on_tool_toggled(n, checked))
+
+            self.calib_status = QLabel("")
+            self.calib_status.setWordWrap(True)
+            self.point_status = QLabel("")
+            self.mark_count_label = QLabel("")
+            self.result_label = QLabel("")
+            self.result_label.setWordWrap(True)
+
+            open_btn = QPushButton("Open image...")
+            open_btn.clicked.connect(self._on_open)
+
+            top = QHBoxLayout()
+            top.addWidget(open_btn)
+            top.addWidget(QLabel("Objective:"))
+            top.addWidget(self.objective_combo)
+            top.addStretch(1)
+            top.addWidget(self.distance_btn)
+            top.addWidget(self.angle_btn)
+            top.addWidget(self.polygon_btn)
+            top.addWidget(self.ellipse_btn)
+
+            bottom = QVBoxLayout()
+            bottom.addWidget(self.calib_status)
+            bottom.addWidget(self.point_status)
+            bottom.addWidget(self.result_label)
+            bottom.addWidget(self.mark_count_label)
+
+            central = QWidget()
+            lay = QVBoxLayout(central)
+            lay.addLayout(top)
+            lay.addWidget(self.view, 1)
+            lay.addLayout(bottom)
+            self.setCentralWidget(central)
+
+            self._refresh_gating()
+            if image_path:
+                self._load_image(image_path)
+
+        # --- tools (identical to MeasureWindow's own) -------------------------
+        def _on_tool_toggled(self, name, checked):
+            self.active_tool = name if checked else None
+            self.view._clear_pending()
+            self._reset_tool_hint()
+            self.result_label.setText("")
+
+        def _reset_tool_hint(self):
+            self.point_status.setText(self._tool_hint(self.active_tool))
+
+        @staticmethod
+        def _tool_hint(name):
+            return {
+                "distance": "distance: click two points",
+                "angle": "angle: click the vertex, then two arm points",
+                "polygon": "polygon: click each vertex, double-click to finish (3+ points)",
+                "ellipse": "ellipse: click 5+ boundary points, double-click to finish",
+            }.get(name, "")
+
+        def on_point_added(self, points):
+            n = len(points)
+            tool = self.active_tool
+            if tool == "distance":
+                self.point_status.setText("distance: {} of 2 points".format(n))
+            elif tool == "angle":
+                self.point_status.setText("angle: {} of 3 points (vertex first)".format(n))
+            elif tool == "polygon":
+                self.point_status.setText(
+                    "polygon: {} point(s), double-click to finish (3+ needed)".format(n))
+            elif tool == "ellipse":
+                self.point_status.setText(
+                    "ellipse: {} point(s), double-click to finish (5+ needed)".format(n))
+            else:
+                self.point_status.setText("")
+
+        def _refresh_gating(self):
+            obj = self.objective_combo.currentText().strip()
+            entry = (_calibrate.current_calibration(obj)
+                    if _calibrate is not None and obj else None)
+            um_per_px = entry["um_per_px"] if entry else None
+            ok = um_per_px is not None
+            for btn in (self.distance_btn, self.angle_btn, self.polygon_btn, self.ellipse_btn):
+                btn.setEnabled(ok)
+            if ok:
+                staleness = _calibrate.format_staleness_suffix(
+                    _calibrate.calibration_staleness(entry))
+                self.calib_status.setText(
+                    "Calibration: {} at {:.4f} µm/px{}".format(obj, um_per_px, staleness))
+            else:
+                self.calib_status.setText(
+                    "No calibration on record for {} -- measurement tools "
+                    "disabled".format(obj or "(no objective set)"))
+                if not ok and self.active_tool is not None:
+                    for btn in (self.distance_btn, self.angle_btn, self.polygon_btn, self.ellipse_btn):
+                        btn.setChecked(False)
+
+        # --- image loading (identical to MeasureWindow's own, minus the
+        # z-stack reset -- ReviewWindow has no filmstrip) ---------------------
+        def _on_open(self):
+            try:
+                from . import gallery as _gallery
+            except ImportError:
+                import gallery as _gallery
+            dlg = _gallery.GalleryPickDialog(parent=self)
+            if dlg.exec_() != QDialog.Accepted:
+                return
+            paths = dlg.selected_paths()
+            if paths:
+                self._load_image(str(paths[0]))
+
+        def _load_image(self, path):
+            try:
+                plane = load_measurement_plane(path)
+            except (ValueError, RuntimeError) as exc:
+                QMessageBox.warning(self, "Could not load image", str(exc))
+                return
+            except Exception as exc:
+                QMessageBox.warning(self, "Could not load image",
+                                   "Failed to read {}: {}".format(Path(path).name, exc))
+                return
+            self._plane = plane
+            self._pixel_sha256 = (_pixel_hash.pixel_sha256(plane)
+                                  if _pixel_hash is not None else None)
+            pixmap = _calibrate.array_to_qimage(_calibrate.stretch_to_uint8(plane))
+            self.view.set_image(pixmap)
+            self.result_label.setText("")
+            self._render_existing_marks()
+
+        def _render_existing_marks(self):
+            if _annotations is None or self._pixel_sha256 is None:
+                self.mark_count_label.setText("")
+                return
+            record = _annotations.image_record_for(self._pixel_sha256)
+            marks = record["marks"] if record else []
+            for m in marks:
+                self._draw_mark(m)
+            self.mark_count_label.setText(
+                "{} mark(s) on record for this image".format(len(marks)))
+
+        def _draw_mark(self, mark):
+            drawer = {"distance": self.view.draw_distance,
+                     "angle": self.view.draw_angle,
+                     "polygon": self.view.draw_polygon,
+                     "ellipse": self.view.draw_ellipse}.get(mark.get("type"))
+            if drawer:
+                drawer(mark)
+
+        # --- committing a mark (thin wrapper, mirrors MeasureWindow's own) --
+        def commit_mark(self, points):
+            if self._plane is None or _annotations is None:
+                return
+            obj = self.objective_combo.currentText().strip()
+            tool = self.active_tool
+            if tool not in ("distance", "angle", "polygon", "ellipse"):
+                return
+            try:
+                result = commit_measurement(self._plane, self._pixel_sha256, obj, tool, points)
+            except CalibrationMissing as exc:
+                QMessageBox.warning(self, "No calibration", str(exc))
+                return
+            except ValueError as exc:
+                QMessageBox.warning(self, "Cannot measure", str(exc))
+                return
+            self._draw_mark(result["mark"])
+            self.result_label.setText(format_mark_result(result["mark"]))
+            self.mark_count_label.setText(
+                "{} mark(s) on record for this image".format(len(result["record"]["marks"])))
 
 
     class _SetupPage(QWizardPage):
@@ -1570,6 +1836,86 @@ def render_check():
             print("calibration gating check PASS: closed with no calibration, "
                   "open once calibrated, record_defaults carry the right ref")
 
+            # --- commit_measurement(): the extracted, Qt-free orchestration
+            # MeasureWindow.commit_mark and ReviewWindow.commit_mark both now
+            # wrap (MeasureWindow extraction, step 2). Own isolated
+            # annotations store -- never the real ~/.zynergy/annotations.json.
+            orig_annot_path = _annotations.ANNOTATION_PATH
+            _annotations.ANNOTATION_PATH = tmp_dir / "annotations.json"
+            try:
+                cm_plane = already_green
+                cm_sha = "cm_render_check_" + "0" * 48
+
+                cm_distance = commit_measurement(
+                    cm_plane, cm_sha, "40x", "distance", [(0.0, 0.0), (10.0, 0.0)])
+                assert cm_distance["mark"]["type"] == "distance"
+                assert len(cm_distance["record"]["marks"]) == 1
+
+                cm_angle = commit_measurement(
+                    cm_plane, cm_sha, "40x", "angle",
+                    [(0.0, 0.0), (10.0, 0.0), (0.0, 10.0)])
+                assert cm_angle["mark"]["type"] == "angle"
+                assert len(cm_angle["record"]["marks"]) == 2, \
+                    "commit_measurement's returned record must be the real, " \
+                    "already-updated store entry (no separate re-fetch needed)"
+
+                cm_polygon = commit_measurement(
+                    cm_plane, cm_sha, "40x", "polygon",
+                    [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0)])
+                assert cm_polygon["mark"]["type"] == "polygon"
+
+                cm_ellipse_pts = [
+                    (10.0 * math.cos(t), 10.0 * math.sin(t))
+                    for t in (0.0, 1.2, 2.4, 3.6, 4.8, 6.0)]
+                cm_ellipse = commit_measurement(
+                    cm_plane, cm_sha, "40x", "ellipse", cm_ellipse_pts)
+                assert cm_ellipse["mark"]["type"] == "ellipse"
+
+                on_disk = _annotations.load_annotations()
+                assert len(on_disk[cm_sha]["marks"]) == 4, \
+                    "all four commits must have landed in the real (temp-" \
+                    "redirected) store, keyed by the same pixel_sha256"
+
+                # The strict gate (this step's explicit decision, see
+                # commit_measurement's own docstring): ALL FOUR tools, angle
+                # included, refuse on an uncalibrated objective. Part 05's
+                # panel exempts angle from this gate in its own separate
+                # inline copy -- commit_measurement deliberately does not,
+                # to keep this extraction behavior-neutral for MeasureWindow.
+                for tool, pts in (
+                        ("distance", [(0.0, 0.0), (10.0, 0.0)]),
+                        ("angle", [(0.0, 0.0), (10.0, 0.0), (0.0, 10.0)]),
+                        ("polygon", [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0)]),
+                        ("ellipse", cm_ellipse_pts)):
+                    try:
+                        commit_measurement(cm_plane, cm_sha, "no-such-objective", tool, pts)
+                        raise AssertionError(
+                            "{} must refuse without calibration, angle "
+                            "included -- it is not exempt here".format(tool))
+                    except CalibrationMissing:
+                        pass
+
+                # A degenerate shape's ValueError propagates uncaught, same
+                # as build_calibration_entry -- the Qt wrapper catches it,
+                # commit_measurement itself does not.
+                try:
+                    commit_measurement(cm_plane, cm_sha, "40x", "distance",
+                                       [(5.0, 5.0), (5.0, 5.0)])
+                    raise AssertionError("expected ValueError for coincident distance points")
+                except CalibrationMissing:
+                    raise AssertionError("coincident points is a ValueError, not CalibrationMissing")
+                except ValueError:
+                    pass
+
+                print("commit_measurement check PASS: all four tools commit "
+                      "and land in the real store keyed by pixel_sha256, the "
+                      "returned record is the store's own post-save entry "
+                      "(no redundant re-fetch), the calibration gate is "
+                      "strict for all four tools including angle, and a "
+                      "degenerate shape's ValueError propagates uncaught")
+            finally:
+                _annotations.ANNOTATION_PATH = orig_annot_path
+
             # section 13: _refresh_gating's status label surfaces staleness
             # (config drift), but never re-closes the gate over it -- evidence,
             # not a block, same as every other flag this project raises.
@@ -1656,6 +2002,52 @@ def render_check():
                       "commit path (polygon/ellipse) reset the point-status "
                       "line to the tool's own hint immediately after a commit, "
                       "matching what picking the tool fresh already showed")
+
+                # --- ReviewWindow: recall/review, now editable (step 2) ----
+                # Own isolated annotations store, same reasoning as the
+                # commit_measurement block above -- never the real store.
+                orig_annot_path_rw = _annotations.ANNOTATION_PATH
+                _annotations.ANNOTATION_PATH = tmp_dir / "review_annotations.json"
+                rw_green_path = Path("/tmp/zynergy_measure_render_check_review.tif")
+                tifffile.imwrite(str(rw_green_path), already_green)
+                try:
+                    rwin = ReviewWindow(objective="40x")
+                    assert rwin.distance_btn.isEnabled(), \
+                        "ReviewWindow must gate on calibration the same way MeasureWindow does"
+                    rwin._load_image(str(rw_green_path))
+                    assert rwin.mark_count_label.text() == "0 mark(s) on record for this image", \
+                        "a freshly-loaded image with no prior marks must show a zero count"
+
+                    rwin.distance_btn.setChecked(True)
+                    _click(rwin.view, 10, 10)
+                    _click(rwin.view, 20, 20)
+                    assert rwin.mark_count_label.text() == "1 mark(s) on record for this image"
+                    committed_sha = rwin._pixel_sha256
+                    on_disk_rw = _annotations.load_annotations()
+                    assert committed_sha in on_disk_rw and \
+                        len(on_disk_rw[committed_sha]["marks"]) == 1, \
+                        "ReviewWindow's commit must land in the real (temp-" \
+                        "redirected) annotations store, keyed by pixel_sha256"
+
+                    # Recall half: a FRESH ReviewWindow, loading the same
+                    # file again, must replay the mark that the first
+                    # instance committed -- the exact round trip this
+                    # capability exists to prove works at all.
+                    rwin2 = ReviewWindow(objective="40x")
+                    rwin2._load_image(str(rw_green_path))
+                    assert rwin2._pixel_sha256 == committed_sha
+                    assert rwin2.mark_count_label.text() == "1 mark(s) on record for this image", \
+                        "a fresh ReviewWindow opening the same image must " \
+                        "recall the mark committed by a different instance, " \
+                        "resolved purely by pixel_sha256"
+                finally:
+                    rw_green_path.unlink(missing_ok=True)
+                    _annotations.ANNOTATION_PATH = orig_annot_path_rw
+                print("ReviewWindow check PASS: gates on calibration the same "
+                      "way MeasureWindow does, a committed mark lands in the "
+                      "real store keyed by pixel_sha256, and a second, "
+                      "independent ReviewWindow instance opening the same "
+                      "image recalls that mark purely by hash")
         finally:
             _calibrate.CALIBRATION_PATH = orig_path
     else:
@@ -1901,6 +2293,9 @@ def main():
                          "or an already-extracted green-plane TIFF")
     ap.add_argument("--objective", default=None)
     ap.add_argument("--render-check", action="store_true")
+    ap.add_argument("--review", action="store_true",
+                    help="open ReviewWindow (MeasureWindow extraction, step 2) "
+                         "instead of MeasureWindow")
     args = ap.parse_args()
 
     if args.render_check:
@@ -1912,6 +2307,12 @@ def main():
         sys.exit(1)
 
     app = QApplication(sys.argv)
+
+    if args.review:
+        win = ReviewWindow(image_path=args.image, objective=args.objective)
+        win.resize(1200, 800)
+        win.show()
+        sys.exit(app.exec_())
 
     if args.image or args.objective:
         # CLI shortcut, unchanged: skip the wizard, open the window directly.
