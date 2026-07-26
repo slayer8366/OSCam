@@ -7,6 +7,56 @@ this file is the historical record of what happened and why.
 
 ## 2026-07-26
 
+### Intent: Onboarding gate must not block a non-interactive launch
+
+Recording intent before building, per this repo's two-phase documentation
+rule. Full plan in a user-provided `INTENT_onboarding_gate_headless.md`
+(not checked into the repo). Follow-up to the environment gap flagged
+(not fixed) during the Live Measure freeze fix, above: `_maybe_show_
+onboarding_gate` fires a real blocking `QMessageBox.question` on a
+genuinely fresh install, which is correct when a human is at the keyboard
+but hangs the process forever when nothing can dismiss it (offscreen Qt,
+CI, containers, no-display SSH) — this is the hang `py-spy dump` diagnosed
+in that session.
+
+**Scope correction from the original finding**: not "every fresh rig" —
+on real hardware with a display, the dialog appears and a human clicks
+it, which is intended behavior. Narrower than first described, but still
+the actual blocker for clean-environment testing.
+
+**Plan**: give `should_show_onboarding_gate` a third parameter,
+`interactive` (default `True`, existing call sites and the CALIBRATION
+INTEGRATION banner's removal instructions unaffected), true only when
+not-shown AND no-calibration AND interactive — stays the existing pure,
+Qt-free predicate. Add a small helper that detects a non-interactive
+session (`offscreen`/`minimal` `QT_QPA_PLATFORM`, a new `--no-onboarding`
+flag, or no live `QApplication`/display) — reads the *effective*
+`QT_QPA_PLATFORM` rather than assuming the default, since the file
+already lets an explicitly-set value win via its own
+`os.environ.setdefault(..., "xcb")`. Add `--no-onboarding` to `main()`'s
+argparse for a scripted launch with a real display that shouldn't be
+interrupted. **The detail most likely to get lost if this is done
+casually**: `save_pref("onboarding_calibration_prompt_shown", True)`
+currently fires before the dialog, correctly, so a crash mid-dialog
+doesn't re-prompt forever — that ordering stays for the interactive path,
+but suppression for non-interactivity must NOT write the pref; "nobody's
+here" is not "asked and answered," and writing it would silently burn the
+user's real one-time prompt. Once built, remove the freeze-fix session's
+pref pre-seeding workaround from render-check setup and mark that
+HANDOFF.md note closed.
+
+**Non-goals**: no weakening of the gate's one-time-ever semantics for
+interactive users; `calibrate.py` stays untouched (the CALIBRATION
+INTEGRATION banner's separability contract must still hold); no other
+blocking-dialog site gets touched in this pass.
+
+**Render-check coverage planned**: the predicate's full 8-combination
+truth table; suppression leaves the pref file untouched and constructs no
+dialog; the interactive path still writes the pref before the dialog
+(ordering regression guard); `--no-onboarding` suppresses an otherwise-
+interactive session; and the real proof — the whole sweep completing on a
+fresh container with no `gui_prefs.json` and no pre-seeding step.
+
 ### Build: Live measure freeze-on-first-click fix
 
 Builds the intent recorded in the prior commit — landed exactly as

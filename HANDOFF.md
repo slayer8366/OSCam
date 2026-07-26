@@ -1575,7 +1575,9 @@ rather than silently fixing it: `render_check()`'s own test isolation
 already redirects `PROFILE_PATH`/`CALIBRATION_PATH`/`ANNOTATION_PATH` for
 exactly this class of problem elsewhere in the file (see "Things that will
 bite you," below) — this one spot doesn't, and should get the same
-treatment in a dedicated fix, not bundled into this plan's scope.
+treatment in a dedicated fix, not bundled into this plan's scope. **Now
+has its own intent recorded** — see "Onboarding gate must not block a
+non-interactive launch" below.
 
 **Verified**: self-check first (as above), then manually driven against a
 real `should_show_onboarding_gate` fresh environment to actually observe
@@ -1585,6 +1587,88 @@ plan's own three on-rig checks (tool selected → freeze + point 1 lands
 correctly; no tool selected → prompt, no zoom, no capture; a simulated
 on-rig freeze failure → feed stays live, next click works) are still
 outstanding.
+
+### Onboarding gate must not block a non-interactive launch — intent recorded, not yet built
+
+Phase 1 of 3 (record intent). Full plan in a user-provided
+`INTENT_onboarding_gate_headless.md` (not checked into the repo). Follows
+up on the environment gap flagged (not fixed) during the Live Measure
+freeze fix, above — `qt_shell.py` only.
+
+**Problem**: `_maybe_show_onboarding_gate` (~3551) fires via
+`QTimer.singleShot(0, ...)` from `MainWindow.__init__` (~2772). On a
+genuinely fresh install (no `onboarding_calibration_prompt_shown` pref, no
+calibration on record) `should_show_onboarding_gate` correctly returns
+True and a real modal `QMessageBox.question` appears — that part is
+working as designed. **The defect is that it fires regardless of whether
+anything can dismiss it.** With no one at the keyboard — offscreen Qt,
+CI, a container, an SSH session with no display — the modal blocks the
+event loop forever, with no output and no timeout; this is exactly the
+hang `py-spy dump` diagnosed in the freeze-fix session above.
+
+**Scope correction, made explicitly in the intent doc**: an earlier
+description of this overstated it as hitting "every fresh rig." On a real
+rig with a display, a human clicks the dialog and nothing is broken. The
+hang is specific to non-interactive contexts — narrower than first
+described, but still the actual blocker for clean-environment testing,
+which is the reason to fix it at all.
+
+**Plan** (five parts):
+1. `should_show_onboarding_gate` gains a third parameter, `interactive`
+   (default `True`, so existing call sites and the CALIBRATION
+   INTEGRATION banner's removal instructions are unaffected) — returns
+   True only when not-shown AND no-calibration AND interactive. Stays the
+   existing pure, Qt-free predicate, fully testable without a display.
+2. A new, mostly-Qt-free helper detects a non-interactive session: an
+   `offscreen`/`minimal` `QT_QPA_PLATFORM`, the new opt-out flag (3), or
+   no live `QApplication`/display. Reads the *effective* `QT_QPA_PLATFORM`
+   rather than assuming the default — the file already sets it via
+   `os.environ.setdefault(..., "xcb")` (~76) specifically so an
+   explicitly-set value wins; that line is not touched.
+3. A new `--no-onboarding` CLI flag (`main()`'s argparse, ~5401) for a
+   scripted launch that has a real display but shouldn't be interrupted —
+   documented in the module docstring's usage block alongside
+   `--render-check`.
+4. **The ordering detail most likely to get lost if this is done
+   casually**: `save_pref("onboarding_calibration_prompt_shown", True)`
+   currently fires *before* the dialog is shown — correct for the
+   interactive path (a crash mid-dialog must not re-prompt on every later
+   launch) and not to be changed there. But when the gate is suppressed
+   for non-interactivity, the pref must **not** be written — "nobody's
+   here" is not "asked and answered," and writing it would silently burn
+   the user's real one-time prompt on their eventual first interactive
+   launch.
+5. Once (1)-(4) land, remove the freeze-fix session's pref pre-seeding
+   workaround from render-check setup; leave this file's "Environment gap
+   found" note in place but mark it closed.
+
+**Explicit non-goals**: don't weaken the gate's one-time-ever semantics
+for real interactive users; don't touch `calibrate.py` — the CALIBRATION
+INTEGRATION banner's (~946) "delete these blocks and nothing else"
+separability contract must still hold; don't fix any other blocking-dialog
+site in this pass (note elsewhere in this file if one turns up, don't
+widen scope here).
+
+**Render-check coverage planned**: the predicate's full eight-combination
+truth table (True only for not-shown AND no-calibration AND interactive);
+suppression leaving the pref file untouched and constructing no dialog;
+the interactive path still writing the pref before the dialog (a
+regression guard on the ordering in part 4); `--no-onboarding` suppressing
+an otherwise-interactive session; and the real proof — the whole
+`--render-check` sweep completing on a fresh container with no
+`gui_prefs.json` and no pre-seeding step, which is implicit in the sweep
+passing at all.
+
+**Definition of done**: full sweep passes on a fresh container with
+neither `~/.zynergy/gui_prefs.json` nor a pre-seeding step, without
+hanging; an interactive first launch with no calibration still shows the
+prompt exactly once and honors both Yes and No; the CALIBRATION
+INTEGRATION banner's removal list still accurately lists everything
+belonging to the feature, updated in the same commit if the new helper or
+flag needs to be added to it.
+
+No code has changed for this yet — see the matching Build entry once it
+lands.
 
 ## Things that will bite you if you don't know them
 
