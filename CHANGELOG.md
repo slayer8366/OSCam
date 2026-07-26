@@ -7,6 +7,52 @@ this file is the historical record of what happened and why.
 
 ## 2026-07-26
 
+### Build: Live measure freeze-on-first-click fix
+
+Builds the intent recorded in the prior commit — landed exactly as
+planned, no deviations. `qt_shell.py` only:
+`_on_live_measure_freeze_done` now guards `_calibrate is None` alongside
+`_measure is None`; sets `_live_measure_frozen = True` only after the
+pixmap/`set_image`/stack-swap block succeeds, restoring the live preview
+and leaving the mode retryable on any failure there instead of bricking
+it (the actual fix for the reported freeze-forever bug);
+`_live_measure_preview_event` now requires an armed tool before starting
+a freeze at all, prompting instead when none is armed; with that
+guarantee, the freeze-triggering click is always registered as the
+tool's first point; and `self._capturing` is now actually set while a
+freeze capture is in flight and cleared on every exit path, matching what
+`_live_measure_freeze`'s own docstring already claimed.
+
+Render-check coverage added, five fresh camera/window fixtures per case
+so none can mask another: a `_calibrate is None` freeze (fails clean, not
+bricked); `set_image` raising (the direct regression test for the
+reported bug); the happy path (freeze-triggering click's own converted
+coordinate, via `native_point_from_preview_click`, lands as the frozen
+canvas's first point); no tool armed (no capture at all, click still
+consumed, status prompts for a tool); and the `_capturing` lifecycle on
+the freeze-failure/load-failure/synchronous-raise paths not already
+covered by the first three cases.
+
+**Verification**: full `qt_shell.py --render-check` sweep passes,
+including the six new PASS lines this fix adds. Found (not fixed, out of
+scope for this plan) while getting that sweep to run at all in a genuinely
+fresh environment: `_maybe_show_onboarding_gate`'s real, blocking
+`QMessageBox.question` — an unrelated, pre-existing first-launch prompt —
+fires the first time any `FocusPreviewWindow` is constructed and pumped
+when no calibration is on record and the prompt has never been shown,
+which is unconditionally true in a brand-new environment; headless/
+offscreen has no way to click it, so the whole self-check hangs forever
+(confirmed with `py-spy dump`, not guessed). Worked around here by
+pre-seeding the real `onboarding_calibration_prompt_shown` pref before
+running the check (environment setup, not a code change) — flagged in
+`HANDOFF.md` as a real gap in `render_check()`'s own test isolation,
+alongside the `PROFILE_PATH`/`CALIBRATION_PATH`/`ANNOTATION_PATH`
+redirects it already does elsewhere, rather than silently patched as a
+side effect of this fix. Not yet exercised as a live GUI on-rig — this
+fix's own on-rig checks (tool selected → freeze + point 1 lands correctly;
+no tool selected → prompt, no zoom, no capture; a simulated on-rig freeze
+failure → feed stays live, next click works) remain outstanding.
+
 ### Intent: Live measure freeze-on-first-click fix
 
 Recording intent before building, per this repo's two-phase documentation

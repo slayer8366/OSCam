@@ -1495,13 +1495,13 @@ store's polluted-key mark count before and after a fresh
 stops the write rather than merely looking plausible. Full 16-module sweep
 still passes with no regressions.
 
-### Live measure freeze-on-first-click fix — intent recorded, not yet built
+### Live measure freeze-on-first-click fix — BUILT
 
-Two-phase documentation rule: intent before code. Full diagnosis and plan
-in a user-provided `PLAN_live_measure_freeze_fix.md` (not checked into the
-repo; see `CHANGELOG.md`'s matching Intent entry for the full plan text).
-Fixes a real, reproducible bug in Part 05's freeze-on-first-click design
-(see "Live measure panel" above) — not a new feature.
+Full diagnosis and plan in a user-provided `PLAN_live_measure_freeze_fix.md`
+(not checked into the repo; see `CHANGELOG.md`'s matching Intent/Build
+entries for the full plan text and what landed). Fixes a real,
+reproducible bug in Part 05's freeze-on-first-click design (see "Live
+measure panel" above) — not a new feature.
 
 **Reported symptom**: clicking the live feed with the Live measure panel
 open zooms in slightly, doesn't freeze, registers no point, and bricks
@@ -1522,7 +1522,7 @@ zooms, doesn't freeze, then everything is dead" symptom. Separately, the
 freeze click's own point was discarded whenever no tool was armed at click
 time.
 
-**The fix, as planned**: guard `_calibrate is None` the same way
+**The fix, as built**: guard `_calibrate is None` the same way
 `_measure is None` already is; set `_live_measure_frozen` only after the
 swap actually succeeds, restoring the live preview on any failure instead
 of leaving the mode bricked; require a tool to be armed before a click can
@@ -1532,9 +1532,59 @@ freeze-triggering click as point 1 — a real behavior change: the first
 click both freezes the frame and places the first measurement point, not
 just the former; and actually set/clear `self._capturing` during a
 freeze, which the code's own docstring already claimed but never did.
+Landed exactly as planned, no deviations. `measure.py`, `camera_backend.py`,
+`plane_cache.py`, and `pixel_hash.py` are all untouched, as scoped.
 
-No code has changed for this yet — see the matching Build entry below
-once it lands.
+**Render-check coverage** (`qt_shell.py --render-check`, appended right
+after the existing "Live measure panel" check, five fresh camera/window
+fixtures so a failure in one case can't mask a bug in another): a
+`_calibrate is None` freeze (frozen stays `False`, live preview stays the
+current stack widget, status reports the real reason, `_capturing`
+clears, and a later click still completes a real freeze — not bricked); a
+forced `set_image` exception (same four postconditions — this is the
+direct regression test for the reported bug); the happy path (the
+triggering click's own converted coordinate — via
+`native_point_from_preview_click`, not a hand-typed literal — lands as the
+frozen canvas's sole pending point); no tool armed (a spied
+`capture_still_async` is never called, the click is still consumed, and
+status prompts for a tool); and the `_capturing` lifecycle on the two
+exit paths the first three cases don't already cover — a freeze failure
+(the delivered result is itself an `Exception`), a `measure.
+load_measurement_plane` failure, and a synchronous `capture_still_async`
+raise (before any worker starts). Full `--render-check` sweep passes,
+including this file's own 6 new "Live measure freeze-fix" PASS lines.
+
+**Environment gap found while verifying, not fixed (out of scope for this
+plan)**: in a genuinely fresh environment — no `~/.zynergy/gui_prefs.json`,
+no calibration on record — `--render-check` hangs forever the first time
+any `FocusPreviewWindow` gets constructed and pumped, well before this
+fix's own new coverage runs. Root cause: `_maybe_show_onboarding_gate`
+(checklist §4's first-launch prompt, unrelated to this plan) fires a real
+blocking `QMessageBox.question` the first time
+`should_show_onboarding_gate` sees both "not shown yet" and "no
+calibration exists" — true by construction in a brand-new environment —
+and a headless/offscreen run has no way to click it, so the whole process
+sits polling forever (confirmed via `py-spy dump`, not guessed: the stack
+showed `_maybe_show_onboarding_gate` under `_pump_until_idle`'s
+`qtapp.processEvents()`). Worked around for this session by pre-seeding
+the real `onboarding_calibration_prompt_shown` pref to `True` before
+running the check — environment setup, not a code change, and exactly the
+state any machine that has run this app once before would already be in
+(which is presumably why this has never surfaced before). Flagging here
+rather than silently fixing it: `render_check()`'s own test isolation
+already redirects `PROFILE_PATH`/`CALIBRATION_PATH`/`ANNOTATION_PATH` for
+exactly this class of problem elsewhere in the file (see "Things that will
+bite you," below) — this one spot doesn't, and should get the same
+treatment in a dedicated fix, not bundled into this plan's scope.
+
+**Verified**: self-check first (as above), then manually driven against a
+real `should_show_onboarding_gate` fresh environment to actually observe
+and diagnose the hang above (not merely inferred). **Not yet exercised as
+a live GUI on-rig** — same standing limitation as the rest of Part 05; the
+plan's own three on-rig checks (tool selected → freeze + point 1 lands
+correctly; no tool selected → prompt, no zoom, no capture; a simulated
+on-rig freeze failure → feed stays live, next click works) are still
+outstanding.
 
 ## Things that will bite you if you don't know them
 
