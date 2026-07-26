@@ -1438,16 +1438,62 @@ never the reverse). Full `--render-check` sweep passes across all 16
 modules. **Self-check-verified only** — nothing here has been exercised on
 real hardware or as a live GUI on-rig yet.
 
-**Found, not fixed, while building this**: `measure.py`'s own *pre-existing*
-"mark-commit status-line reset check" (already in the repo before this
-session, `BUILD_LIST` Tier 1 item 2's coverage) never redirects
-`annotations.ANNOTATION_PATH` before driving real distance/polygon
-commits — every `measure.py --render-check` run has been writing real
-marks into the actual `~/.zynergy/annotations.json` all along. Same shape
-of risk as the `PROFILE_PATH` incident earlier in this file. Left as-is —
-out of scope for this extraction, a pre-existing and unrelated test — but
-worth a dedicated fix, not a silent discovery next time someone wonders
-why their real annotation store has synthetic marks in it.
+**Real-store pollution, found while building this — now fully resolved
+except for the pre-existing entries themselves, which stay by deliberate
+choice.** `measure.py`'s own *pre-existing* "mark-commit status-line reset
+check" (already in the repo before this session, `BUILD_LIST` Tier 1 item
+2's coverage) never redirected `annotations.ANNOTATION_PATH` before
+driving real distance/polygon commits — every `measure.py --render-check`
+run was writing real marks into the actual `~/.zynergy/annotations.json`.
+Same shape of risk as the `PROFILE_PATH` incident elsewhere in this file.
+
+Investigated properly before deciding what to do about it (this needed
+verifying, not assuming):
+- **The polluted entries are deterministic and identifiable, not
+  scattered.** The check's fixture is built once via `np.arange(...) %
+  4096` — no randomness, no timestamp — so every run hashes to the exact
+  same `pixel_sha256`
+  (`45a24e947a87c7817690b7181efb3eea8a3e8279ed8c0a65a1a8752c0bfd9a67`,
+  confirmed by direct computation and cross-checked against a real polluted
+  store, which held exactly that one key, `8` marks accumulated from
+  repeated runs). That hash was never produced by any real capture — it
+  resolves to no session, no provenance record. In `annotations.py`'s own
+  terms (see `find_orphans`, and `PHILOSOPHY.md`'s orphan-handling section)
+  this is precisely an orphan: caller-computed `known_hashes` from any real
+  scan of `~/captures/`/`~/provenance/` will never contain it.
+- **`~/.zynergy/calibration.json` is unaffected.** Traced the code: the
+  calibration-gating block's own `_calibrate.CALIBRATION_PATH` redirect
+  (`measure.py`, around the `"40x"` calibration setup) spans the *entire*
+  outer `try`, including the status-line check and the later staleness-
+  drift test — confirmed by checking every `CALIBRATION_PATH`/`save_calibration`
+  call site in the file. On the machine this was verified on,
+  `~/.zynergy/calibration.json` doesn't even exist. Only `annotations.json`
+  was ever exposed.
+
+**Decision on the existing polluted entries: leave them, don't touch
+them.** `PHILOSOPHY.md`'s strict rules are explicit and don't carve out an
+exception for this: *"Stores are append-only. Never edit or delete an
+existing entry. Never 'clean up' a store."* — "clean up a store" is named
+directly, and that's exactly what deleting these would be, however
+sympathetic the case (a synthetic, orphaned, deterministic hash that was
+never a real measurement) seems. The rule's own doc frames any apparent
+need to break it as "a design problem worth raising, not a rule worth
+working around," so it's raised here rather than worked around. This
+matters concretely for **step 3 (Export)**, which reads the whole store —
+its design should surface orphaned entries via the existing
+`find_orphans(store, known_hashes)` (evidence, not a silent drop and not a
+silent include — the same "evidence, never a gate" pattern this project
+already uses everywhere else), not invent new filtering logic, and
+absolutely not attempt to prune the store itself as part of building it.
+
+**Forward fix, landed**: the status-line check now redirects
+`ANNOTATION_PATH` to its own isolated temp path for its duration, the same
+pattern the `commit_measurement()`/`ReviewWindow` checks already use.
+Verified directly, not just by re-running the suite: snapshotted the real
+store's polluted-key mark count before and after a fresh
+`measure.py --render-check` run — unchanged, confirming the fix actually
+stops the write rather than merely looking plausible. Full 16-module sweep
+still passes with no regressions.
 
 ## Things that will bite you if you don't know them
 
