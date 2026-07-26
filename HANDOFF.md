@@ -1495,6 +1495,34 @@ store's polluted-key mark count before and after a fresh
 stops the write rather than merely looking plausible. Full 16-module sweep
 still passes with no regressions.
 
+**`MeasureWindow` extraction (2026-07-26) — Step 3, Export and Publish menu
+actions, intent recorded, not yet built.** Relocates
+`MeasureWindow._on_export_results`/`_on_publish_package` into dedicated
+`qt_shell.py` File-menu actions: Export is store-wide with no dependency on
+any open image; Publish, while image-specific, has no open
+`MeasureWindow`/`self._plane` to work from once triggered from a menu, so
+it picks its own image via `gallery.GalleryPickDialog`. `MeasureWindow`
+itself is not deleted this step (extract-first-then-remove discipline
+continues; shell removal is a later step).
+
+Two findings reshape this step beyond "just relocate the handlers":
+`annotations.find_orphans` has zero production callers today, and a
+store-wide Export is its first — the `known_hashes` set it needs will come
+from a new `gallery.known_green_hashes(out_root=None)`, unioned with
+`plane_cache.list_cached_hashes()` (at the `qt_shell.py` call site, not
+inside `gallery.py`) so a plane committed only through Live Measuring's
+green-plane cache is never mistaken for a permanent orphan. And Publish's
+`calibration_ref` currently reads whatever calibration is *currently*
+active for the selected objective rather than the one a mark's microns
+were actually computed under — **decided (user, this session) to fix, not
+replicate** (Option B+): a new `annotations.stored_calibration_ref` will
+return a record's own first-commit `calibration_ref` instead. Checked, not
+assumed: no mark carries its own calibration pointer, only a baked-in
+`um_per_px`, so this is accurate for the common case but not authoritative
+across a mid-record recalibration — a genuine, pre-existing schema gap
+this step documents, not closes. See `CHANGELOG.md`'s matching Intent
+entry for the full reasoning.
+
 ## Things that will bite you if you don't know them
 
 **`qt_shell.py`'s `render_check()` now monkeypatches `PROFILE_PATH` for

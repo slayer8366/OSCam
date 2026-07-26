@@ -7,6 +7,68 @@ this file is the historical record of what happened and why.
 
 ## 2026-07-26
 
+### Intent: `MeasureWindow` extraction, step 3 — Export and Publish menu actions
+
+Recording intent before building, per the project's two-phase documentation
+rule. Full design is the user-approved step-3 plan (not checked into the
+repo, same standing as `PLAN_measurewindow_extraction.md` itself),
+continuing step 2's extract-then-remove migration.
+
+Relocates `MeasureWindow._on_export_results`/`_on_publish_package`
+(`measure.py`) into their own `qt_shell.py` File-menu actions: Export needs
+no open image at all (store-wide); Publish needs an image but has no open
+`MeasureWindow`/`self._plane` to source one from once triggered from a
+menu, so it picks its own via `gallery.GalleryPickDialog`. `MeasureWindow`
+is not deleted this step (shell removal is a later step).
+
+Investigation surfaced two things that reshape this step beyond a straight
+relocation:
+
+**Orphan evidence is a real dependency, not an afterthought.**
+`annotations.find_orphans` exists and is tested but has zero production
+callers anywhere in the repo — a store-wide Export is its first real use.
+The `known_hashes` set it needs has no existing source: a new
+`gallery.known_green_hashes(out_root=None)` is required. It must also
+union with `plane_cache.list_cached_hashes()`, caught before
+implementation — Part 05's Live Measure Panel freezes a live plane and
+commits marks against its hash, and that plane lives only in the
+green-plane cache (Part 04), never as a capture session with a JPG
+preview. A `known_hashes` set built from a capture-root scan alone would
+report every mark ever committed through Live Measuring — the primary
+calibrated measuring workflow — as a permanent orphan on every export.
+Unioned at the `qt_shell.py` call site (which already imports both
+`gallery` and `plane_cache`), not inside `gallery.py`, which has no
+existing dependency on `plane_cache.py` and shouldn't gain one just for
+this.
+
+**Publish's `calibration_ref` has a pre-existing correctness gap.**
+`MeasureWindow._on_publish_package` derives it from whatever calibration
+is *currently* active for the selected objective, not from
+`record["calibration_ref"]` (set once, at a record's first commit, never
+touched again) — if the same objective is recalibrated after marks were
+made, publishing later reports a manifest claiming those marks were
+computed under a calibration they never used. **Decision, made by the
+user this session: fix this (Option B+), not replicate it.** Distinct from
+step 2's strict-gate call (over-restrictive, but never wrote anything
+false) — this writes a manifest asserting a calibration relationship that
+isn't true, in the one place a number leaves the system and becomes
+something someone cites. `PHILOSOPHY.md`'s own framing — recalibration
+must never let historical measurements "quietly re-interpret themselves
+against a number they were never computed with" — applies directly. A new
+`annotations.stored_calibration_ref(pixel_sha256, store=None)` will
+return the record's own first-commit ref instead. Checked, not assumed:
+no mark builder stores a per-mark calibration pointer (only a baked-in
+`um_per_px`), so this is accurate for the common case (all of an image's
+marks made in one calibration epoch) but not authoritative across a
+mid-record recalibration — a genuine, pre-existing schema gap this step
+will document, not close (closing it means touching
+`commit_measurement()`'s mark schema, out of scope here). An unset stored
+ref already degrades correctly today (`publish.py`'s own "no calibration
+on record" note) — nothing to fix there.
+
+See `HANDOFF.md`'s `MeasureWindow` extraction section for the full step-3
+account.
+
 ### Fix: real-store pollution in `measure.py`'s pre-existing status-line check
 
 Follow-up to the "found, not fixed" note in the Build entry below, pushed
