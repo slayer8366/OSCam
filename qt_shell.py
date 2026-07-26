@@ -3138,6 +3138,15 @@ if _HAVE_QT:
             if self._live_measure_frozen or self._live_measure_freezing:
                 return True
             if ev.type() == QEvent.MouseButtonPress and ev.button() == Qt.LeftButton:
+                if self._live_measure_tool is None:
+                    # No tool armed yet -- a freeze click with nothing to do
+                    # with the resulting point would either strand it (the
+                    # old bug) or require a second click on the frozen plane.
+                    # Consume the click, prompt for a tool, and never start
+                    # the capture at all.
+                    if self._live_measure_panel is not None:
+                        self._live_measure_panel.set_status(_live_measure_tool_hint(None))
+                    return True
                 native = native_point_from_preview_click(
                     ev.x(), ev.y(), self._disp_rect(), GREEN_PLANE_RES)
                 self._live_measure_freeze(native)
@@ -3160,6 +3169,7 @@ if _HAVE_QT:
                     "a capture or recording is already in progress")
                 return
             self._live_measure_freezing = True
+            self._capturing = True   # reuse the same busy-guard the capture path uses
             self._live_measure_pending_first_point = first_point
             self._set_capture_status(
                 "Freezing...", "Live measure: pulling a green plane to measure on")
@@ -3172,12 +3182,14 @@ if _HAVE_QT:
             try:
                 self.camera.capture_still_async(tmp_dir, "freeze", _on_done)
             except Exception as exc:
+                self._capturing = False
                 self.live_measure_freeze_done_signal.emit(exc)
 
         def _on_live_measure_freeze_done(self, result):
             tmp_dir = self._live_measure_tmp_dir
             self._live_measure_tmp_dir = None
             self._live_measure_freezing = False
+            self._capturing = False   # matches the guard set in _live_measure_freeze
             pending_pt = self._live_measure_pending_first_point
             self._live_measure_pending_first_point = None
             try:
@@ -3188,6 +3200,10 @@ if _HAVE_QT:
                     self._set_capture_status(
                         "Live measure unavailable", "measure.py not importable")
                     return
+                if _calibrate is None:
+                    self._set_capture_status(
+                        "Live measure unavailable", "calibrate.py not importable")
+                    return
                 try:
                     plane = _measure.load_measurement_plane(str(result.raw))
                 except Exception as exc:
@@ -3197,12 +3213,33 @@ if _HAVE_QT:
                                 if _pixel_hash is not None else None)
                 if _plane_cache is not None and pixel_sha256 is not None:
                     _plane_cache.store_plane(plane, pixel_sha256=pixel_sha256)
+                # _live_measure_frozen is set only after the pixmap/set_image/
+                # swap below all succeed -- never before. A failure here must
+                # leave the feature retryable, not stuck reporting a frozen
+                # state that was never actually reached (the original bug:
+                # the flag was set FIRST, so an exception in this block left
+                # it True forever, and _live_measure_preview_event swallowed
+                # every click after that unconditionally).
+                try:
+                    pixmap = _calibrate.array_to_qimage(_calibrate.stretch_to_uint8(plane))
+                    self._live_measure_canvas.set_image(pixmap)
+                    self._preview_stack_layout.setCurrentWidget(self._live_measure_canvas)
+                except Exception as exc:
+                    self._preview_stack_layout.setCurrentWidget(self.preview)
+                    self._set_capture_status("Live measure freeze failed", str(exc))
+                    return
                 self._live_measure_plane = plane
                 self._live_measure_pixel_sha256 = pixel_sha256
                 self._live_measure_frozen = True
-                pixmap = _calibrate.array_to_qimage(_calibrate.stretch_to_uint8(plane))
-                self._live_measure_canvas.set_image(pixmap)
-                self._preview_stack_layout.setCurrentWidget(self._live_measure_canvas)
+                # pending_pt is the freeze-triggering click's own coordinate --
+                # it must always become point 1 of the mark, never be dropped,
+                # per the required-behavior change: a user clicking a spore
+                # edge expects that edge to be point 1, not a second click on
+                # the frozen plane. _live_measure_preview_event now requires a
+                # tool before it will start a freeze at all, so
+                # _live_measure_tool is guaranteed non-None here in normal
+                # use; the None check is defensive belt-and-braces only (the
+                # panel closing mid-capture), not a reachable silent-drop path.
                 if pending_pt is not None and self._live_measure_tool is not None:
                     self._live_measure_canvas.add_point_programmatic(
                         pending_pt[0], pending_pt[1])
@@ -6734,6 +6771,224 @@ def render_check():
                   "color; Delete is a no-op against a committed mark; closing "
                   "discards every uncommitted entry, restores the live preview, "
                   "and never touches a mark already committed")
+
+            # --- Freeze-fix regression coverage (freeze-on-first-click) ------
+            # PLAN_live_measure_freeze_fix.md's own five cases. Each gets a
+            # fresh camera/window so a failure in one cannot mask a bug in
+            # another:
+            #   1. _calibrate is None -> fails clean, mode is not bricked.
+            #   2. set_image raises -> same postconditions; the direct
+            #      regression test for the reported freeze-forever bug.
+            #   3. happy path -> the triggering click's own point lands as
+            #      the frozen canvas's first pending point.
+            #   4. no tool armed -> no capture at all, click still consumed.
+            #   5. _capturing lifecycle on the two exit paths not already
+            #      proven by cases 1-3 (freeze failure, load failure, and a
+            #      synchronous capture_still_async raise).
+            def _fresh_live_measure_window():
+                cam = FakeCamera(async_delay_s=0.0,
+                                  capture_shape=(GREEN_PLANE_RES[1], GREEN_PLANE_RES[0]))
+                win = FocusPreviewWindow(cam, FocusMeter())
+                win.ruler_objective_combo.setCurrentText("40x")
+                win._launch_live_measure()
+                win._live_measure_panel.distance_btn.setChecked(True)
+                win.preview.resize(800, 600)
+                return cam, win
+
+            def _pump_until_not_freezing(win, timeout_s=15.0):
+                deadline = time.time() + timeout_s
+                while win._live_measure_freezing and time.time() < deadline:
+                    qtapp.processEvents()
+                    time.sleep(0.005)
+
+            orig_calib_path_ff = _calibrate.CALIBRATION_PATH
+            orig_annot_path_ff = _annotations.ANNOTATION_PATH
+            _calibrate.CALIBRATION_PATH = Path(
+                "/tmp/zynergy_render_check_live_measure_freeze_fix_calibration.json")
+            _annotations.ANNOTATION_PATH = Path(
+                "/tmp/zynergy_render_check_live_measure_freeze_fix_annotations.json")
+            _calibrate.CALIBRATION_PATH.unlink(missing_ok=True)
+            _annotations.ANNOTATION_PATH.unlink(missing_ok=True)
+            try:
+                calib_entry_ff = _calibrate.build_calibration_entry(
+                    Path("/tmp/fake_freeze_fix.dng"), (0.0, 0.0), (500.0, 0.0), 500.0,
+                    objective="40x", target_type="stage micrometer", focus_score=300.0)
+                _calibrate.save_calibration("40x", calib_entry_ff)
+
+                # Case 1: _calibrate is None.
+                cam1, win1 = _fresh_live_measure_window()
+                try:
+                    real_calibrate_ff = globals()['_calibrate']
+                    globals()['_calibrate'] = None
+                    try:
+                        press = QMouseEvent(QEvent.MouseButtonPress, QPointF(200, 300),
+                                            Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+                        win1.eventFilter(win1.preview, press)
+                        _pump_until_not_freezing(win1)
+                    finally:
+                        globals()['_calibrate'] = real_calibrate_ff
+                    assert not win1._live_measure_frozen, \
+                        "a _calibrate-is-None freeze must not set _live_measure_frozen"
+                    assert win1._preview_stack_layout.currentWidget() is win1.preview, \
+                        "the live preview must stay the visible stack widget on failure"
+                    assert win1.capture_status.text() == "Live measure unavailable", \
+                        "status must report the real unavailable reason"
+                    assert not win1._capturing, \
+                        "_capturing must clear after a _calibrate-is-None failure"
+
+                    # Not bricked: _calibrate is restored above, so a later
+                    # click must still be able to complete a real freeze.
+                    press2 = QMouseEvent(QEvent.MouseButtonPress, QPointF(210, 300),
+                                         Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+                    win1.eventFilter(win1.preview, press2)
+                    _pump_until_not_freezing(win1)
+                    assert win1._live_measure_frozen, \
+                        "a subsequent click must still complete a real freeze -- " \
+                        "the failure above must not have bricked the mode"
+                finally:
+                    cam1.stop()
+                print("Live measure freeze-fix check PASS (case 1): a "
+                      "_calibrate-is-None freeze fails cleanly -- frozen stays "
+                      "False, the live preview stays the visible stack widget, "
+                      "status reports the real reason, _capturing clears, and a "
+                      "later click still completes a real freeze")
+
+                # Case 2: set_image raises -- the direct regression test.
+                cam2, win2 = _fresh_live_measure_window()
+                try:
+                    def _raising_set_image(pixmap):
+                        raise RuntimeError("forced set_image failure (render-check)")
+                    real_set_image = win2._live_measure_canvas.set_image
+                    win2._live_measure_canvas.set_image = _raising_set_image
+                    press = QMouseEvent(QEvent.MouseButtonPress, QPointF(200, 300),
+                                        Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+                    win2.eventFilter(win2.preview, press)
+                    _pump_until_not_freezing(win2)
+                    assert not win2._live_measure_frozen, \
+                        "a set_image failure must not set _live_measure_frozen -- " \
+                        "this is the direct regression case for the reported bug"
+                    assert win2._preview_stack_layout.currentWidget() is win2.preview, \
+                        "the live preview must stay the visible stack widget on failure"
+                    assert win2.capture_status.text() == "Live measure freeze failed", \
+                        "status must report the freeze failure"
+                    assert not win2._capturing, \
+                        "_capturing must clear after a set_image failure"
+
+                    win2._live_measure_canvas.set_image = real_set_image
+                    press2 = QMouseEvent(QEvent.MouseButtonPress, QPointF(210, 300),
+                                         Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+                    win2.eventFilter(win2.preview, press2)
+                    _pump_until_not_freezing(win2)
+                    assert win2._live_measure_frozen, \
+                        "a later click must still complete a real freeze"
+                finally:
+                    cam2.stop()
+                print("Live measure freeze-fix check PASS (case 2): a set_image "
+                      "failure fails cleanly with the same postconditions as "
+                      "case 1 -- the mode is never bricked by a failed swap")
+
+                # Case 3: happy path registers the triggering click as point 1.
+                cam3, win3 = _fresh_live_measure_window()
+                try:
+                    click_x, click_y = 250.0, 320.0
+                    expected = native_point_from_preview_click(
+                        click_x, click_y, win3._disp_rect(), GREEN_PLANE_RES)
+                    press = QMouseEvent(QEvent.MouseButtonPress, QPointF(click_x, click_y),
+                                        Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+                    win3.eventFilter(win3.preview, press)
+                    _pump_until_not_freezing(win3)
+                    assert win3._live_measure_frozen
+                    assert len(win3._live_measure_canvas._pending_points) == 1, \
+                        "a successful freeze with a tool armed must register " \
+                        "the triggering click as the shape's first point"
+                    assert win3._live_measure_canvas._pending_points[0] == expected, \
+                        "the registered point must equal the triggering click's " \
+                        "own converted coordinate, never dropped or substituted"
+                finally:
+                    cam3.stop()
+                print("Live measure freeze-fix check PASS (case 3): the "
+                      "freeze-triggering click's own converted coordinate is "
+                      "always registered as the frozen canvas's first point")
+
+                # Case 4: no tool selected -- no capture, click still consumed.
+                cam4, win4 = _fresh_live_measure_window()
+                try:
+                    win4._live_measure_tool = None
+                    win4._live_measure_panel.set_status("")
+                    calls = []
+                    real_capture = win4.camera.capture_still_async
+                    def _counting_capture(*a, **kw):
+                        calls.append(1)
+                        return real_capture(*a, **kw)
+                    win4.camera.capture_still_async = _counting_capture
+                    press = QMouseEvent(QEvent.MouseButtonPress, QPointF(200, 300),
+                                        Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+                    consumed = win4.eventFilter(win4.preview, press)
+                    assert consumed is True, \
+                        "a click with no tool armed must still be consumed, " \
+                        "never fall through to ordinary box-drag"
+                    assert calls == [], \
+                        "a click with no tool armed must never start a capture"
+                    assert not win4._live_measure_freezing
+                    assert not win4._live_measure_frozen
+                    assert win4._live_measure_panel.status_label.text() == \
+                        _live_measure_tool_hint(None), \
+                        "status must prompt for a tool"
+                finally:
+                    cam4.stop()
+                print("Live measure freeze-fix check PASS (case 4): a click "
+                      "with no tool armed starts no capture, is still "
+                      "consumed, and prompts for a tool")
+
+                # Case 5: _capturing lifecycle on the remaining exit paths
+                # (success and swap-failure already proven by cases 1-3 above).
+                cam5, win5 = _fresh_live_measure_window()
+                try:
+                    # freeze failure: the delivered result is itself an Exception.
+                    win5._capturing = True
+                    win5._live_measure_freezing = True
+                    win5._on_live_measure_freeze_done(RuntimeError("forced (render-check)"))
+                    assert not win5._capturing, \
+                        "_capturing must clear on a freeze failure"
+
+                    # load failure: measure.load_measurement_plane raises.
+                    real_load_plane = _measure.load_measurement_plane
+                    def _raising_load_plane(*a, **kw):
+                        raise RuntimeError("forced load failure (render-check)")
+                    _measure.load_measurement_plane = _raising_load_plane
+                    try:
+                        press = QMouseEvent(QEvent.MouseButtonPress, QPointF(200, 300),
+                                            Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+                        win5.eventFilter(win5.preview, press)
+                        _pump_until_not_freezing(win5)
+                    finally:
+                        _measure.load_measurement_plane = real_load_plane
+                    assert not win5._live_measure_frozen
+                    assert not win5._capturing, \
+                        "_capturing must clear on a load failure"
+
+                    # synchronous capture_still_async raise, before any worker
+                    # ever starts.
+                    win5._live_measure_frozen = False
+                    def _raising_capture(*a, **kw):
+                        raise RuntimeError("forced sync capture failure (render-check)")
+                    win5.camera.capture_still_async = _raising_capture
+                    native_ff = native_point_from_preview_click(
+                        200, 300, win5._disp_rect(), GREEN_PLANE_RES)
+                    win5._live_measure_freeze(native_ff)
+                    assert not win5._capturing, \
+                        "_capturing must clear when capture_still_async raises " \
+                        "synchronously, before any worker starts"
+                finally:
+                    cam5.stop()
+                print("Live measure freeze-fix check PASS (case 5): _capturing "
+                      "is set while a freeze is in flight and clears on every "
+                      "exit path -- freeze failure, load failure, and a "
+                      "synchronous capture_still_async raise (success and "
+                      "swap-failure covered by cases 1-3 above)")
+            finally:
+                _calibrate.CALIBRATION_PATH = orig_calib_path_ff
+                _annotations.ANNOTATION_PATH = orig_annot_path_ff
         # --- end live measure panel check ------------------------------------
 
         # --- LIVE MEASURING (PLAN_quick_ruler.md) ----------------------------
