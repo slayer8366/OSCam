@@ -7,6 +7,63 @@ this file is the historical record of what happened and why.
 
 ## 2026-07-26
 
+### Intent: Live Measure frozen canvas must fit its frame on first freeze
+
+Recording intent before building, per this repo's two-phase documentation
+rule. Full plan in a user-provided `live_measure_canvas_fit_three_phases.md`
+(not checked into the repo). Found during on-rig testing of the
+freeze-on-first-click fix — the core behavior is confirmed working (first
+click froze the frame and registered a real 14.885 µm distance from that
+same click).
+
+**Two residual, cosmetic-but-disruptive defects**: (1) the first freeze of
+a session renders as a small thumbnail in a large empty area rather than
+filling the frame — closing/reopening the Live measure box restores
+normal appearance, and the second and every later freeze in the same
+session are already correct, including after moving the stage; (2) the
+frozen canvas shows Qt's default gray background plus a visible view
+frame instead of matching the live feed's own black letterboxing, so the
+swap reads as a different, patchier widget appearing rather than the same
+frame freezing in place.
+
+**Root cause of (1)**: `_LiveMeasureCanvas.set_image` calls
+`resetTransform()` + `fitInView(...)`, but runs from
+`_on_live_measure_freeze_done` *before* the stack layout swap makes this
+canvas the current widget — at that moment it has no real laid-out
+geometry, so `fitInView` computes against stale/absent geometry and lands
+on a much-too-small transform. No `resizeEvent` exists to recompute once
+real geometry arrives. Later freezes are fine because the canvas retains
+real geometry from the first time it was ever shown.
+
+**Not a bug — recorded so it doesn't get "fixed" later**: a 174.652 µm
+reading taken on the mis-fitted view is an imprecise *click*, not a scale
+error — clicks convert through `mapToScene`, so scene coordinates (and
+therefore µm values) don't depend on view zoom; render-check case 5 below
+locks this in directly. The ~1s click-to-freeze lag (the real full-res
+capture) is expected and explicitly accepted by the user. The frozen
+plane is greyscale because it's literally the green plane — inherent, not
+a rendering defect; a future color freeze is a separate, parked change.
+
+**Plan**: factor the fit into one `_fit_to_view` method, called from
+`set_image` (unchanged) plus new `resizeEvent`/`showEvent` overrides so
+real geometry arriving after `set_image` actually triggers a refit. A new
+`self._user_zoomed` flag (set in `wheelEvent`, cleared in `set_image`)
+stops the auto-refit from fighting a manual zoom. Match the live preview's
+appearance: black background brush, no frame, scrollbars off. Update the
+CALIBRATION INTEGRATION banner's removal list only if applicable (it
+isn't — this is entirely inside Part 05's own `_LiveMeasureCanvas`).
+
+**Non-goals**: do not reorder `set_image`/`setCurrentWidget` in
+`_on_live_measure_freeze_done` — that ordering is the freeze fix's own
+load-bearing invariant; fix the fit inside the canvas class instead. No
+green-plane/color changes, no touching `measure.py`/`camera_backend.py`/
+`calibrate.py`, no change to capture latency.
+
+**Render-check coverage planned**: first-show fit (the direct regression
+test); repeat freeze still fits; user zoom survives a resize; a new
+`set_image` re-enables auto-fit; transform-independence of measurement
+values (locks in the "not a bug" finding).
+
 ### Build: Onboarding gate must not block a non-interactive launch
 
 Builds the intent recorded in the prior commit — landed exactly as
