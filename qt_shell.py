@@ -348,7 +348,7 @@ try:
                                  QDialog, QComboBox, QActionGroup, QFileDialog,
                                  QFormLayout, QGroupBox, QSpinBox, QLineEdit,
                                  QDialogButtonBox, QStackedLayout, QMenu,
-                                 QGraphicsView, QGraphicsScene, QButtonGroup)
+                                 QGraphicsView, QGraphicsScene, QButtonGroup, QFrame)
     from PyQt5.QtCore import QTimer, Qt, QRect, QEvent, pyqtSignal, QObject, QPointF
     from PyQt5.QtGui import (QImage, QPainter, QKeyEvent, QCloseEvent, QPen,
                              QColor, QPolygonF, QMouseEvent)
@@ -1943,9 +1943,31 @@ if _HAVE_QT:
             self.window_ = window
             self.setRenderHint(QPainter.Antialiasing)
             self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
+            # Match self.preview's own appearance (black letterbox, no
+            # border, no scrollbars) so the freeze reads as the same frame
+            # freezing in place, not a different, patchier widget appearing
+            # underneath it (PLAN_live_measure_canvas_fit).
+            self.setBackgroundBrush(QColor("black"))
+            self.setFrameShape(QFrame.NoFrame)
+            self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
             self._pixmap_item = None
             self._pending_points = []   # native green-plane (x, y) floats
             self._pending_items = []    # scene items for the in-progress shape
+            # First-freeze mis-fit fix (PLAN_live_measure_canvas_fit): set_image
+            # is called from _on_live_measure_freeze_done BEFORE the stack
+            # layout swap makes this canvas the current widget, so on the
+            # very first freeze fitInView computes against stale/no geometry
+            # and lands on a much-too-small transform. resizeEvent/showEvent
+            # below refit once real geometry actually arrives; _user_zoomed
+            # stops that refit from fighting a manual wheelEvent zoom.
+            self._user_zoomed = False
+
+        def _fit_to_view(self):
+            if self._pixmap_item is None or self._user_zoomed:
+                return
+            self.resetTransform()
+            self.fitInView(self._pixmap_item, Qt.KeepAspectRatio)
 
         def set_image(self, pixmap):
             self.scene_.clear()
@@ -1953,10 +1975,19 @@ if _HAVE_QT:
             self.scene_.setSceneRect(self._pixmap_item.boundingRect())
             self._pending_points = []
             self._pending_items = []
-            self.resetTransform()
-            self.fitInView(self._pixmap_item, Qt.KeepAspectRatio)
+            self._user_zoomed = False   # a new frozen plane is a fresh view
+            self._fit_to_view()
+
+        def resizeEvent(self, ev):
+            super().resizeEvent(ev)
+            self._fit_to_view()
+
+        def showEvent(self, ev):
+            super().showEvent(ev)
+            self._fit_to_view()
 
         def wheelEvent(self, ev):
+            self._user_zoomed = True
             factor = 1.15 if ev.angleDelta().y() > 0 else 1 / 1.15
             self.scale(factor, factor)
 
@@ -7267,6 +7298,172 @@ def render_check():
             finally:
                 _calibrate.CALIBRATION_PATH = orig_calib_path_ff
                 _annotations.ANNOTATION_PATH = orig_annot_path_ff
+
+            # --- Frozen-canvas fit coverage (PLAN_live_measure_canvas_fit) ---
+            # Direct _LiveMeasureCanvas unit tests, not routed through a full
+            # FocusPreviewWindow -- window_ is untouched by set_image/
+            # resizeEvent/showEvent/_fit_to_view/wheelEvent, so None stands
+            # in for it here, same "test at the level the bug actually lives
+            # at" reasoning the rest of this file already follows.
+            qtapp_fit = QApplication.instance() or QApplication([])
+
+            def _fit_expected_scale(view, pixmap):
+                vp = view.viewport().size()
+                return min(vp.width() / float(pixmap.width()),
+                           vp.height() / float(pixmap.height()))
+
+            fit_plane = np.zeros((GREEN_PLANE_RES[1], GREEN_PLANE_RES[0]), dtype=np.float32)
+            fit_pixmap_a = _calibrate.array_to_qimage(_calibrate.stretch_to_uint8(fit_plane))
+            fit_pixmap_b = _calibrate.array_to_qimage(_calibrate.stretch_to_uint8(fit_plane))
+
+            # Case 1: first-show fit -- the direct regression test for the
+            # reported thumbnail bug. set_image runs before the canvas has
+            # ever had real geometry (never resized or shown), matching
+            # _on_live_measure_freeze_done's own real ordering (set_image
+            # before the stack-layout swap makes this canvas the current,
+            # laid-out widget) -- then real geometry arrives via resize+show,
+            # and resizeEvent/showEvent must refit rather than leaving the
+            # stale pre-layout transform in place forever.
+            fit_canvas1 = _LiveMeasureCanvas(None)
+            fit_canvas1.set_image(fit_pixmap_a)
+            transform_before_layout = (fit_canvas1.transform().m11(),
+                                       fit_canvas1.transform().m22())
+            fit_canvas1.resize(800, 600)
+            fit_canvas1.show()
+            qtapp_fit.processEvents()
+            transform_after_layout = (fit_canvas1.transform().m11(),
+                                      fit_canvas1.transform().m22())
+            assert transform_before_layout != transform_after_layout, \
+                "resizeEvent/showEvent must refit once real geometry arrives " \
+                "-- retaining the pre-layout transform forever is the exact " \
+                "reported bug (a small thumbnail on the very first freeze)"
+            expected_800x600 = _fit_expected_scale(fit_canvas1, fit_pixmap_a)
+            assert abs(transform_after_layout[0] - expected_800x600) < 0.05 * expected_800x600, \
+                "once real geometry arrives, the transform must actually fit " \
+                "the pixmap to the real viewport, not merely differ from the bad one"
+            print("Live measure canvas-fit check PASS (case 1, first-show fit): "
+                  "a canvas laid out with real geometry only AFTER set_image "
+                  "(the freeze handler's own real ordering) refits correctly "
+                  "once resizeEvent/showEvent deliver that geometry, instead "
+                  "of keeping the pre-layout thumbnail transform forever")
+
+            # Case 2: repeat freeze still fits -- guards against the fix
+            # regressing the path that was already working (second and later
+            # freezes, per the reported symptom, were never actually broken).
+            fit_canvas1.set_image(fit_pixmap_b)
+            transform_repeat = fit_canvas1.transform().m11()
+            assert abs(transform_repeat - expected_800x600) < 0.05 * expected_800x600, \
+                "a second set_image on an already-laid-out canvas must fit " \
+                "immediately, without waiting for a further resize/show event"
+            print("Live measure canvas-fit check PASS (case 2, repeat freeze): "
+                  "a second set_image on an already-laid-out canvas fits " \
+                  "immediately -- the already-working repeat-freeze path is " \
+                  "unaffected by the fix")
+
+            # Case 3: user zoom survives a resize -- auto-refitting on every
+            # resize must not fight a manual wheelEvent zoom.
+            class _FitFakeAngleDelta:
+                def y(self):
+                    return 120
+            class _FitFakeWheelEvent:
+                def angleDelta(self):
+                    return _FitFakeAngleDelta()
+            fit_canvas1.wheelEvent(_FitFakeWheelEvent())
+            assert fit_canvas1._user_zoomed is True, \
+                "wheelEvent must record that the user has taken manual control of the zoom"
+            transform_after_zoom = (fit_canvas1.transform().m11(), fit_canvas1.transform().m22())
+            fit_canvas1.resize(750, 550)
+            qtapp_fit.processEvents()
+            transform_after_resize_post_zoom = (
+                fit_canvas1.transform().m11(), fit_canvas1.transform().m22())
+            assert transform_after_resize_post_zoom == transform_after_zoom, \
+                "a resize after a manual zoom must NOT refit -- that would " \
+                "silently yank the user's own zoom away on the next window resize"
+            print("Live measure canvas-fit check PASS (case 3, zoom survives "
+                  "resize): a manual wheelEvent zoom is preserved across a "
+                  "later resize, not overridden by auto-fit")
+
+            # Case 4: a new set_image re-enables auto-fit -- a freshly frozen
+            # plane is a new view, not a continuation of the previous zoom.
+            fit_canvas1.set_image(fit_pixmap_a)
+            assert fit_canvas1._user_zoomed is False, \
+                "a new set_image must clear _user_zoomed so the fresh plane " \
+                "gets auto-fit again"
+            expected_750x550 = _fit_expected_scale(fit_canvas1, fit_pixmap_a)
+            assert abs(fit_canvas1.transform().m11() - expected_750x550) < 0.05 * expected_750x550, \
+                "a new set_image must actually re-fit to the current " \
+                "viewport, not merely clear the flag"
+            fit_canvas1.close()
+            print("Live measure canvas-fit check PASS (case 4, new image "
+                  "re-fits): a new set_image clears the manual-zoom flag and "
+                  "actually re-fits the fresh plane to the current viewport")
+
+            # Case 5: measurements are transform-independent -- phase 1's own
+            # "not a bug" finding, locked in so a future reader doesn't go
+            # looking for a calibration/scale bug behind an imprecise click.
+            # A click's pixel-to-scene conversion (mapToScene, exercised by
+            # cases 1-4's own real fit above) happens ONCE, at click time;
+            # what's actually stored afterward (_pending_points, then a
+            # committed mark's "input") is a plain scene-space coordinate
+            # that build_distance_mark/annotations never re-derive from the
+            # view. This proves that downstream stage directly: the exact
+            # coordinate add_point_programmatic is handed (already-converted,
+            # the same contract _on_live_measure_freeze_done and
+            # mousePressEvent both rely on) is stored byte-identical and
+            # produces an identical um reading, regardless of what the
+            # canvas's OWN zoom happens to be when that storage/measurement
+            # step runs -- an imprecise on-rig reading is therefore a
+            # property of the CLICK (bounded by how many scene units one
+            # screen pixel covers at the canvas's current fit/zoom), never a
+            # scale or calibration bug introduced by measuring it afterward.
+            class _FitFakeWindow:
+                _live_measure_tool = None   # None: no auto-finish, just record
+                def _live_measure_on_point_added(self, points):
+                    pass
+            fit_canvas5 = _LiveMeasureCanvas(_FitFakeWindow())
+            fit_canvas5.resize(400, 300)
+            fit_canvas5.show()
+            qtapp_fit.processEvents()
+            fit_canvas5.set_image(fit_pixmap_a)
+            qtapp_fit.processEvents()
+            point_a = (1000.0, 1200.0)
+            point_b = (1500.0, 1200.0)
+
+            fit_canvas5.add_point_programmatic(*point_a)
+            recorded_a_at_fit_zoom = fit_canvas5._pending_points[-1]
+            transform_at_recording_a = fit_canvas5.transform().m11()
+
+            fit_canvas5.scale(2.0, 2.0)   # a manual zoom change, same as wheelEvent would
+            assert fit_canvas5.transform().m11() != transform_at_recording_a, \
+                "sanity check: scale() must actually change the canvas's " \
+                "own transform, or this test would prove nothing"
+            fit_canvas5.add_point_programmatic(*point_b)
+            recorded_b_at_2x_zoom = fit_canvas5._pending_points[-1]
+
+            assert recorded_a_at_fit_zoom == point_a and recorded_b_at_2x_zoom == point_b, \
+                "add_point_programmatic must store the EXACT scene " \
+                "coordinate it is handed, unaffected by the canvas's " \
+                "current zoom at the moment it is recorded"
+
+            mark_at_fit_zoom = _annotations.build_distance_mark(point_a, point_b, 0.5)
+            fit_canvas5.scale(1.0 / 2.0, 1.0 / 2.0)   # back to the fitted zoom
+            mark_at_original_zoom = _annotations.build_distance_mark(point_a, point_b, 0.5)
+            assert (mark_at_fit_zoom["derived"]["distance_um"] ==
+                   mark_at_original_zoom["derived"]["distance_um"]), \
+                "the same two recorded scene points must produce the " \
+                "identical um reading regardless of the canvas's zoom at " \
+                "measurement time -- build_distance_mark operates on scene " \
+                "coordinates alone and never reads the view transform"
+            fit_canvas5.close()
+            print("Live measure canvas-fit check PASS (case 5, transform-"
+                  "independent measurement): add_point_programmatic stores "
+                  "the exact scene coordinate it is handed regardless of the "
+                  "canvas's current zoom, and the resulting um reading for "
+                  "the same two points is identical across two different "
+                  "zoom levels -- locks in that an imprecise on-rig reading "
+                  "is a property of the click, never a calibration or scale "
+                  "bug introduced by measuring it")
+            # --- end frozen-canvas fit coverage -------------------------------
         # --- end live measure panel check ------------------------------------
 
         # --- LIVE MEASURING (PLAN_quick_ruler.md) ----------------------------
