@@ -1084,20 +1084,29 @@ embedding in `CasualModeWindow.__init__` (untestable off-rig for the same
 `QGlPicamera2`/EGL reason `FocusPreviewWindow`'s own embedded preview is,
 see "`QGlPicamera2` ... needs a real GL-capable X session" below).
 
-**Video resolution menu detail worth knowing**: `camera_backend.py`'s
-`Picamera2Camera.set_video_resolution()` has never had a live effect —
-recording always encodes the preview config's fixed "main" stream, set
-once at construction — despite a stale comment in `__init__` claiming
-otherwise (it describes an abandoned mode-switching design;
-`start_recording`'s own history notes are the accurate account). The new
-Options > "Video resolution" menu in `qt_shell.py` writes a `gui_prefs.json`
-preference via the new `video_resolution_kwargs()` helper, which `main()`
-reads at camera-construction time (`Picamera2Camera(**video_resolution_
-kwargs(...))`) — takes effect next launch, not immediately, and the
-status text says so. If you ever want this to apply live, that means
-tearing down and rebuilding the camera+widget while running; think hard
-about it first, given this project's track record with in-session camera
-reconfiguration (see `start_recording`'s own docstring).
+**Video resolution menu detail worth knowing (updated — see "Decouple
+video resolution from preview" below for the full story)**:
+`camera_backend.py`'s `Picamera2Camera.set_video_resolution()` has never
+had a live effect — recording always encodes the preview config's fixed
+"main" stream, set once at construction — despite a stale comment in
+`__init__` claiming otherwise (it described an abandoned mode-switching
+design; `start_recording`'s own history notes are the accurate account,
+and the comment itself has since been corrected in place). The
+Preferences dialog's "Video resolution (next launch)" combo used to write
+a `gui_prefs.json` preference that `main()` fed into
+`Picamera2Camera(preview_res=...)` at construction — that coupling caused
+a real crash (a non-4:3-ish `preview_res` broke its pairing with the
+fixed `LORES_RES`, silently killing focus aid for the rest of the
+process) and has been **removed**. The combo is now disabled
+(`setEnabled(False)`, with an explanatory tooltip) rather than live — see
+"Decouple video resolution from preview" below. `preview_res` is fixed at
+its own `PREVIEW_RES` default again, unconditionally, until a
+stream-resolution setting (a separate, still-open roadmap item) gives the
+preview stream its own independently-settable size. If you ever want
+video resolution to apply live, that still means tearing down and
+rebuilding the camera+widget while running; think hard about it first,
+given this project's track record with in-session camera reconfiguration
+(see `start_recording`'s own docstring).
 
 It lives entirely in `qt_shell.py`'s `FocusPreviewWindow`:
 
@@ -2049,13 +2058,18 @@ in which case the menu shouldn't offer them at all. Whether the eventual
 fix reconfigures lores, filters the menu, or both is a call the repro
 should inform, not a guess made ahead of it.
 
-### Decouple video resolution from preview — intent recorded, not yet built
+### Decouple video resolution from preview — BUILT, verified on-rig
 
-Two-phase documentation rule: intent before code. First item off a larger
-roadmap that came out of the on-rig focus-aid investigation. Full plan in
-user-provided `ROADMAP_resolution_sensor_calibration.md` (item 1) and
+First item off a larger roadmap that came out of the on-rig focus-aid
+investigation. Full plan in user-provided
+`ROADMAP_resolution_sensor_calibration.md` (item 1) and
 `SUPPLEMENT_for_agent_handoff.md` (§1), neither checked into the repo —
-see `CHANGELOG.md`'s matching Intent entry for the fuller text.
+see `CHANGELOG.md`'s matching Intent/Build entries for the fuller text.
+Built by a separate, since-unreachable session working directly in this
+checkout; a different session (this one) took over the uncommitted
+working tree, added the one missing piece (the combo's `setEnabled(False)`,
+per the amendment below — the other session's draft had only added the
+disclosure tooltip), verified it against real hardware, and committed it.
 
 **Bug**: focus aid dies (silently — the `(lores MISSING)` diagnostic, not
 a crash) whenever "Video resolution (next launch)" is set to a non-4:3-ish
@@ -2130,18 +2144,33 @@ anyone who had already set Video resolution to something other than
 drop back to `PREVIEW_RES` (1332×990) the next time they launch after
 this lands — not merely "the preference stops responding to new
 choices," but "an existing choice silently stops taking effect." Worth
-knowing before a recording session, not discovering after one.
+knowing before a recording session, not discovering after one. Not
+hypothetical for the rig this was verified on: `gui_prefs.json` there
+already had `video_resolution: [2028, 1080]` persisted from before this
+fix landed.
 
-**Verification plan**: on-rig — set video resolution to 2028×1080 (or any
-non-4:3 mode), confirm focus aid still scores. That single check is the
-whole bug; no pure render-check logic survives the fix worth adding — the
-removed function's only behavior was gluing a persisted pref to a
-hardware-only constructor argument, which render-check cannot construct
-anyway (`FakeCamera` has no `preview_res` parameter). The existing
-16-module sweep must still pass with no regressions.
+**Landed exactly as planned, no deviations**, except the missing
+`setEnabled(False)` (see above) added by the session that finished and
+verified it. `video_resolution_kwargs()` and its call site are gone;
+`preview_res` is unconditionally `PREVIEW_RES` again; the `__init__`
+comment at camera_backend.py is corrected; the Preferences combo is
+disabled with a tooltip. The dead render-check block that exercised
+`video_resolution_kwargs()` directly was removed rather than kept as a
+no-op.
 
-No code has changed for this yet — see the matching Build entry once it
-lands.
+**Verified**: full 16-module `--render-check` sweep passes, no
+regressions. **On-rig, this session**: with `video_resolution: [2028,
+1080]` still persisted (the exact non-4:3 shape that used to break the
+pairing — see above, this rig's own `gui_prefs.json` already had it),
+`qt_shell.py --camera` was run twice; `camera_configuration()` at both
+diagnostic checkpoints in `Picamera2Camera.__init__` showed `main` at the
+correct `1332x990` and `lores` present and correctly sized at `640x480`.
+The preference can no longer reach the pairing at all, so it can't break
+it. The reported bug — focus aid dying on a non-default video-resolution
+preference — is fixed. The Preferences dialog's disabled state was not
+independently eyeballed on-screen this session (no screenshot taken); the
+code path (`setEnabled(False)` unconditionally in `_video_res_combo`'s own
+construction) has no branch that could make it otherwise.
 
 ## Things that will bite you if you don't know them
 

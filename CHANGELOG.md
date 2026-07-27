@@ -7,6 +7,56 @@ this file is the historical record of what happened and why.
 
 ## 2026-07-27
 
+### Build: Decouple video resolution from preview
+
+Builds the intent recorded in the two entries below (Intent, then its
+amendment) — landed exactly as planned, no deviations. Built by a
+separate, since-unreachable session working directly in this checkout;
+this entry (and the on-rig verification below) is from a different
+session that took over the same uncommitted working tree, confirmed the
+code against real hardware, and committed it.
+
+`qt_shell.py`: removed `video_resolution_kwargs()` and its call site in
+`main()`'s `Picamera2Camera(...)` construction — `preview_res` now always
+uses its own `PREVIEW_RES` default, so its pairing with the fixed
+`LORES_RES` in `create_preview_configuration` can no longer fail and
+silently drop the lores stream (the direct fix for the reported focus-aid
+bug). Rewrote the now-stale comment block above the removed function and
+`capture_resolution_kwargs`'s docstring. Removed the dead render-check
+block that exercised `video_resolution_kwargs()` directly. Preferences
+dialog: `_video_res_combo` is `setEnabled(False)` with an explanatory
+tooltip, per the amendment below — still populated from
+`get_capabilities()`, still persists to `gui_prefs.json` against a future
+Record-button rework.
+
+`camera_backend.py`: corrected the stale `__init__` comment above
+`self._video_res = preview_res` — the actual source of the false premise
+the roadmap's first draft took as fact — to state plainly that
+`self._video_res`/`set_video_resolution()` are dead code today. Left the
+`DIAGNOSTIC` `camera_configuration()` dump prints (from the still-open
+lores-at-default investigation a few entries below) untouched — unrelated
+bug, still needs its own on-rig repro.
+
+**Verified on real hardware, on this rig, in this session**: `gui_prefs.json`
+still had `video_resolution: [2028, 1080]` persisted from before this fix
+(non-4:3, the exact shape that used to break the pairing). Ran
+`qt_shell.py --camera` twice with that preference still in place;
+`camera_configuration()` at both diagnostic checkpoints (right after
+`create_preview_configuration()` and right after `configure()`) showed
+`main` at the correct `1332x990` and `lores` present and correctly sized
+at `640x480` — the preference is no longer read, so it can no longer
+break the pairing. Confirms the reported bug (the one this session's user
+was actually seeing — a non-default video-resolution preference killing
+focus aid) is fixed. Full 16-module `--render-check` sweep also passes, no
+regressions.
+
+**Does not touch or resolve** the separate `main=640x480`/lores-missing
+anomaly documented in this file's 2026-07-26 entries and in `HANDOFF.md` —
+that failure was observed via a different mechanism (a genuine decode
+failure caught mid-preview, not a rejected pairing at construction) and
+remains open; this session did not attempt to reproduce it and isn't
+claiming it's resolved.
+
 ### Intent: Decouple video resolution from preview
 
 Recording intent before building, per this repo's two-phase documentation
