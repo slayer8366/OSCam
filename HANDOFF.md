@@ -2091,11 +2091,18 @@ one cycle rather than trade a loud bug for a silent one.
 2. Keep the "Video resolution (next launch)" combo in the Preferences
    dialog (still populated from `get_capabilities()`, still persists to
    `gui_prefs.json`, in case a future Record-button rework wires it
-   through) but disclose that it currently does nothing, via a tooltip —
-   the same idiom this dialog already uses for `capture_format`/
-   `video_format` ("Persisted, not yet applied to..."). A live control
-   that silently does nothing is a defect in this project's own terms,
-   not an acceptable deferred feature.
+   through), but **disable it** (`setEnabled(False)`) with a tooltip
+   explaining why, rather than leaving it live with just a disclosure
+   tooltip. **Amendment, per user feedback before the build started**: an
+   enabled combo that still changes, still persists, and still shows the
+   user's choice back to them is a false affordance regardless of what
+   its tooltip says — the user believes it worked. Disabled-with-tooltip
+   ("pending Record-button rework") keeps it discoverable and signals
+   it's coming back, without inviting use. `capture_format`/
+   `video_format`'s existing "persisted, not yet applied" tooltip idiom
+   is for controls that are merely *not wired up yet*, not one that
+   *used to work and now doesn't* — this one earns the stronger
+   treatment.
 3. Correct the stale `__init__` comment at camera_backend.py ~665-676
    that is the actual source of the false premise — it describes the
    Record-button rework's *intended* future behavior as if it were
@@ -2115,6 +2122,15 @@ setting) lands, *stream* resolution becomes the real control over
 recorded video size, since the encoder always takes whatever `main`
 currently is. Video resolution stays a persisted-but-inert preference
 until the Record button itself is reworked.
+
+**Real user-visible regression, worth naming explicitly (per the same
+user feedback above) — this is more than a control going inert**:
+anyone who had already set Video resolution to something other than
+`PREVIEW_RES` (e.g. 2028×1080) will find their recorded video silently
+drop back to `PREVIEW_RES` (1332×990) the next time they launch after
+this lands — not merely "the preference stops responding to new
+choices," but "an existing choice silently stops taking effect." Worth
+knowing before a recording session, not discovering after one.
 
 **Verification plan**: on-rig — set video resolution to 2028×1080 (or any
 non-4:3 mode), confirm focus aid still scores. That single check is the
