@@ -5,6 +5,100 @@ dump — each entry names the commit(s) it corresponds to for traceability.
 See `HANDOFF.md` for what a fresh agent needs to know before working here;
 this file is the historical record of what happened and why.
 
+## 2026-07-27
+
+### Intent: Decouple video resolution from preview
+
+Recording intent before building, per this repo's two-phase documentation
+rule. First item off a larger roadmap that came out of the on-rig
+focus-aid investigation, slotted against what was already queued. Full
+plan in user-provided `ROADMAP_resolution_sensor_calibration.md` (item 1)
+and `SUPPLEMENT_for_agent_handoff.md` (§1), neither checked into the
+repo.
+
+**Reported bug**: focus aid dies (silently — the `(lores MISSING)`
+diagnostic, not a crash) whenever the "Video resolution (next launch)"
+preference is set to a non-4:3-ish mode. `video_resolution_kwargs()`
+(qt_shell.py ~426) feeds that preference straight into
+`Picamera2Camera(preview_res=...)`, which becomes the `main` stream's
+size. At e.g. 2028×1080 (≈1.88:1), `main`'s aspect no longer matches the
+fixed `LORES_RES` (640×480, 4:3, "like the sensor" per its own comment),
+`create_preview_configuration` rejects the pairing, lores is dropped for
+the life of the process, and every `make_array("lores")` raises from then
+on.
+
+**Correction made to the roadmap itself during this investigation, worth
+recording in full so it isn't rediscovered**: the roadmap's first draft
+read "video resolution feeds `start_recording()`'s video config only —
+which it already does via `self._video_res`," and proposed decoupling
+`video_resolution_kwargs()` from `preview_res` as a clean, side-effect-free
+fix on that basis. That premise came from a comment in
+`Picamera2Camera.__init__` (camera_backend.py ~665-676) describing the
+Record button's *intended* future design, not the code as it exists.
+Verified against the actual implementation and found false:
+`start_recording()` (camera_backend.py ~1039) never reads `self._video_
+res` at all — it calls `start_encoder(encoder, output, name="main")`,
+encoding whatever the `main` stream already is. `main`'s size is
+`preview_res`, fixed once at construction. So the "Video resolution (next
+launch)" preference's *only* real effect today is `preview_res` → `main`
+stream size → recorded file size; `self._video_res`/
+`set_video_resolution()` are dead code, reserved for a Record-button
+rework that hasn't happened yet (their own docstring already says so).
+This is not newly discovered information on its own — `HANDOFF.md`'s
+existing "Video resolution menu detail worth knowing" note already
+flagged the `__init__` comment as stale — the roadmap's author simply
+didn't cross-reference it before writing item 1. Decoupling exactly as
+first specified would have fixed the lores crash while silently turning a
+live, user-facing preference into a no-op: recorded video pinned at
+`PREVIEW_RES` forever, with no error and no indication. This project
+consistently treats a quiet failure as worse than a loud one (cf. the
+blanket-except audit, the absent-vs-empty distinction in Export, this
+whole lores investigation) — trading one for the other was rejected.
+
+**Revised plan, agreed with the user before any code changes**, doing
+both halves in one cycle:
+1. Remove `video_resolution_kwargs()` and its call site in `main()`'s
+   `Picamera2Camera(...)` construction entirely. `preview_res` reverts to
+   its own fixed default (`PREVIEW_RES`) unconditionally — the direct fix
+   for the lores crash, and the reason a stream-resolution setting
+   (roadmap item 2) is needed before wide/non-4:3 modes can be offered
+   again at all.
+2. Keep the "Video resolution (next launch)" combo in the Preferences
+   dialog — still populated from `get_capabilities()`, still persists to
+   `gui_prefs.json` against a future Record-button rework — but add a
+   tooltip disclosing that it currently has no effect, matching the
+   dialog's own existing idiom for `capture_format`/`video_format`
+   ("Persisted, not yet applied to..."). A control that silently does
+   nothing is treated as a defect here, not a deferred feature.
+3. Correct the stale `__init__` comment at camera_backend.py ~665-676 —
+   the actual source of the false premise above — so it states the true
+   current behavior instead of the Record button's intended future one.
+
+**Explicitly rejected**: wiring `self._video_res` into `start_recording()`
+now, which would have kept the preference meaningful. Encoding at a size
+other than `main` means either a mode switch at record-start or a third
+stream — precisely the pairing fragility that caused this bug — and the
+Record button's mode-switching history has already produced a pane freeze
+and an exposure shift on real hardware (`start_recording`'s own docstring
+history notes). Out of scope for this cycle.
+
+**Consequence, recorded so it's found rather than rediscovered**: once
+roadmap item 2 (a stream-resolution setting) lands, *stream* resolution
+becomes the real control over recorded video size, since the encoder
+always takes whatever `main` is. Video resolution stays persisted but
+inert until the Record button itself is reworked.
+
+**Verification plan**: on-rig — set video resolution to a non-4:3 mode
+(e.g. 2028×1080), confirm focus aid still scores; that single check is
+the whole bug. No new pure render-check logic is expected: the removed
+function's only behavior was gluing a persisted preference to a
+hardware-only constructor argument that `FakeCamera` doesn't even accept
+a parameter for. The existing 16-module `--render-check` sweep must still
+pass with no regressions.
+
+No code has changed for this yet — see the matching Build entry once it
+lands.
+
 ## 2026-07-26
 
 ### Fix: focus-aid readout label no longer clips mid-word
