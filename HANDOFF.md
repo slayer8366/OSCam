@@ -1882,6 +1882,67 @@ session as its own checklist, not treated as done:
 - [ ] Close and reopen the Live measure box — canvas fits correctly on
       the reopened view.
 
+### Fix: `Picamera2Camera` construction left the camera in the `sensor_modes` probe's leftover config — BUILT
+
+Root-caused from an on-rig failure log the user supplied directly (not
+found by this session): live-measure's freeze capture came back with
+`main=640x480@XBGR8888, raw=4056x3040@SBGGR16` and no lores stream at all
+(`KeyError`-shaped failure — `lores` genuinely absent from the request).
+An earlier theory blamed a main/lores aspect-ratio mismatch; the user
+disproved it by reading the log's own libcamera stream-negotiation trace,
+which showed a sweep — `(0) 640x480-XBGR8888/sRGB (1) <size>-RAW` — cycling
+the raw stream through every sensor mode while main stayed fixed. That
+sweep's exact last line matched the failure's config byte for byte,
+including the `SBGGR16` format nobody had asked for: the camera was still
+sitting in `get_capabilities()`'s own probe configuration, not anything
+the app had configured.
+
+**Root cause**: `self._picam2.sensor_modes` (read inside
+`get_capabilities()`, cached in `PLAN_fix_capabilities_cache.md`'s fix —
+see the "Fix: Preferences dialog crash" entry above) is not a passive
+lookup; internally it calls `Picamera2.configure()` once per sensor mode
+to enumerate them, sweeping the camera through every mode and leaving it
+in whatever the LAST swept mode was. `Picamera2Camera.__init__` called
+`self._picam2.configure(self._preview_cfg)` (the real config, with lores)
+*first*, then built the `QGlPicamera2` widget against it, and only
+afterward — at the very end of `__init__` — called `get_capabilities()`
+to prime the cache. That ordering meant the sensor-mode sweep ran last,
+silently clobbering the real preview config the widget had already been
+built against, and nothing ever re-applied `self._preview_cfg` afterward.
+`main` reads 640×480 because that's the probe's own fixed placeholder
+size, not anything requested; `lores` is missing because the probe never
+asks for one. The Preferences-dialog crash fix (above) introduced the
+caching that made this ordering possible — the underlying sensor_modes
+sweep behavior isn't new, but eagerly calling it at all inside `__init__`
+is what exposed this.
+
+**Fix**: moved the capability probe (`self._capabilities = None` +
+`self._capabilities = self.get_capabilities()`) to run immediately after
+`self._picam2 = Picamera2()`, before `self._preview_cfg` is even built,
+let alone applied. The real `self._picam2.configure(self._preview_cfg)`
+call and the `QGlPicamera2` widget construction now both happen strictly
+after the sensor-mode sweep has already run and settled, so they're the
+last thing to touch the camera's configuration during construction — the
+sweep's leftover state never survives past this point. `get_capabilities()`
+itself is unchanged; only when it's called moved.
+
+**Not yet fixed, flagged by the user, worth checking next**: a second,
+distinct bug — a `G_IS_OBJECT` assertion at the end of the same failure
+log, suggesting the probe's own teardown (or something downstream of it)
+isn't clean. Different mechanism from this one; this fix does not close
+it. An earlier session's report of "the second bug is probably a phantom"
+was itself wrong per the user — real, just not yet root-caused.
+
+**Verification**: `camera_backend.py`'s self-check (`FakeCamera`-only)
+still passes after the reorder — see "Full `--render-check` sweep" above.
+The ordering bug itself is only reachable through `Picamera2Camera`, which
+needs a real `Picamera2()` plus a `QGlPicamera2` widget to construct at
+all, so this fix is **not yet confirmed on-rig** — carried forward as an
+open item: re-run the same live-measure freeze that produced the original
+failure log and confirm `lores` is present and `main`/`raw` match
+`self._preview_cfg` (not the probe's leftover config) immediately after
+construction, before `start()` is even called.
+
 ## Things that will bite you if you don't know them
 
 **`qt_shell.py`'s `render_check()` now monkeypatches `PROFILE_PATH` for
