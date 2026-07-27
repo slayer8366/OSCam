@@ -409,37 +409,40 @@ PREFS_PATH = Path.home() / ".zynergy" / "gui_prefs.json"
 # camera_backend.py's set_video_resolution() validates input but, as its own
 # docstring says plainly, currently has NO live effect: a recording always
 # encodes the preview config's fixed "main" stream, built once when the
-# camera is constructed. Changing it for real means changing preview_res at
-# CONSTRUCTION time, not calling a setter mid-session -- doing that live
-# would mean tearing down and rebuilding the camera+widget while running,
-# exactly the kind of in-session camera reconfiguration this project has
-# been burned by before (see start_recording's own history notes). So the
-# Preferences dialog's Video resolution control (populated from
-# camera.get_capabilities(), never a hardcoded list -- see PLAN_02) writes a
-# persisted preference (gui_prefs.json, the same store/pattern panel_width
-# and the focus-aid startup options already use) that main() reads at
-# camera-construction time -- takes effect on the NEXT launch, not
-# immediately, and the dialog says so. Capture resolution is the same shape,
-# feeding Picamera2Camera's existing full_res constructor parameter.
-
-
-def video_resolution_kwargs(pref=None):
-    """Camera-construction kwargs for the persisted "video_resolution" pref:
-    {} if none set (the camera's own PREVIEW_RES default applies, unchanged
-    behavior), else {"preview_res": (w, h)}. Qt-free and camera-free, so
-    main()'s wiring is testable without constructing a real window or
-    camera."""
-    if pref is None:
-        return {}
-    w, h = pref
-    return {"preview_res": (int(w), int(h))}
+# camera is constructed via start_encoder() against "main" -- never through
+# self._video_res. Capture resolution genuinely works this way (feeding
+# Picamera2Camera's full_res constructor parameter, applied on next launch);
+# video resolution does not, because nothing consumes self._video_res yet.
+#
+# ROADMAP item 1 correction: this file used to also feed the persisted
+# "video_resolution" pref into preview_res at camera construction (a
+# video_resolution_kwargs() analogous to capture_resolution_kwargs() below).
+# That was wrong on two counts. First, main's size IS preview_res, and lores
+# (LORES_RES, hardcoded 4:3) is paired against it at create_preview_
+# configuration() time -- so a non-4:3 video-resolution preference silently
+# broke the lores stream pairing, killing focus aid for the life of the
+# process (root cause of the "focus aid dies on non-4:3 resolution" bug).
+# Second, that preview_res detour was never what the preference claimed to
+# do: it happened to change the recorded file's size only as a side effect
+# of start_recording() encoding whatever "main" is, not because anything
+# reads self._video_res. Decoupled: preview_res construction no longer
+# depends on this preference at all (removed from main()'s camera-
+# construction kwargs, below), and the "Video resolution" control in
+# Preferences is now display-only with a tooltip explaining why, same
+# pattern as the capture/video FORMAT controls just below it, which persist
+# a preference nothing reads yet rather than pretending to apply it.
+# Wiring this for real means the Record-button rework building its own video
+# config from self._video_res -- explicitly out of scope here, since
+# encoding at a size other than main means either a mode switch on record
+# start or a third stream, and both are exactly the pairing/mode-switch
+# fragility that produced this bug in the first place.
 
 
 def capture_resolution_kwargs(pref=None):
     """Camera-construction kwargs for the persisted "capture_resolution"
-    pref, same next-launch shape as video_resolution_kwargs above: {} if
-    none set (the camera's own FULL_RES default applies), else
-    {"full_res": (w, h)}."""
+    pref: {} if none set (the camera's own FULL_RES default applies), else
+    {"full_res": (w, h)}. Qt-free and camera-free, so main()'s wiring is
+    testable without constructing a real window or camera."""
     if pref is None:
         return {}
     w, h = pref
@@ -1679,6 +1682,22 @@ if _HAVE_QT:
 
             self._video_res_combo = self._resolution_combo(
                 caps.get("video_resolutions", []), load_pref("video_resolution", None))
+            # Disabled, not just disclosed (Decouple video resolution from
+            # preview, HANDOFF.md): this preference used to actually change
+            # recorded video size (via preview_res -> the "main" stream it
+            # shares with the encoder), but that coupling caused a real
+            # crash (non-4:3 preview_res broke lores' pairing with it,
+            # killing focus aid) and has been removed. An enabled combo
+            # that still changes, persists, and shows the user's choice
+            # back to them would be a false affordance -- they'd believe
+            # it worked. Stays visible and its own persisted value is kept
+            # (gui_prefs.json), against a future Record-button rework that
+            # gives recording its own resolution independent of preview.
+            self._video_res_combo.setEnabled(False)
+            self._video_res_combo.setToolTip(
+                "Disabled, pending a Record-button rework -- currently has "
+                "no effect on recorded video. See HANDOFF.md's \"Decouple "
+                "video resolution from preview\" entry.")
             cap_form.addRow("Video resolution (next launch):", self._video_res_combo)
 
             self._video_fmt_combo = self._choice_combo(
@@ -5637,7 +5656,6 @@ def main(argv=None):
         except ImportError:
             from camera_backend import Picamera2Camera
         camera = Picamera2Camera(
-            **video_resolution_kwargs(load_pref("video_resolution", None)),
             **capture_resolution_kwargs(load_pref("capture_resolution", None)))
     else:
         camera = FakeCamera()
@@ -6017,17 +6035,22 @@ def render_check():
     print("slider-map check PASS: shutter stop table + fraction format, gain linear, "
           "long-exposure table to 3.0s, zero-min safe")
 
-    # video_resolution_kwargs (BUILD_LIST Tier 1 item 5): no pref set means
-    # no kwarg at all (the camera's own PREVIEW_RES default applies,
-    # unchanged behavior), a set pref becomes an explicit preview_res tuple.
-    assert video_resolution_kwargs(None) == {}, \
+    # capture_resolution_kwargs (BUILD_LIST Tier 1 item 5): no pref set means
+    # no kwarg at all (the camera's own FULL_RES default applies, unchanged
+    # behavior), a set pref becomes an explicit full_res tuple. video_
+    # resolution_kwargs no longer exists (ROADMAP item 1): it used to feed
+    # this same persisted pref into preview_res, which paired against the
+    # hardcoded 4:3 LORES_RES and broke lores whenever the pref was a
+    # non-4:3 mode. Removed rather than fixed in place, since nothing reads
+    # self._video_res yet for that preference to honestly drive.
+    assert capture_resolution_kwargs(None) == {}, \
         "no preference should mean no kwarg, not some hardcoded default"
-    assert video_resolution_kwargs([1920, 1080]) == {"preview_res": (1920, 1080)}
-    assert video_resolution_kwargs((2048, 1080)) == {"preview_res": (2048, 1080)}, \
+    assert capture_resolution_kwargs([1920, 1080]) == {"full_res": (1920, 1080)}
+    assert capture_resolution_kwargs((2048, 1080)) == {"full_res": (2048, 1080)}, \
         "must accept a tuple too, not just the list JSON round-trips through"
-    print("video_resolution_kwargs check PASS: no preference means no kwarg "
+    print("capture_resolution_kwargs check PASS: no preference means no kwarg "
           "(camera's own default applies), a set preference becomes an "
-          "explicit preview_res tuple, both list and tuple input accepted")
+          "explicit full_res tuple, both list and tuple input accepted")
 
     # format_lores_config_summary: pure formatter for camera_backend.py's
     # lores_config_at_failure, tested standalone (no FocusPreviewWindow

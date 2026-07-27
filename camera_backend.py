@@ -673,17 +673,22 @@ class Picamera2Camera(CameraBackend):
             main={"size": full_res}, raw={"size": full_res}, buffer_count=2)
 
         # --- RECORD BUTTON (separable): video's own adjustable resolution,
-        # NOT a config built once and fixed forever. A future menu is
-        # expected to let this change at runtime (set_video_resolution
-        # below), so the video config itself is built fresh inside
-        # start_recording() from whatever self._video_res currently is,
-        # rather than baked into a _video_cfg here that could only ever
-        # match the resolution the camera happened to start up with.
-        # lores stays fixed (LORES_RES): it does double duty as both the
-        # widget's display source during recording and the focus aid's own
-        # input, and the future resolution menu is about the RECORDED
-        # file's size, not that.
-        self._video_res = preview_res
+        # NOT YET WIRED THROUGH. self._video_res and set_video_resolution()
+        # below are dead code today: start_recording() does not build a
+        # video config from self._video_res, it just start_encoder()s
+        # stream "main" as-is (see start_recording's own history notes),
+        # so the recorded file's actual resolution is preview_res, set
+        # once above. A prior version of this comment described a future
+        # Record-button rework's *intended* design (self._video_res
+        # feeding a config built fresh inside start_recording()) as if it
+        # were current behavior -- it misled at least one later planning
+        # pass into assuming that wiring already existed (see HANDOFF.md's
+        # "Decouple video resolution from preview" entry for the
+        # correction). Kept as a placeholder for that rework, not because
+        # it does anything yet. lores stays fixed (LORES_RES) regardless:
+        # it does double duty as both the widget's display source during
+        # recording and the focus aid's own input.
+        self._video_res = preview_res   # dead: nothing reads this yet
 
         self._picam2.configure(self._preview_cfg)
 
