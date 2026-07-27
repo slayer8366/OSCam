@@ -705,6 +705,14 @@ class Picamera2Camera(CameraBackend):
         # actual exception text) -- see _stash_lores/_classify_lores_error.
         self.lores_decode_errors = 0
         self.last_lores_error: Optional[str] = None
+        # Captured once, at the first genuine decode failure (not every
+        # frame -- see _stash_lores), from camera_configuration() itself
+        # rather than request.config: request.config still lists 'lores'
+        # for a still-mode request (the earlier "tried and failed" comment),
+        # so it can't settle whether the ACTIVE config genuinely has no
+        # lores stream. camera_configuration() is the one honest source for
+        # that question.
+        self.lores_config_at_failure: Optional[dict] = None
 
         self._ae_on = False           # default is a held exposure (apply_exposure_lock)
         self._awb_on = False
@@ -781,6 +789,20 @@ class Picamera2Camera(CameraBackend):
             if not _lores_error_is_expected(self._suspend_lores):
                 self.lores_decode_errors += 1
                 self.last_lores_error = str(exc)
+                # First genuine failure only: the active config can't change
+                # again without a fresh switch_mode/configure() call, which
+                # this callback never triggers, so repeating this on every
+                # one of what could be hundreds of failing frames would be
+                # pure overhead on the hot per-frame preview thread for no
+                # new information. Wrapped separately from make_array above
+                # -- this diagnostic call must never be what turns a decode
+                # failure into a crash on this thread.
+                if self.lores_config_at_failure is None:
+                    try:
+                        cfg = self._picam2.camera_configuration()
+                        self.lores_config_at_failure = _summarize_camera_configuration(cfg)
+                    except Exception as cfg_exc:
+                        self.lores_config_at_failure = {"error": str(cfg_exc)}
             return
         with self._lores_lock:
             self._latest_lores = arr
@@ -1221,6 +1243,29 @@ def _lores_error_is_expected(suspend_lores: bool) -> bool:
     return suspend_lores
 
 
+def _summarize_camera_configuration(cfg: dict) -> dict:
+    """Plain-typed snapshot of Picamera2.camera_configuration()'s own dict,
+    for _stash_lores's decode-failure diagnostic (lores_config_at_failure).
+    Pulls only "size"/"format" out of each stream entry (main/lores/raw) --
+    the full dict carries libcamera objects (Transform, ColorSpace) that
+    aren't safe to hold or print. Whether "lores" is present at all is the
+    headline fact this exists to answer (candidate: create_preview_
+    configuration() silently dropped it during its own validation), but
+    it's paired with main's own size/format rather than reported alone,
+    since the leading hypothesis is about the RELATIONSHIP between them
+    (an aspect mismatch, a downscale-ratio ceiling), not lores's absence in
+    isolation."""
+    present = [name for name in ("main", "lores", "raw") if cfg.get(name) is not None]
+    out = {"streams_present": sorted(present)}
+    for name in present:
+        stream = cfg[name]
+        out[name] = {
+            "size": tuple(int(v) for v in stream["size"]) if "size" in stream else None,
+            "format": str(stream.get("format")),
+        }
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Structural self-check support (PLAN_02_camera_capability_query.md):
 # camera_backend.py is the only file in this project allowed to know
@@ -1500,12 +1545,28 @@ if __name__ == "__main__":
                     raise self._outcome
                 return self._outcome
 
-        def _fresh_fake_self():
+        class _StubPicam2:
+            """Stands in for self._picam2 in _stash_lores's diagnostic-only
+            camera_configuration() call. Counts calls so the "captured once,
+            not every failing frame" claim is actually verified, not just
+            asserted in a comment."""
+            def __init__(self, outcome):
+                self._outcome = outcome
+                self.call_count = 0
+
+            def camera_configuration(self):
+                self.call_count += 1
+                if isinstance(self._outcome, Exception):
+                    raise self._outcome
+                return self._outcome
+
+        def _fresh_fake_self(picam2=None):
             return types.SimpleNamespace(
                 _latest_meta=None, _suspend_lores=False, _want_frame=True,
                 _lores_lock=threading.Lock(), _latest_lores=None,
                 lores_frames_received=0, lores_decode_errors=0,
-                last_lores_error=None)
+                last_lores_error=None, lores_config_at_failure=None,
+                _picam2=picam2)
 
         fs = _fresh_fake_self()
         real_frame = np.zeros((4, 4, 3), dtype=np.uint8)
@@ -1513,30 +1574,67 @@ if __name__ == "__main__":
         assert fs.lores_frames_received == 1 and fs._latest_lores is real_frame
         assert fs._want_frame is False
         assert fs.lores_decode_errors == 0 and fs.last_lores_error is None
+        assert fs.lores_config_at_failure is None
 
-        fs = _fresh_fake_self()
+        fs = _fresh_fake_self(picam2=_StubPicam2({"main": {"size": (1920, 1080)}}))
         Picamera2Camera._stash_lores(
             fs, _StubRequest(RuntimeError("Stream 'lores' is not defined"), flip_suspend_on=fs))
         assert fs.lores_frames_received == 0
         assert fs.lores_decode_errors == 0 and fs.last_lores_error is None, (
             "a still-mode race (_suspend_lores true again by the time "
             "make_array raises) must stay silent, exactly as before this fix")
+        assert fs.lores_config_at_failure is None and fs._picam2.call_count == 0, (
+            "the expected still-mode race must not pay for a config dump "
+            "it has no diagnostic use for")
 
-        fs = _fresh_fake_self()
+        fake_cfg = {"main": {"size": (1920, 1080), "format": "XBGR8888"},
+                   "raw": {"size": (4056, 3040), "format": "SBGGR12"}}
+        stub_picam2 = _StubPicam2(fake_cfg)
+        fs = _fresh_fake_self(picam2=stub_picam2)
         Picamera2Camera._stash_lores(fs, _StubRequest(RuntimeError("bad main/lores pairing")))
         assert fs.lores_frames_received == 0
         assert fs.lores_decode_errors == 1 and fs.last_lores_error == "bad main/lores pairing", (
             "a real decode failure (never suspended) must be recorded, not "
             "swallowed identically to the expected still-mode race")
+        assert fs.lores_config_at_failure == {
+            "streams_present": ["main", "raw"],
+            "main": {"size": (1920, 1080), "format": "XBGR8888"},
+            "raw": {"size": (4056, 3040), "format": "SBGGR12"},
+        }, "a genuine failure must capture the ACTIVE config (no 'lores' " \
+           "key here -- exactly candidate 1's claim) via camera_configuration(), " \
+           "not the unreliable request.config"
+        assert stub_picam2.call_count == 1
 
+        # Second genuine failure on the same instance: must NOT call
+        # camera_configuration() again -- the config can't change again
+        # without a fresh switch_mode/configure(), which this callback
+        # never triggers, so a second capture would be pure overhead on a
+        # hot per-frame thread for no new information.
+        Picamera2Camera._stash_lores(fs, _StubRequest(RuntimeError("bad main/lores pairing")))
+        assert fs.lores_decode_errors == 2 and stub_picam2.call_count == 1, (
+            "lores_config_at_failure is captured once per process, not "
+            "re-dumped on every one of what could be hundreds of failures")
+
+        # camera_configuration() itself raising must not crash this thread --
+        # the diagnostic call is wrapped separately from make_array.
+        fs = _fresh_fake_self(picam2=_StubPicam2(RuntimeError("camera busy")))
+        Picamera2Camera._stash_lores(fs, _StubRequest(RuntimeError("bad main/lores pairing")))
+        assert fs.lores_config_at_failure == {"error": "camera busy"}
+
+        assert _summarize_camera_configuration({"lores": None}) == {"streams_present": []}, \
+            "a None stream entry (present as a key but not configured) must " \
+            "not be reported as present"
         assert _lores_error_is_expected(True) is True
         assert _lores_error_is_expected(False) is False
         print("_stash_lores RuntimeError classification PASS: a successful "
               "decode still increments lores_frames_received as before; a "
               "still-mode race (_suspend_lores flips true during the failing "
-              "make_array call) stays silent with no recorded error, exactly "
-              "the pre-fix behavior; a genuine decode failure (never "
-              "suspended) now increments lores_decode_errors and records the "
-              "real exception text instead of vanishing")
+              "make_array call) stays silent with no recorded error and no "
+              "config dump paid for; a genuine decode failure (never "
+              "suspended) now increments lores_decode_errors, records the "
+              "real exception text, and captures camera_configuration() "
+              "exactly once via _summarize_camera_configuration -- a second "
+              "failure does not re-dump it, and a camera_configuration() "
+              "failure of its own is caught rather than crashing the thread")
 
         print("camera_backend self-check PASS")

@@ -446,6 +446,31 @@ def capture_resolution_kwargs(pref=None):
     return {"full_res": (int(w), int(h))}
 
 
+def format_lores_config_summary(cfg):
+    """Renders camera_backend.py's Picamera2Camera.lores_config_at_failure
+    (a plain dict from _summarize_camera_configuration, or None if no
+    genuine decode failure has happened yet) into the focus-aid readout's
+    diagnostic text. Whether "lores" is in the active config is stated
+    explicitly rather than left for the reader to infer from the stream
+    list, since that's the single fact candidate 1 (create_preview_
+    configuration() silently dropping lores during its own validation) or
+    candidate 2 (some other still-mode/config-drift bug) turns on."""
+    if not cfg:
+        return "active config not yet captured"
+    if "error" in cfg:
+        return "camera_configuration() itself failed: {}".format(cfg["error"])
+    present = cfg.get("streams_present", [])
+    parts = []
+    for name in present:
+        info = cfg.get(name) or {}
+        size = info.get("size")
+        size_str = "{}x{}".format(*size) if size else "?"
+        parts.append("{}={}@{}".format(name, size_str, info.get("format")))
+    streams_str = ", ".join(parts) if parts else "none"
+    lores_note = "lores PRESENT" if "lores" in present else "lores MISSING"
+    return "streams: {} ({})".format(streams_str, lores_note)
+
+
 # ---------------------------------------------------------------------------
 # Pure geometry (Qt-free, so --render-check covers it)
 # ---------------------------------------------------------------------------
@@ -2913,9 +2938,12 @@ if _HAVE_QT:
                     # all (the generic message, unchanged from before).
                     errors = getattr(self.camera, "lores_decode_errors", 0)
                     if errors:
+                        cfg_summary = format_lores_config_summary(
+                            getattr(self.camera, "lores_config_at_failure", None))
                         txt = ("lores stream configured but failing to decode "
-                              "({} time(s)): {}".format(
-                                  errors, getattr(self.camera, "last_lores_error", "")))
+                              "({} time(s)): {} -- active config: {}".format(
+                                  errors, getattr(self.camera, "last_lores_error", ""),
+                                  cfg_summary))
                     else:
                         txt = ("no real lores frames received -- lores stream is not "
                               "reaching the camera backend, not a scoring bug")
@@ -6000,6 +6028,26 @@ def render_check():
           "(camera's own default applies), a set preference becomes an "
           "explicit preview_res tuple, both list and tuple input accepted")
 
+    # format_lores_config_summary: pure formatter for camera_backend.py's
+    # lores_config_at_failure, tested standalone (no FocusPreviewWindow
+    # needed) before the fuller _readout round trip below proves it's
+    # actually wired in.
+    assert format_lores_config_summary(None) == "active config not yet captured"
+    assert format_lores_config_summary({"error": "camera busy"}) == \
+        "camera_configuration() itself failed: camera busy"
+    assert format_lores_config_summary({"streams_present": []}) == \
+        "streams: none (lores MISSING)"
+    assert format_lores_config_summary({
+        "streams_present": ["lores", "main"],
+        "main": {"size": (1332, 990), "format": "XBGR8888"},
+        "lores": {"size": (320, 240), "format": "RGB888"},
+    }) == ("streams: lores=320x240@RGB888, main=1332x990@XBGR8888 "
+          "(lores PRESENT)")
+    print("format_lores_config_summary check PASS: no capture yet, "
+          "camera_configuration() itself failing, no streams at all, and a "
+          "real main+lores config all render distinctly, lores presence "
+          "stated explicitly rather than left implicit in the stream list")
+
     # Themes (BUILD_LIST Tier 1 item 3): discover_themes scans a real folder
     # tree rather than trusting a hardcoded list, load_theme_stylesheet
     # substitutes {{ASSETS}} for the theme's own absolute assets/ path, and
@@ -6306,18 +6354,39 @@ def render_check():
 
             rcam.lores_decode_errors = 3
             rcam.last_lores_error = "bad main/lores pairing"
+            rcam.lores_config_at_failure = None   # not yet captured (e.g. camera_configuration() itself failed)
             rwin._readout(rstate)
             assert rwin.readout.text() == (
                 "lores stream configured but failing to decode "
-                "(3 time(s)): bad main/lores pairing"), (
+                "(3 time(s)): bad main/lores pairing -- active config: "
+                "active config not yet captured"), (
                 "a real, recorded decode failure must surface its own error "
-                "text instead of the generic guess")
+                "text instead of the generic guess, and say plainly when no "
+                "config was captured rather than silently omitting it")
+
+            rcam.lores_config_at_failure = {
+                "streams_present": ["main", "raw"],
+                "main": {"size": (1920, 1080), "format": "XBGR8888"},
+                "raw": {"size": (4056, 3040), "format": "SBGGR12"},
+            }
+            rwin._readout(rstate)
+            assert rwin.readout.text() == (
+                "lores stream configured but failing to decode "
+                "(3 time(s)): bad main/lores pairing -- active config: "
+                "streams: main=1920x1080@XBGR8888, raw=4056x3040@SBGGR12 "
+                "(lores MISSING)"), (
+                "the captured active config must be rendered into the "
+                "readout, explicitly flagging lores as MISSING -- the exact "
+                "fact candidate 1 (create_preview_configuration() silently "
+                "dropping lores) turns on")
         finally:
             rcam.stop()
         print("focus-aid lores diagnostic check PASS: _readout shows the "
               "original generic message when the backend never receives a "
-              "lores frame at all, and the real captured error text once "
-              "camera_backend.py has actually recorded a decode failure")
+              "lores frame at all, the real captured error text once "
+              "camera_backend.py has recorded a decode failure, and the "
+              "active config (streams present, lores present/missing) once "
+              "that's been captured too")
 
         # Z-STACK AID (BUILD_LIST Tier 3 item 6): a full FakeCamera round
         # trip through the real toggle -- _start_zstack, two more

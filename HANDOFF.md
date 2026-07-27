@@ -1991,14 +1991,25 @@ as silently as the expected case, with zero information about why. Now
 count and exception text when a failure isn't the known still-mode race
 (see `_lores_error_is_expected`), and `qt_shell.py`'s `_readout` reports
 that real text once it exists instead of only ever showing the generic
-message.
+message. **Extended once more, same day**: the error text alone confirms
+a genuine failure but doesn't settle *which* candidate mechanism is
+responsible — `lores_config_at_failure` now captures `camera_configuration()`
+itself (the ACTIVE config, not `request.config`, which the comment above
+already found unreliable for this) once, at the first genuine failure, via
+`_summarize_camera_configuration`; `_readout` appends whether `lores` is
+present in that config, explicitly, alongside the streams that are. This
+is the check that actually distinguishes candidate 1 (`create_preview_
+configuration()` silently dropped `lores`) from anything else — a present
+`lores` key would rule candidate 1 out entirely, which the error text by
+itself never could.
 
 **Next, explicitly not done yet**: reproduce the original symptom on-rig
-with this build in place, to get the real libcamera error string instead
-of guessing. That string decides the actual fix's shape — an aspect-ratio
-mismatch needs lores resized to match main's aspect ratio; an ISP
-downscale-ratio ceiling needs lores sized relative to main within that
-limit; these are different implementations, not interchangeable. **Also
+with this build in place, to get the real libcamera error string AND the
+active config's own `lores` presence, instead of guessing. That decides
+the actual fix's shape — an aspect-ratio mismatch needs lores resized to
+match main's aspect ratio; an ISP downscale-ratio ceiling needs lores
+sized relative to main within that limit; these are different
+implementations, not interchangeable. **Also
 flagged for whoever writes that fix's own intent doc** (not decided now):
 `video_resolutions` being built from unfiltered raw sensor modes may
 itself be part of the problem — even with lores correctly reconfigured,

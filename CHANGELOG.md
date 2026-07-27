@@ -7,6 +7,48 @@ this file is the historical record of what happened and why.
 
 ## 2026-07-26
 
+### Fix: lores decode-failure diagnostic now captures the active `camera_configuration()`, not just the error text
+
+Follow-up to the commit below (`f4af4fd`), same sitting, before the on-rig
+trip that commit's own build note called for. That commit recorded
+`last_lores_error`'s exception text and a count, which confirms a genuine
+decode failure is happening but not *why* — candidate 1 (the leading
+hypothesis, below) claims specifically that `create_preview_configuration()`
+silently drops the `lores` stream from the config during its own
+internal validation, which means the config actually in effect never has
+one. Proving that needs the config inspected at the moment of failure,
+not inferred from an error string alone — a check flagged before the
+error string was mistaken for sufficient evidence on its own.
+
+**Fix**: `camera_backend.py`. `Picamera2Camera` gains `lores_config_at_failure`,
+captured once (not every failing frame — the active config can't change
+again without a fresh `switch_mode`/`configure()`, which `_stash_lores`
+never triggers, so repeating this on a hot per-frame callback across
+potentially hundreds of failures would be pure overhead) via a new pure
+`_summarize_camera_configuration(cfg)` helper: pulls only `size`/`format`
+out of `main`/`lores`/`raw`, since the real dict carries libcamera objects
+(`Transform`, `ColorSpace`) unsafe to hold or print. The capture call
+itself is wrapped separately from `make_array` — a `camera_configuration()`
+failure of its own must not turn into a crash on the preview thread.
+`qt_shell.py`'s `_readout` gains a matching pure `format_lores_config_summary`
+and now appends "`-- active config: streams: ... (lores PRESENT/MISSING)`"
+to the decode-failure message, stating the one fact candidate 1 turns on
+explicitly rather than leaving it for the reader to infer from a raw dict.
+
+**Render-check coverage added**: `camera_backend.py`'s self-check extends
+the existing `_stash_lores` stub test with a fake `_picam2.camera_configuration()`
+call-counter, proving the still-mode race pays nothing for a dump it
+doesn't need, a genuine failure captures the config exactly once (a
+second failure does not re-dump it), and a `camera_configuration()`
+failure of its own is caught rather than propagating. `qt_shell.py`'s
+self-check extends its own `_readout` round trip with both an
+uncaptured-config case and a real main+raw (no lores) config, asserting
+the exact rendered text. Both pure helpers also get standalone tests.
+Full 16-module `--render-check` sweep passes, no regressions.
+
+**Not yet exercised on-rig at all** — self-check-only, same as the commit
+below.
+
 ### Build: `_stash_lores`'s `RuntimeError` guard now distinguishes an expected still-mode race from a real lores decode failure
 
 Builds the intent recorded immediately below — landed exactly as planned.
