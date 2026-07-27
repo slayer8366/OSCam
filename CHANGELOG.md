@@ -7,6 +7,120 @@ this file is the historical record of what happened and why.
 
 ## 2026-07-26
 
+### Build: `_stash_lores`'s `RuntimeError` guard now distinguishes an expected still-mode race from a real lores decode failure
+
+Builds the intent recorded immediately below — landed exactly as planned.
+Follow-up to an on-rig report: focus aid works at the default video
+resolution but fails with "no real lores frames received" after changing
+it. Root-cause investigation (read-only, no fix yet at that point) found
+the message itself is honest but uninformative — `camera_backend.py`'s
+`_stash_lores` (the `post_callback` that decodes the lores stream every
+camera frame) has always had a blanket `except RuntimeError: return`
+around `request.make_array("lores")`, written for one specific case (a
+still-mode request racing this callback, which legitimately carries no
+lores stream) but silently swallowing every other `RuntimeError` too —
+including a lores stream that's configured but genuinely failing to
+decode on every frame, which is exactly what a bad main/lores size
+pairing (the resolution bug's own leading hypothesis) would look like.
+That conflation is a real defect on its own terms, independent of whether
+the resolution bug turns out to be an aspect-ratio mismatch or an ISP
+downscale-ratio ceiling: either way, the guard was turning a hard
+configuration failure into a silent, generic, 2-second-delayed diagnostic
+with the underlying error thrown away.
+
+**Fix**: `camera_backend.py`. `Picamera2Camera` gains two new diagnostic
+attributes alongside the existing `lores_frames_received` —
+`lores_decode_errors` (a count) and `last_lores_error` (the most recent
+exception's own `str()`). A new pure module-level helper,
+`_lores_error_is_expected(suspend_lores: bool) -> bool`, formalizes the
+classification: `_stash_lores`'s except-block re-checks `self._suspend_lores`
+*at the point of failure* (not trusted from the earlier guard alone, since
+the real race is `_suspend_lores` flipping true concurrently between that
+earlier check and `make_array` actually raising) — true means the known,
+silent still-mode race (unchanged behavior, still swallowed with no
+record), false means a genuine failure that's now recorded rather than
+discarded.
+
+`qt_shell.py`'s `_readout` (the tick that surfaces this to the user) now
+reports the real error once one exists: `lores_decode_errors > 0` produces
+"lores stream configured but failing to decode (N time(s)): <the actual
+exception text>" instead of the generic "no real lores frames received"
+message, which is now reserved for the genuinely different case of
+`post_callback` never reaching the backend at all (both counters stay at
+0 — a distinct failure mode this fix does not touch).
+
+**Render-check coverage added**: `camera_backend.py`'s own self-check
+drives the real bound `_stash_lores` method (not a reimplementation)
+against a minimal stand-in self/request object, since `Picamera2Camera`
+itself can't be constructed off-rig — a successful decode still increments
+`lores_frames_received` exactly as before; a still-mode race (the stub
+request flips `_suspend_lores` true as a side effect of its own
+`make_array`, modeling the real timing) stays silent with nothing
+recorded; a genuine failure (never suspended) records both the count and
+the exact exception text. `qt_shell.py`'s own render-check drives the
+real `_readout` method on a real `FocusPreviewWindow`/`FakeCamera` pair
+(the other half of the seam — proving `_readout` actually reads and
+formats what `_stash_lores` records, not just that the classification
+logic itself is sound in isolation), covering both the unchanged generic
+message and the new specific one. Full 16-module `--render-check` sweep
+passes, no regressions.
+
+**Explicitly not done in this pass, by design**: this fix makes the real
+underlying error visible; it does not attempt to fix the resolution bug
+itself. The next step is reproducing the failure on-rig with the widened
+logging in place, so the real fix (which likely means reconfiguring the
+lores stream alongside the main stream when video resolution changes,
+currently pinned at construction — see `camera_backend.py`'s own comment
+on `LORES_RES`) gets designed against an actual libcamera error string
+instead of a guess. **Not yet exercised on-rig at all** — self-check-only
+until the user reproduces the original symptom with this build in place.
+
+### Intent: `_stash_lores`'s `RuntimeError` guard conflates two different failures
+
+Recording intent before building, per this repo's two-phase documentation
+rule, though the build (above) landed in the same sitting. Triggered by
+an on-rig report: "focus aid works at full video resolution, but fails
+with 'no real lores frames received' after changing resolution — lores
+stream is not reaching the camera backend, not a scoring bug."
+
+**Decision (user, this session): fix the guard for its own sake first,
+verify on real hardware second, only then design the resolution fix
+itself** — rather than guessing at the resolution bug's exact mechanism
+(aspect-ratio mismatch vs. an ISP downscale-ratio ceiling) and shipping a
+fix blind. The two candidate mechanisms need genuinely different lores
+sizing strategies (matching main's aspect ratio vs. scaling within a
+downscale limit), so picking one without a real repro risks a fix that
+works at one resolution and fails at the next.
+
+**Plan**: `camera_backend.py` only. Add `lores_decode_errors`/
+`last_lores_error` next to the existing `lores_frames_received`. Extract
+the guard's classification into a pure, module-level
+`_lores_error_is_expected(suspend_lores)` so it's testable without
+hardware (`Picamera2Camera` can't be constructed off-rig at all).
+`_stash_lores`'s except-block re-checks `_suspend_lores` at the moment of
+failure rather than trusting the earlier pre-`try` check, since the
+documented race is exactly `_suspend_lores` flipping concurrently in that
+window. `qt_shell.py`'s `_readout` surfaces the recorded error text once
+one exists, instead of only ever showing the generic message.
+
+**Non-goals**: no change to the lores stream's actual configuration, size,
+or when it's rebuilt — `LORES_RES` stays pinned exactly as before. No
+attempt to fix the resolution bug itself in this pass.
+
+**Render-check coverage planned**: `camera_backend.py`'s self-check drives
+the real `_stash_lores` bound method (a minimal stand-in self/request, not
+a hardware-backed `Picamera2Camera`) through a successful decode, the
+still-mode race, and a genuine failure. `qt_shell.py`'s self-check drives
+the real `_readout` method on a real `FocusPreviewWindow`/`FakeCamera`
+pair, covering both message branches — per this project's own rule
+(PHILOSOPHY.md), testing only the pure classifier in isolation would leave
+the actual wiring unverified, the same blind spot three earlier bugs here
+all shared.
+
+**Verification, planned**: self-check first (this session), then the user
+reproduces the original on-rig symptom with this build in place, so the
+real fix downstream gets designed against the real captured error text.
+
 ### Build: fit frozen Live Measure canvas to its frame, match preview letterboxing
 
 Builds the intent recorded in the prior commit — landed exactly as

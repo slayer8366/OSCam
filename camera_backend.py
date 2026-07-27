@@ -695,11 +695,16 @@ class Picamera2Camera(CameraBackend):
         # stays at 0 while the aid is on, focus_frame() is falling back to its
         # all-zero placeholder every tick (var=0 always -> the exact "score
         # 0.0000, fill 100%" symptom reported on-rig), meaning the lores
-        # stream is not reaching this callback at all -- either post_callback
-        # never fires on this Picamera2 version, or make_array("lores") is
-        # failing every time. qt_shell.py's tick surfaces this directly
-        # instead of showing a numeric reading that looks valid but is not.
+        # stream is not reaching this callback at all. qt_shell.py's tick
+        # surfaces this directly instead of showing a numeric reading that
+        # looks valid but is not.
         self.lores_frames_received = 0
+        # These two distinguish WHY it's 0: post_callback never firing at all
+        # (both stay 0) versus make_array("lores") raising on every real
+        # frame (lores_decode_errors climbs and last_lores_error holds the
+        # actual exception text) -- see _stash_lores/_classify_lores_error.
+        self.lores_decode_errors = 0
+        self.last_lores_error: Optional[str] = None
 
         self._ae_on = False           # default is a held exposure (apply_exposure_lock)
         self._awb_on = False
@@ -762,7 +767,20 @@ class Picamera2Camera(CameraBackend):
             return
         try:
             arr = request.make_array("lores")
-        except RuntimeError:
+        except RuntimeError as exc:
+            # The backstop above conflated two very different situations: a
+            # still-mode request racing this callback (expected, silent, no
+            # lores stream by design) and a preview-mode request whose lores
+            # stream IS configured but fails to decode on every single frame
+            # (a real backend defect -- e.g. libcamera rejecting this
+            # main/lores size pairing -- previously invisible, surfacing only
+            # as qt_shell.py's generic "no real lores frames received" after
+            # a silent 2s). Re-checking _suspend_lores here, right at the
+            # failure, is the same real mechanism as the guard above, just
+            # evaluated after the race window instead of before it.
+            if not _lores_error_is_expected(self._suspend_lores):
+                self.lores_decode_errors += 1
+                self.last_lores_error = str(exc)
             return
         with self._lores_lock:
             self._latest_lores = arr
@@ -1187,6 +1205,23 @@ class Picamera2Camera(CameraBackend):
 
 
 # ---------------------------------------------------------------------------
+# Pure classification for Picamera2Camera._stash_lores's RuntimeError guard.
+# Kept at module level, taking only the plain bool _stash_lores already has
+# rather than a Picamera2Camera instance, so it's testable with no hardware
+# and no request/make_array fake to build -- Picamera2Camera itself can't be
+# constructed off-rig at all (see class docstring).
+# ---------------------------------------------------------------------------
+def _lores_error_is_expected(suspend_lores: bool) -> bool:
+    """True if a RuntimeError from request.make_array("lores") is the known,
+    silent, still-mode race (_suspend_lores already True again by the time
+    the exception is caught -- see _stash_lores's own comment on why this is
+    checked here rather than trusted from the earlier guard alone). False
+    means the lores stream is configured but genuinely failing to decode,
+    which the caller must not swallow without a trace."""
+    return suspend_lores
+
+
+# ---------------------------------------------------------------------------
 # Structural self-check support (PLAN_02_camera_capability_query.md):
 # camera_backend.py is the only file in this project allowed to know
 # Picamera2/libcamera exist. Kept at module level (not nested in the
@@ -1436,5 +1471,72 @@ if __name__ == "__main__":
         print("assert_only_camera_backend_imports_picamera2 PASS: no other "
               "module imports picamera2/libcamera directly (documented "
               "exceptions aside)")
+
+        # _stash_lores's RuntimeError guard, driven through the real bound
+        # method (not the pure _lores_error_is_expected helper reimplemented
+        # standalone) with a minimal stand-in self/request, since
+        # Picamera2Camera itself can't be constructed off-rig at all. Per
+        # this project's own rule (PHILOSOPHY.md), a self-check that only
+        # exercised the pure classifier in isolation would leave the actual
+        # wiring -- does _stash_lores call it correctly, does it touch
+        # lores_decode_errors/last_lores_error only on the right branch --
+        # completely unverified, the same blind spot three earlier bugs in
+        # this project all shared.
+        import types
+
+        class _StubRequest:
+            def __init__(self, outcome, flip_suspend_on=None):
+                self._outcome = outcome
+                self._flip_suspend_on = flip_suspend_on
+
+            def get_metadata(self):
+                return {}
+
+            def make_array(self, name):
+                assert name == "lores"
+                if self._flip_suspend_on is not None:
+                    self._flip_suspend_on._suspend_lores = True
+                if isinstance(self._outcome, Exception):
+                    raise self._outcome
+                return self._outcome
+
+        def _fresh_fake_self():
+            return types.SimpleNamespace(
+                _latest_meta=None, _suspend_lores=False, _want_frame=True,
+                _lores_lock=threading.Lock(), _latest_lores=None,
+                lores_frames_received=0, lores_decode_errors=0,
+                last_lores_error=None)
+
+        fs = _fresh_fake_self()
+        real_frame = np.zeros((4, 4, 3), dtype=np.uint8)
+        Picamera2Camera._stash_lores(fs, _StubRequest(real_frame))
+        assert fs.lores_frames_received == 1 and fs._latest_lores is real_frame
+        assert fs._want_frame is False
+        assert fs.lores_decode_errors == 0 and fs.last_lores_error is None
+
+        fs = _fresh_fake_self()
+        Picamera2Camera._stash_lores(
+            fs, _StubRequest(RuntimeError("Stream 'lores' is not defined"), flip_suspend_on=fs))
+        assert fs.lores_frames_received == 0
+        assert fs.lores_decode_errors == 0 and fs.last_lores_error is None, (
+            "a still-mode race (_suspend_lores true again by the time "
+            "make_array raises) must stay silent, exactly as before this fix")
+
+        fs = _fresh_fake_self()
+        Picamera2Camera._stash_lores(fs, _StubRequest(RuntimeError("bad main/lores pairing")))
+        assert fs.lores_frames_received == 0
+        assert fs.lores_decode_errors == 1 and fs.last_lores_error == "bad main/lores pairing", (
+            "a real decode failure (never suspended) must be recorded, not "
+            "swallowed identically to the expected still-mode race")
+
+        assert _lores_error_is_expected(True) is True
+        assert _lores_error_is_expected(False) is False
+        print("_stash_lores RuntimeError classification PASS: a successful "
+              "decode still increments lores_frames_received as before; a "
+              "still-mode race (_suspend_lores flips true during the failing "
+              "make_array call) stays silent with no recorded error, exactly "
+              "the pre-fix behavior; a genuine decode failure (never "
+              "suspended) now increments lores_decode_errors and records the "
+              "real exception text instead of vanishing")
 
         print("camera_backend self-check PASS")

@@ -2904,8 +2904,21 @@ if _HAVE_QT:
                 else:
                     self._zero_lores_ticks = 0
                 if self._zero_lores_ticks > 30:   # ~2s at the default 66ms tick
-                    txt = ("no real lores frames received -- lores stream is not "
-                          "reaching the camera backend, not a scoring bug")
+                    # camera_backend.py's _stash_lores now distinguishes WHY
+                    # it's stuck at zero: lores_decode_errors climbing means
+                    # the stream is configured but make_array("lores") is
+                    # failing on every real frame (a real backend defect --
+                    # report the actual exception text), versus both staying
+                    # 0 meaning post_callback isn't reaching this backend at
+                    # all (the generic message, unchanged from before).
+                    errors = getattr(self.camera, "lores_decode_errors", 0)
+                    if errors:
+                        txt = ("lores stream configured but failing to decode "
+                              "({} time(s)): {}".format(
+                                  errors, getattr(self.camera, "last_lores_error", "")))
+                    else:
+                        txt = ("no real lores frames received -- lores stream is not "
+                              "reaching the camera backend, not a scoring bug")
                     if txt != self._last_readout:
                         self.readout.setText(txt)
                         self._last_readout = txt
@@ -6267,6 +6280,44 @@ def render_check():
               "without tagging the contender, blank stack ID refused, next "
               "plane default auto-increments, focus meter resets on a "
               "successful tag only")
+
+        # Focus aid "no real lores frames received" diagnostic (_readout,
+        # widened after the on-rig report that changing video resolution
+        # breaks the lores stream): drives the real _readout method directly
+        # (the same way _on_tag_stack above drives its own internals), not a
+        # reimplementation of its branching, since camera_backend.py's own
+        # self-check already covers _stash_lores's classification in
+        # isolation -- this is the other half, proving _readout actually
+        # reads and formats what that classification records.
+        rcam = FakeCamera(async_delay_s=0.0)
+        rwin = FocusPreviewWindow(rcam, FocusMeter())
+        try:
+            rcam.lores_frames_received = 0
+            rcam.lores_decode_errors = 0
+            rcam.last_lores_error = None
+            rwin._zero_lores_ticks = 31          # cross the >30-tick threshold in one call
+            rstate = rwin.meter.update(rcam.focus_frame())
+            rwin._readout(rstate)
+            assert rwin.readout.text() == (
+                "no real lores frames received -- lores stream is not "
+                "reaching the camera backend, not a scoring bug"), (
+                "post_callback never reaching the backend at all (both "
+                "counters at 0) must still show the original generic message")
+
+            rcam.lores_decode_errors = 3
+            rcam.last_lores_error = "bad main/lores pairing"
+            rwin._readout(rstate)
+            assert rwin.readout.text() == (
+                "lores stream configured but failing to decode "
+                "(3 time(s)): bad main/lores pairing"), (
+                "a real, recorded decode failure must surface its own error "
+                "text instead of the generic guess")
+        finally:
+            rcam.stop()
+        print("focus-aid lores diagnostic check PASS: _readout shows the "
+              "original generic message when the backend never receives a "
+              "lores frame at all, and the real captured error text once "
+              "camera_backend.py has actually recorded a decode failure")
 
         # Z-STACK AID (BUILD_LIST Tier 3 item 6): a full FakeCamera round
         # trip through the real toggle -- _start_zstack, two more

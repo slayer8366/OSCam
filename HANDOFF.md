@@ -1882,6 +1882,57 @@ session as its own checklist, not treated as done:
 - [ ] Close and reopen the Live measure box — canvas fits correctly on
       the reopened view.
 
+### Focus-aid "no real lores frames received" after changing video resolution — decode-failure guard fixed, the resolution bug itself still OPEN
+
+On-rig report: focus aid works fine at the default video resolution, but
+picking a different one in Preferences and relaunching produces "no real
+lores frames received -- lores stream is not reaching the camera backend,
+not a scoring bug" (`qt_shell.py`'s `_readout`). Read-only investigation
+found the likely mechanism (below) but a real fix needs on-rig repro data
+first — see `CHANGELOG.md`'s matching Intent/Build entries for the guard
+fix itself (what's actually landed so far).
+
+**Leading hypothesis, not yet confirmed on real hardware**: `LORES_RES`
+(the focus aid's lores stream size) is pinned at construction and never
+changes (`camera_backend.py`'s own comment on `Picamera2Camera.__init__`
+explains this was deliberate — lores does double duty as the recording
+widget's display source too, and the video-resolution menu was scoped to
+"the RECORDED file's size", not this). But "Video resolution" in
+Preferences only overrides the **main** stream (`video_resolution_kwargs()`,
+`qt_shell.py`), and `video_resolutions` itself is deliberately built from
+the IMX477's raw, unfiltered sensor modes (`camera_backend.py`'s own
+`get_capabilities()`, "do not filter this list to a 'sensible' subset") —
+including non-4:3 sizes. Pairing an arbitrary main size against a lores
+stream nobody validated against it is a plausible way for libcamera to
+accept the config at `configure()` time but then fail to actually deliver
+lores frames at capture time.
+
+**Fixed so far (self-check-verified, NOT yet on-rig)**: the diagnostic
+pathway itself was broken — `_stash_lores`'s `RuntimeError` guard around
+`request.make_array("lores")` couldn't tell "still-mode request, no lores
+stream by design" (expected, silent) apart from "lores IS configured but
+failing on every frame" (a real defect), so any genuine failure vanished
+as silently as the expected case, with zero information about why. Now
+`Picamera2Camera.lores_decode_errors`/`last_lores_error` capture the real
+count and exception text when a failure isn't the known still-mode race
+(see `_lores_error_is_expected`), and `qt_shell.py`'s `_readout` reports
+that real text once it exists instead of only ever showing the generic
+message.
+
+**Next, explicitly not done yet**: reproduce the original symptom on-rig
+with this build in place, to get the real libcamera error string instead
+of guessing. That string decides the actual fix's shape — an aspect-ratio
+mismatch needs lores resized to match main's aspect ratio; an ISP
+downscale-ratio ceiling needs lores sized relative to main within that
+limit; these are different implementations, not interchangeable. **Also
+flagged for whoever writes that fix's own intent doc** (not decided now):
+`video_resolutions` being built from unfiltered raw sensor modes may
+itself be part of the problem — even with lores correctly reconfigured,
+some main/lores pairings might be genuinely undeliverable, in which case
+the menu shouldn't offer them at all. Whether the eventual fix
+reconfigures lores, filters the menu, or both is a call the repro should
+inform, not a guess made ahead of it.
+
 ## Things that will bite you if you don't know them
 
 **`qt_shell.py`'s `render_check()` now monkeypatches `PROFILE_PATH` for
