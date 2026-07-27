@@ -66,7 +66,11 @@ extraction, phase 1 (Tier 3 item 1), is now done**: `OUT_ROOT`,
 `gallery.py`, `wizard_pages.py`, and `process_wizard.py` all reference
 them as `provenance.X` (never a `from provenance import X` — see
 `provenance.py`'s own comment on why). All five modules' own
-`--render-check` pass. Both Tier 0 investigations are also now done (see their own
+`--render-check` pass. **`provenance.py` phase 2 (store-mechanics
+migration for `calibrate.py`/`ca_measure.py`/`annotations.py`) has its
+intent recorded but is not yet built** — see this file's own
+"Store-mechanics migration" section further down for the design (a new
+leaf module, `json_store.py`) and the decided migration order. Both Tier 0 investigations are also now done (see their own
 note below) — the second one (CA wizard's live-capture path still
 building its own independent camera) is what still gates the Measure-menu
 reorg (item 3). **Casual Mode (Tier 3 item 2) is now done** — see the
@@ -439,7 +443,8 @@ twice via a different mechanism):
   behavior, calling into `provenance.*` as supporting infrastructure.
 - Not in this pass: phase 2 (store-mechanics migration for `calibrate.py`/
   `annotations.py`/`ca_measure.py`) and Casual Mode (item 2) — both
-  explicitly depend on this landing first.
+  explicitly depend on this landing first. Phase 2's intent is now
+  recorded — see this file's "Store-mechanics migration" section below.
 
 **Tier 0 investigation results** (both now answered):
 1. `camera_backend.py` is NOT session-aware — see above.
@@ -1881,6 +1886,75 @@ session as its own checklist, not treated as done:
       preserved.
 - [ ] Close and reopen the Live measure box — canvas fits correctly on
       the reopened view.
+
+**Store-mechanics migration (`BUILD_LIST` phase 2) — intent recorded, not
+yet built.** `calibrate.py`'s calibration store and `ca_measure.py`'s CA
+store are the same code twice over (objective-keyed, chronological entry
+lists, `entry_id`/`supersedes` chaining, mkdir-then-atomic-write).
+`annotations.py`'s store is a different shape — keyed by `pixel_sha256`,
+one record per hash with an ever-growing `marks` list, no supersedes chain
+at all — and shares only the outer atomic-write mechanic with the other
+two. `provenance.py`'s `save_profile`/`load_profile` is a fourth instance
+of that same outer mechanic.
+
+**Decision**: two primitives in a new leaf module, `json_store.py` — not
+folded into `provenance.py`, even though `provenance.py` already has one
+instance of the pattern. `atomic_write_json`/`load_json_or_default` (the
+generic mechanic — `provenance.py`, `calibrate.py`, `ca_measure.py`,
+`annotations.py`, four consumers) and `append_to_history`/`current_entry`
+(the objective-keyed supersedes-chain mechanic, pure/no I/O — `calibrate.py`
+and `ca_measure.py` only; `annotations.py` never adopts this half). The
+test applied is the one phase 1 already established for `FULL_MODE_LBL`:
+single-consumer code tied to `Session.write` belongs in the governor
+module, but a primitive with four consumers unrelated to camera sessions
+is a utility library, not governor content.
+
+Three constraints baked into the design before any code is written:
+- **Path-agnostic, non-negotiable**: every path is a parameter, never a
+  constant the leaf module imports or defaults itself — otherwise it
+  reintroduces the exact second-binding failure the `provenance.OUT_ROOT`/
+  `PROFILE_PATH` by-attribute rule exists to prevent (`render_check()`
+  reassigns `PROFILE_PATH` at runtime; that only works because
+  `save_profile()` reads the module global at call time).
+- **`mkdir` folds into `atomic_write_json`** — all four current call sites
+  repeat it immediately before their own write; leaving it outside the
+  primitive is a gap a future caller can forget, same class as the
+  `green_plane.tif` mkdir bug from the Export/Publish step.
+- **`entry_id` generation moves into the leaf** — `uuid` leaves
+  `calibrate.py`'s/`ca_measure.py`'s own call sites; saving assigns the id
+  now, which stops being visible at the call site, so the primitive's own
+  docstring has to say so explicitly.
+
+Import style is hard (not the optional `debayer`/`focus`/`wizard_pages`
+guarded pattern) via the same try-relative-then-bare style `ca_lib`
+already uses — `json_store.py` is stdlib-only, so this doesn't cost
+`calibrate.py` its "runs standalone" property. `json_store.py` gets its
+own `--render-check`: the supersedes-chain half is pure and fully covered
+with no disk I/O; the atomic-write half gets a real temp-path round trip.
+Documented explicitly as a known gap: nothing anywhere in this project's
+suite covers concurrent-writer behavior (`save_profile()`'s own docstring
+already says so) — the primitive's crash-safety justification stays
+unproven by self-check, single-writer only.
+
+**Migration order**: (0) `json_store.py` itself plus re-pointing
+`provenance.py`'s `save_profile`/`load_profile` at it, behavior-neutral
+and verified before touching any of the three named modules; (1)
+`calibrate.py` (most upstream); (2) `ca_measure.py` (identical shape); (3)
+`annotations.py` last (smaller change, atomic-write half only). Each
+module's existing `--render-check` keeps exercising the real
+`save_calibration`/`save_ca_calibration`/`save_mark` call path throughout
+— no test relocation needed.
+
+**Not in this pass**: `plane_cache.py`, `measure.py`'s `session.json`
+write, and `qt_shell.py`'s `PREFS_PATH` write duplicate the same atomic
+pattern but aren't in `BUILD_LIST`'s phase 2 scope. `measure.py`'s
+`DEFAULT_CAPTURES_ROOT` (see the `MeasureWindow` extraction step 2 note
+above) stays parked too — this series is scoped tightly to the
+store-mechanics consolidation alone, since the save paths it touches are
+exactly where this project's two real data-loss incidents happened
+(`PROFILE_PATH` overwrite, `annotations.json` pollution). Full design and
+reasoning in `CHANGELOG.md`'s matching "Intent: Store-mechanics migration"
+entry.
 
 ### Focus-aid "no real lores frames received" after changing video resolution — decode-failure guard fixed, the resolution bug itself still OPEN
 

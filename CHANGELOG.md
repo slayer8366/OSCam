@@ -585,6 +585,126 @@ on record" note) — nothing to fix there.
 See `HANDOFF.md`'s `MeasureWindow` extraction section for the full step-3
 account.
 
+### Intent: Store-mechanics migration (`BUILD_LIST` phase 2 — `calibrate.py` / `ca_measure.py` / `annotations.py`)
+
+Recording intent before building, per the project's two-phase documentation
+rule. This is `BUILD_LIST`'s own phase 2 (store-mechanics migration for
+`calibrate.py`/`annotations.py`/`ca_measure.py`), named and deliberately
+deferred when `provenance.py`'s phase 1 landed — see this file's own
+"`provenance.py` extraction, phase 1" entry and its "not in this pass" note.
+
+**Read all three modules' real store code before drafting**, rather than
+speccing the split from the phase-1 description alone — worth doing given
+what it found. `calibrate.py`'s calibration store (`load_calibrations`/
+`current_calibration`/`save_calibration`) and `ca_measure.py`'s CA store
+(`load_ca_calibrations`/`current_ca_calibration`/`save_ca_calibration`) are
+the same code twice over: an objective-keyed dict of chronological entry
+lists, `entry_id`/`supersedes` chaining, mkdir-then-atomic-write.
+`annotations.py`'s store is a genuinely different shape: keyed by
+`pixel_sha256`, one record per hash holding an ever-growing `marks` list,
+no `entry_id`/`supersedes` concept at all — marks accumulate, they never
+supersede each other. It shares only the outer atomic-write mechanic with
+the other two. `provenance.py`'s own `save_profile`/`load_profile` (see
+the 2026-07-21 "`save_profile()` to write atomically" fix) is a fourth
+instance of that same outer mechanic.
+
+**Decision: two primitives, in a new leaf module**, not folded into
+`provenance.py` despite `provenance.py` already holding one instance of the
+pattern. The test applied is the same one that justified moving
+`FULL_MODE_LBL`/`DENOISE`/`SHARPNESS` into `provenance.py` during phase 1:
+single-consumer code tied to `Session.write` belongs in the governor
+module; a primitive with four consumers (`provenance.py`, `calibrate.py`,
+`ca_measure.py`, `annotations.py`) that have nothing to do with camera
+sessions is a utility library, not governor content. New module:
+`json_store.py` — matches the project's existing small-leaf-module naming
+(`pixel_hash.py`, `ca_lib.py`, `debayer.py`, `focus.py`).
+
+Two primitives:
+- `atomic_write_json(path, data)` / `load_json_or_default(path, default)`
+  — the generic mechanic, all four consumers.
+- `append_to_history(store, key, entry)` / `current_entry(store, key)` —
+  the objective-keyed supersedes-chain mechanic, pure (no I/O),
+  `calibrate.py` and `ca_measure.py` only. `annotations.py` never adopts
+  this half; its append model has no supersedes chain to give it.
+
+**Path-agnostic by design, non-negotiable.** The leaf module takes every
+path as a parameter and never imports, holds, or defaults a path constant
+of its own. Same by-attribute discipline `provenance.py`'s own
+`OUT_ROOT`/`PROFILE_PATH` comment already documents: `qt_shell.py`'s
+`render_check()` reassigns `provenance.PROFILE_PATH` at runtime for test
+isolation, and that only keeps working today because `save_profile()`
+reads the name from module globals at call time, not a captured default. A
+path constant living in the leaf module would reintroduce exactly the
+second-binding failure mode the attribute rule exists to prevent.
+
+**`mkdir` folds into `atomic_write_json`.** All four current call sites
+repeat `PATH.parent.mkdir(parents=True, exist_ok=True)` immediately before
+their own write — a fourth duplicated line, and leaving it outside the
+primitive means a future caller can forget it, the same class of gap as
+the `green_plane.tif` mkdir bug from the Export/Publish step.
+
+**`entry_id` generation moves into the leaf.** `append_to_history` assigns
+`entry_id`/`supersedes` itself; `uuid` leaves `calibrate.py`'s and
+`ca_measure.py`'s own call sites. Flagged explicitly since this stops
+being visible at the call site: whoever reads `save_calibration`/
+`save_ca_calibration` after this migration needs the primitive's own
+docstring, not the call site, to learn that saving assigns the id.
+
+**Import style: hard, not guarded.** `json_store.py` is stdlib-only (no
+PyQt5, no numpy) and safe to hard-import everywhere via the same
+try-relative-then-bare pattern `ca_measure.py`'s own `ca_lib` import
+already uses (package-vs-script resolution only, not an optionality guard
+like the existing `debayer`/`focus`/`wizard_pages` imports). This
+preserves `calibrate.py`'s "runs standalone" property — a tiny leaf util
+isn't the capture-session machinery its own module docstring means by
+that claim.
+
+**`json_store.py` gets its own `--render-check`, wired into the sweep.**
+`append_to_history`/`current_entry` are pure and fully testable with no
+disk I/O; `atomic_write_json`/`load_json_or_default` get a real temp-path
+round trip (missing file → default, corrupt file → default, no leftover
+`.tmp` after a write). Noted explicitly in the module docstring:
+concurrent-writer behavior is still not covered by anything, per
+`save_profile()`'s own docstring caveat about the two-process race that
+once corrupted the real profile.json — the primitive's core justification
+(crash-safety) remains unproven by the suite; only the single-writer path
+is verified.
+
+**Migration order**, decided deliberately rather than left implicit:
+0. `json_store.py` itself, plus `provenance.py`'s `save_profile`/
+   `load_profile` re-pointed at it (zero behavior change — `provenance.py
+   --render-check` must still pass unmodified). Done as its own
+   trivially-verifiable step before any of the three named modules move,
+   so the primitive's design isn't entangled with the first real
+   migration.
+1. `calibrate.py` — most upstream; both `annotations.py` and
+   `ca_measure.py` already import from it.
+2. `ca_measure.py` — identical store shape to `calibrate.py`, low risk.
+3. `annotations.py` last — only ever adopts the atomic-write half, not
+   the supersedes-chain half, a genuinely smaller change.
+
+Each module's own existing `--render-check` block keeps testing through
+its real call path (`save_calibration`, `save_ca_calibration`,
+`save_mark`) — this migration changes what's behind those functions, not
+the tests that exercise them, so no test relocation is needed at any of
+these three steps.
+
+**Not in this pass**: `plane_cache.py`, `measure.py`'s `session.json`
+write, and `qt_shell.py`'s `PREFS_PATH` write all use the identical atomic
+temp-file/`os.replace` pattern too, but none are named in `BUILD_LIST`'s
+phase 2 scope — left untouched, flagged here rather than silently ignored.
+Also not in this pass: `measure.py`'s `DEFAULT_CAPTURES_ROOT` (hand-
+duplicates `provenance.OUT_ROOT`, flagged as its own open follow-up during
+`MeasureWindow` extraction step 2) — explicitly parked, to keep this
+series' risk scoped to the store-mechanics consolidation alone. The save
+paths this series touches are exactly where the two real data-loss
+incidents in this project's history happened (the `PROFILE_PATH`
+overwrite, the `annotations.json` pollution), so it carries no unrelated
+changes.
+
+See `HANDOFF.md`'s new "Store-mechanics migration" section for the full
+account.
+
 ### Fix: real-store pollution in `measure.py`'s pre-existing status-line check
 
 Follow-up to the "found, not fixed" note in the Build entry below, pushed
