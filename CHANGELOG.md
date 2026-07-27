@@ -7,6 +7,20 @@ this file is the historical record of what happened and why.
 
 ## 2026-07-26
 
+### Fix: focus-aid readout label no longer clips mid-word
+
+The lores decode-failure diagnostic text (commit below) got truncated
+mid-word on the actual tablet screen during the on-rig run that produced
+it — cost a full rig run before the cut-off tail (`(lores M...`) could be
+read at all. Cause: `qt_shell.py`'s `self.readout` `QLabel` never called
+`setWordWrap(True)`, unlike every other status label in the file
+(`capture_status`, `ruler_status`, the wizard note labels), and sits in a
+fixed-width (`panel.setMinimumWidth(250)`) splitter panel that won't grow
+to fit it — so Qt just clips wherever the pixel width runs out.
+
+**Fix**: `qt_shell.py`. One line: `self.readout.setWordWrap(True)`.
+Full `--render-check` sweep still passes, no regressions.
+
 ### Fix: lores decode-failure diagnostic now captures the active `camera_configuration()`, not just the error text
 
 Follow-up to the commit below (`f4af4fd`), same sitting, before the on-rig

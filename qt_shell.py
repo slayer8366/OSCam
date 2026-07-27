@@ -2494,6 +2494,7 @@ if _HAVE_QT:
             self._live_measure_canvas = _LiveMeasureCanvas(self)
 
             self.readout = QLabel("focus aid off, press F")
+            self.readout.setWordWrap(True)
             self.capture_status = QLabel("")            # capture state lives here, kept
                                                           # apart from the focus readout
             self.capture_btn = QPushButton("Capture")
