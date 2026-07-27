@@ -21,6 +21,42 @@ to fit it — so Qt just clips wherever the pixel width runs out.
 **Fix**: `qt_shell.py`. One line: `self.readout.setWordWrap(True)`.
 Full `--render-check` sweep still passes, no regressions.
 
+### Diagnostic: two-point `camera_configuration()` dump in `Picamera2Camera.__init__`, to localize the lores-drop
+
+Follow-up to the commit below, same on-rig sitting. That run's screenshot
+confirmed a genuine lores decode failure (418 counted, not the still-mode
+race — `_lores_error_is_expected` rules that out) even at the **default**
+video resolution (`gui_prefs.json`'s `video_resolution` was `null`, so
+`preview_res` used its own `PREVIEW_RES=(1332,990)` default — no
+override in play). Yet the captured active config read `main=640x480` —
+exactly `LORES_RES`'s own size, not the `1332x990` actually requested —
+with `lores` MISSING and an unrequested `raw=4056x3040` present. That
+kills the resolution-pairing hypothesis the commit below's own `HANDOFF.md`
+section had named — it happens at the default resolution too. Two
+mechanisms remain, needing different fixes: libcamera's negotiation
+silently dropping lores during `configure()` (favors the RGB888/YUV420
+shakeout `__init__`'s own comment already names), versus streams being
+reported positionally and `main` itself being the stream actually lost,
+with `lores` surviving under the `main` label (under which reformatting
+lores would fix nothing). Dropping one stream shouldn't resize another,
+so the observed `main=640x480` fits the second theory better, but nothing
+here proves it yet.
+
+**Fix**: `camera_backend.py`. Two `print(..., file=sys.stderr)` calls,
+both routed through the existing `_summarize_camera_configuration` helper
+(already safe/plain — no raw libcamera objects held or printed) — one
+immediately after `create_preview_configuration()` returns, one
+immediately after `configure()` applies it. If `lores` is already absent
+from the first dump, the loss happens in Picamera2's own construction,
+before libcamera negotiation ever runs. If it's present in the first and
+gone from the second, libcamera's negotiation is where it's dropped.
+Temporary/diagnostic only, not part of the class's real behavior — no
+self-check changes, since off-rig `FakeCamera`/self-checks never
+construct `Picamera2Camera` at all (confirmed: full self-check and
+`--render-check` sweeps both still pass unchanged).
+
+**Not yet run on-rig.**
+
 ### Fix: lores decode-failure diagnostic now captures the active `camera_configuration()`, not just the error text
 
 Follow-up to the commit below (`f4af4fd`), same sitting, before the on-rig

@@ -2003,20 +2003,51 @@ configuration()` silently dropped `lores`) from anything else — a present
 `lores` key would rule candidate 1 out entirely, which the error text by
 itself never could.
 
-**Next, explicitly not done yet**: reproduce the original symptom on-rig
-with this build in place, to get the real libcamera error string AND the
-active config's own `lores` presence, instead of guessing. That decides
-the actual fix's shape — an aspect-ratio mismatch needs lores resized to
-match main's aspect ratio; an ISP downscale-ratio ceiling needs lores
-sized relative to main within that limit; these are different
-implementations, not interchangeable. **Also
-flagged for whoever writes that fix's own intent doc** (not decided now):
-`video_resolutions` being built from unfiltered raw sensor modes may
-itself be part of the problem — even with lores correctly reconfigured,
-some main/lores pairings might be genuinely undeliverable, in which case
-the menu shouldn't offer them at all. Whether the eventual fix
-reconfigures lores, filters the menu, or both is a call the repro should
-inform, not a guess made ahead of it.
+**On-rig run happened (2026-07-26), and it changes the diagnosis**: the
+screenshot showed a genuine failure (418 counted, `_lores_error_is_expected`
+confirms this is not the still-mode race) at the **default** video
+resolution — `gui_prefs.json`'s `video_resolution` was `null`, so
+`preview_res` used its own `PREVIEW_RES=(1332,990)` default, no override
+in play. Yet the captured active config read `main=640x480` — exactly
+`LORES_RES`'s own size, not the `1332x990` actually requested — with
+`lores` MISSING, plus an unrequested `raw=4056x3040` present (`_preview_cfg`
+as written never asks for a raw plane at all). **This kills the
+resolution-pairing hypothesis above outright**: it happens at the default
+resolution too, so resolution was never the variable.
+
+Two competing mechanisms remain, needing different fixes:
+1. libcamera's own config validation rejects the requested lores
+   format/size during negotiation and silently drops it — the RGB888
+   vs. YUV420 shakeout `__init__`'s own comment already names as a
+   contingency.
+2. Streams are reported **positionally**, and `main` itself was the
+   stream actually lost, with `lores` surviving and inheriting the
+   `main` label in the reported config — under which reformatting lores
+   fixes nothing, because lores was never the problem.
+
+Dropping one stream shouldn't resize another, so (2) fits the observed
+`main=640x480` better than (1) does; the unexplained `raw` entry doesn't
+discriminate between them on its own (Picamera2 configs can carry an
+auto-selected raw sensor mode even when not explicitly requested).
+
+**Next, explicitly not done yet**: reproduce on-rig again with the new
+diagnostic dump in place (see `CHANGELOG.md`'s matching entry) — two
+`camera_configuration()` snapshots, one right after
+`create_preview_configuration()` returns and one right after
+`configure()` applies it. If `lores` is already absent from the first,
+the loss is in Picamera2's own construction, before libcamera negotiation
+ever runs (favors nothing formatted yet — a different bug than either
+candidate above). If it's present in the first and gone from the second,
+libcamera's negotiation is where it's dropped (candidate 1). That result
+decides which fix to actually write — do not swap lores to YUV420 before
+this discriminates, since candidate 2 would make that change a no-op.
+**Also flagged for whoever writes that fix's own intent doc** (not
+decided now): `video_resolutions` being built from unfiltered raw sensor
+modes may itself be part of the problem — even with lores correctly
+reconfigured, some main/lores pairings might be genuinely undeliverable,
+in which case the menu shouldn't offer them at all. Whether the eventual
+fix reconfigures lores, filters the menu, or both is a call the repro
+should inform, not a guess made ahead of it.
 
 ## Things that will bite you if you don't know them
 

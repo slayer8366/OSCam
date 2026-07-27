@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import abc
 import re
+import sys
 import threading
 from dataclasses import dataclass
 from datetime import datetime
@@ -657,6 +658,15 @@ class Picamera2Camera(CameraBackend):
             # reconfigure the camera at all when recording starts or stops.
             buffer_count=6,
         )
+        # DIAGNOSTIC (temporary, lores decode-failure investigation): dumps the
+        # config at the two points where it could diverge from what was
+        # requested -- right after create_preview_configuration() builds it,
+        # and again after configure() actually applies it -- so a missing
+        # lores stream (or a resized main) can be pinned to construction vs.
+        # libcamera negotiation instead of guessed at from symptoms alone.
+        print("DIAGNOSTIC: preview config as returned by create_preview_configuration(): {}"
+              .format(_summarize_camera_configuration(self._preview_cfg)), file=sys.stderr)
+
         # still config carries the raw plane, as capture.py does, so capture_still
         # can save a DNG.
         self._still_cfg = self._picam2.create_still_configuration(
@@ -676,6 +686,14 @@ class Picamera2Camera(CameraBackend):
         self._video_res = preview_res
 
         self._picam2.configure(self._preview_cfg)
+
+        # DIAGNOSTIC (temporary, see the matching print above): the config as
+        # libcamera actually settled on, post-negotiation. Same shape as the
+        # print above by construction, so a diff between the two pinpoints
+        # whether a stream was lost during construction or during configure().
+        print("DIAGNOSTIC: camera_configuration() after configure(): {}"
+              .format(_summarize_camera_configuration(self._picam2.camera_configuration())),
+              file=sys.stderr)
 
         # ON-RIG: confirm the QGlPicamera2 constructor kwargs on your version.
         self.widget = QGlPicamera2(self._picam2,
