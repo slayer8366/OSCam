@@ -1933,15 +1933,43 @@ isn't clean. Different mechanism from this one; this fix does not close
 it. An earlier session's report of "the second bug is probably a phantom"
 was itself wrong per the user — real, just not yet root-caused.
 
+**Correction pointer — placeholder, needs the actual section name**: this
+is the real root cause of the on-rig "focus aid failure" symptom (score
+stuck at 0.0000, fill stuck at 100%, `lores_frames_received` stuck at 0).
+A separate, earlier fix in this investigation — described as removing a
+live control that reported a plausible-looking reading while lying about
+what it was actually measuring — is real, fixed a genuine defect, and is
+not reverted by this change. But per the user, that fix did not and could
+not close this symptom; it's a different mechanism. **TODO**: this
+paragraph should name that fix's own HANDOFF/CHANGELOG entry directly (so
+a future reader who finds it first doesn't mistake it for the resolution
+here) — not yet identified with confidence in this repo's own commit
+history from this session, flagged back to the user rather than guessed.
+
 **Verification**: `camera_backend.py`'s self-check (`FakeCamera`-only)
 still passes after the reorder — see "Full `--render-check` sweep" above.
 The ordering bug itself is only reachable through `Picamera2Camera`, which
 needs a real `Picamera2()` plus a `QGlPicamera2` widget to construct at
-all, so this fix is **not yet confirmed on-rig** — carried forward as an
-open item: re-run the same live-measure freeze that produced the original
-failure log and confirm `lores` is present and `main`/`raw` match
-`self._preview_cfg` (not the probe's leftover config) immediately after
-construction, before `start()` is even called.
+all, so this fix is **not yet confirmed on-rig**. No new tooling needed
+for that confirmation — Picamera2's own logger already prints the active
+stream configuration at construction and on every `configure()` call
+(this is literally the log the original failure and the diagnostic sweep
+above were both read from); launching the app and reading that existing
+output is the whole check:
+- [ ] At default `PREVIEW_RES`/`LORES_RES`: confirm the post-construction
+      log shows `lores` present at `LORES_RES` and `main` at
+      `PREVIEW_RES` — not the probe's leftover config (small placeholder
+      main, no lores, an unrequested raw format) — before `start()` is
+      even called.
+- [ ] **Also test at the non-default video resolution currently
+      persisted in prefs, `[2028, 1080]`** — this is the exact
+      combination the original failure report came from, and the
+      construction-order bug and the `_readout` diagnostic fix above were
+      both in flight against overlapping symptoms at the time, so
+      confirming this fix at that specific worst-case combination is
+      cheaper than reasoning about which of the two fixes covered what.
+      Same check: `lores` present, `main`/`raw` match `self._preview_cfg`,
+      not the probe's leftover state.
 
 ## Things that will bite you if you don't know them
 
