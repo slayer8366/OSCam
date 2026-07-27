@@ -639,6 +639,32 @@ class Picamera2Camera(CameraBackend):
         self._lores_res = lores_res
         self._full_res = full_res
 
+        # Capability cache (Fix: Preferences dialog crash on
+        # get_capabilities()): self._picam2.sensor_modes is not a passive
+        # lookup -- reading it internally calls Picamera2.configure() once
+        # per sensor mode to enumerate them, sweeping the camera through
+        # every mode in turn and leaving it sitting in whatever the LAST
+        # swept mode was (observed on-rig: main pinned at a small
+        # placeholder size in an XBGR8888 format we never asked for, raw at
+        # the final swept mode's own size/format, no lores stream at all --
+        # sensor_modes never requests one). Nothing about that probe
+        # re-applies our real config afterward. It MUST run here, before
+        # self._preview_cfg is built and applied below via
+        # self._picam2.configure() -- if it ran after (as it originally did,
+        # at the end of __init__), the real preview config would be
+        # clobbered by the probe's own leftover state, and neither start()
+        # nor the QGlPicamera2 widget construction would ever see it, since
+        # nothing re-applies self._preview_cfg once the probe has run.
+        # sensor_modes describes fixed hardware capability -- it cannot
+        # change between construction and any later point in this process --
+        # so it is queried exactly once, HERE, and cached. get_capabilities()
+        # below returns this cached value on every later call and never
+        # touches _picam2 again (also why it is safe from the "camera must
+        # be stopped before configuring" crash a live query after start()
+        # would otherwise hit -- see get_capabilities()'s own docstring).
+        self._capabilities = None
+        self._capabilities = self.get_capabilities()
+
         # ON-RIG: RGB lores is Pi 5 + recent libcamera. If unavailable, set the
         # format to "YUV420" and source to "luma" (the score then runs on luma).
         # Some stacks only surface an unsupported format at configure/start, so
@@ -708,21 +734,6 @@ class Picamera2Camera(CameraBackend):
         # Video recording state (see start_recording/stop_recording below).
         self._encoder = None
         self._recording_path: Optional[Path] = None
-
-        # Capability cache (Fix: Preferences dialog crash on
-        # get_capabilities()): self._picam2.sensor_modes is not a passive
-        # lookup -- reading it internally calls Picamera2.configure(), which
-        # raises RuntimeError if the camera is already running. By the time a
-        # user opens Preferences, start() (called by the GUI right after
-        # construction) has already made the camera running, so a live query
-        # at that point always crashes. sensor_modes describes fixed hardware
-        # capability -- it cannot change between construction and any later
-        # point in this process -- so it is queried exactly once, HERE, while
-        # construction is still in progress and before start() can possibly
-        # have been called, and cached. get_capabilities() below returns this
-        # cached value on every later call and never touches _picam2 again.
-        self._capabilities = None
-        self._capabilities = self.get_capabilities()
 
     def start(self) -> None:
         # ON-RIG: confirm make_array("lores") works in post_callback on your version.
