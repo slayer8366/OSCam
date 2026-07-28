@@ -129,13 +129,39 @@ what makes every other module testable with no hardware attached — and
 it's currently intact, which was confirmed rather than assumed. Don't
 be the change that erodes it.
 
-Stated more strictly, because a later decision hardened it:
-`camera_backend.py` is a *driver*. It is the only file in this project
-that may know what an IMX477 is, or what Picamera2 is. Every other
-module must run unchanged against a different sensor with a different
-driver dropped in its place. Capability enumeration is a
-driver-implemented query returning generic structures; no Picamera2 or
-libcamera type may cross that boundary.
+Stated more strictly, because a later decision hardened it, then revised
+again when `PRIORITY_click_mapping_fix.md` outgrew the original wording:
+`camera_backend.py` is a *driver*. Sensor-specific knowledge — crop
+geometry, mode tables, anything that would need to change for a different
+sensor — lives in a sensor-named module matching the hardware's own
+reported model exactly (e.g. `imx477.py`, named to match
+`Picamera2().camera_properties['Model']`), never as constants scattered
+elsewhere and never encoded in `camera_backend.py` itself. Those
+sensor-profile modules may be imported ONLY by `camera_backend.py`, which
+carries no sensor-specific constants of its own and resolves the right
+one at runtime by the hardware's own reported name, never a hardcoded
+mapping table. `camera_backend.py` is also still the only file in this
+project that may import Picamera2/libcamera directly, or let a
+libcamera-typed value cross the seam — that half is unchanged. Every
+other module must run unchanged against a different sensor with a
+different driver (and a different sensor-profile module) dropped in its
+place. Capability enumeration is a driver-implemented query returning
+generic structures; no Picamera2 or libcamera type may cross that
+boundary.
+
+Both halves stay checkable, not just asserted in prose — that property is
+the reason this rule can be trusted rather than quietly outgrown again.
+`camera_backend.py`'s own self-check runs
+`assert_only_camera_backend_imports_picamera2` (no other file may import
+`picamera2`/`libcamera`) and `assert_only_camera_backend_imports_sensor_
+profiles` (no other file may import a sensor-profile module — discovered
+by shape, a module exposing `FULL_ARRAY_SIZE`/`crop_for_size`, not a
+maintained list, so a future `imx519.py` is covered the moment it exists).
+Add a second sensor by dropping in its own profile module next to
+`imx477.py` and teaching `camera_backend.py` to resolve it by name; if
+you ever find yourself importing a sensor-profile module from anywhere
+else, that is exactly the design problem this section exists to catch,
+not a rule to route around.
 
 **Pure logic is Qt-free and camera-free.** Anything that isn't obviously
 GUI wiring belongs in a module-level, testable section, not inline in a

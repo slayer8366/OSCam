@@ -511,19 +511,47 @@ LIVE_MEASURE_HIT_RADIUS_PX = 14   # right-click hit-test grab radius, in VIEW-sp
                                   # same regardless of the canvas's own zoom level
 
 
-def native_point_from_preview_click(px, py, disp_rect, green_plane_res):
+def native_point_from_preview_click(px, py, disp_rect, preview_crop,
+                                     still_crop, green_plane_res):
     """A preview-widget click (px, py) converted to the frozen green plane's
-    own native pixel coordinates -- the exact "preview-to-sensor" mapping
-    PLAN_05 calls for. Reuses frac_from_point's existing letterboxing-aware
-    fraction (never a naive width/height ratio, which would be wrong the
-    moment the widget's aspect differs from the sensor's), then scales that
-    fraction into green_plane_res. This is what makes the freeze-triggering
-    click usable as the shape tool's own first point, not a throwaway
-    trigger click -- see PLAN_05's own reasoning for why an exact
-    conversion of the RIGHT input (the click that happened) is fine, even
-    though the live preview itself is display-referred."""
+    own native pixel coordinates.
+
+    PRIORITY_click_mapping_fix.md: a single letterboxing-aware fraction
+    (the old body of this function) is only correct if the preview stream
+    and the green plane cover the SAME field of view. They don't -- the
+    preview comes from preview_res, the green plane from full_res, and
+    those are two different sensor modes with two different crop
+    rectangles read off the full sensor array (confirmed on-rig: a stage
+    micrometer showed 19 divisions in the live preview but 27 in the
+    frozen plane). A scale factor can't express that gap; the fix is the
+    full three-step chain:
+
+      1. widget point -> fraction of the displayed preview stream
+         (frac_from_point's existing letterboxing-aware math, unchanged).
+      2. fraction -> full-sensor-array pixel coordinate, via the PREVIEW
+         mode's own crop rectangle (preview_crop, an (x, y, w, h) tuple in
+         full-array units -- origin and extent, since an off-centre crop
+         can't be expressed as a ratio).
+      3. sensor coordinate -> green-plane pixel coordinate, via the STILL
+         mode's crop rectangle (still_crop, same shape) and green_plane_res.
+
+    Stays a pure, Qt-free function taking both crop rectangles as
+    arguments (never looking them up itself) -- testable in
+    --render-check with no hardware. When preview_crop == still_crop (the
+    identity case: both views share a crop, e.g. testing against the
+    same mode twice), step 2 and step 3 cancel and this reduces to
+    exactly the old single-fraction formula -- the fix provably does not
+    change the already-correct case.
+
+    green_plane_res is the green plane's own resolution, i.e. HALF
+    still_crop's (w, h) for a Bayer sensor's green channel -- but this
+    function never assumes that ratio; it's passed explicitly."""
     fx, fy = frac_from_point(px, py, disp_rect)
-    return fx * green_plane_res[0], fy * green_plane_res[1]
+    px_full = preview_crop[0] + fx * preview_crop[2]
+    py_full = preview_crop[1] + fy * preview_crop[3]
+    sx = (px_full - still_crop[0]) / still_crop[2] if still_crop[2] > 0 else 0.0
+    sy = (py_full - still_crop[1]) / still_crop[3] if still_crop[3] > 0 else 0.0
+    return sx * green_plane_res[0], sy * green_plane_res[1]
 
 
 def _live_measure_tool_hint(name):
@@ -3274,8 +3302,18 @@ if _HAVE_QT:
                     if self._live_measure_panel is not None:
                         self._live_measure_panel.set_status(_live_measure_tool_hint(None))
                     return True
+                # PRIORITY_click_mapping_fix.md: the preview and the green
+                # plane are different sensor modes with different crop
+                # rectangles -- never GREEN_PLANE_RES/PREVIEW_RES module
+                # constants here, always the camera's OWN actual configured
+                # sizes (general across a user-set preview_res, item 2).
+                preview_res = self.camera.preview_resolution()
+                still_res = self.camera.capture_resolution()
+                preview_crop = self.camera.sensor_crop_for_size(preview_res)
+                still_crop = self.camera.sensor_crop_for_size(still_res)
                 native = native_point_from_preview_click(
-                    ev.x(), ev.y(), self._disp_rect(), GREEN_PLANE_RES)
+                    ev.x(), ev.y(), self._disp_rect(),
+                    preview_crop, still_crop, GREEN_PLANE_RES)
                 self._live_measure_freeze(native)
             return True
 
@@ -7269,13 +7307,51 @@ def render_check():
             # values, not just "a mark exists" -- this is the claim the whole
             # freeze design rests on. An arbitrary fixed disp_rect makes a
             # hand-computed expectation easy to check independently.
+            #
+            # PRIORITY_click_mapping_fix.md's own required verification:
+            # (1) the identity case (same crop for both views) must match
+            # the OLD single-fraction formula exactly, proving the fix
+            # doesn't change the already-correct case; (2) a real off-centre
+            # crop pair (imx477's own 1332x990-vs-4056x3040) must convert
+            # through BOTH crop rectangles, not just scale a fraction, and
+            # must land somewhere genuinely different from the identity case.
             rect = (10, 0, 100, 50)
-            nx, ny = native_point_from_preview_click(60, 25, rect, GREEN_PLANE_RES)
+
+            identity_crop = (0, 0, GREEN_PLANE_RES[0], GREEN_PLANE_RES[1])
+            nx, ny = native_point_from_preview_click(
+                60, 25, rect, identity_crop, identity_crop, GREEN_PLANE_RES)
             fx, fy = frac_from_point(60, 25, rect)
             assert (nx, ny) == (fx * GREEN_PLANE_RES[0], fy * GREEN_PLANE_RES[1]), \
-                "native_point_from_preview_click must scale frac_from_point's " \
-                "own fraction into the green plane's real resolution, not " \
-                "reimplement the mapping"
+                "native_point_from_preview_click's identity case (same " \
+                "crop for both views) must exactly match the OLD " \
+                "single-fraction formula"
+
+            # An off-centre click (60, 25 above is dead centre of `rect`,
+            # where the brief's own "error is zero at frame centre" note
+            # means identity and off-centre crops would coincide even on
+            # the OLD buggy code -- 90, 40 is genuinely off-centre).
+            off_click_x, off_click_y = 90.0, 40.0
+            _rc_cam_for_crops = FakeCamera(async_delay_s=0.0)
+            off_preview_crop = _rc_cam_for_crops.sensor_crop_for_size((1332, 990))
+            off_still_crop = _rc_cam_for_crops.sensor_crop_for_size((4056, 3040))
+            onx, ony = native_point_from_preview_click(
+                off_click_x, off_click_y, rect, off_preview_crop, off_still_crop,
+                GREEN_PLANE_RES)
+            ofx, ofy = frac_from_point(off_click_x, off_click_y, rect)
+            epx_full = off_preview_crop[0] + ofx * off_preview_crop[2]
+            epy_full = off_preview_crop[1] + ofy * off_preview_crop[3]
+            esx = (epx_full - off_still_crop[0]) / off_still_crop[2]
+            esy = (epy_full - off_still_crop[1]) / off_still_crop[3]
+            assert (onx, ony) == (esx * GREEN_PLANE_RES[0], esy * GREEN_PLANE_RES[1]), \
+                "native_point_from_preview_click must convert through BOTH " \
+                "crop rectangles, not just scale a fraction"
+            identity_off_x, identity_off_y = (
+                ofx * GREEN_PLANE_RES[0], ofy * GREEN_PLANE_RES[1])
+            assert (onx, ony) != (identity_off_x, identity_off_y), \
+                "an off-centre click through an off-centre preview crop " \
+                "must produce a genuinely different point than the OLD " \
+                "single-fraction formula -- otherwise the fix changed nothing"
+            _rc_cam_for_crops.stop()
 
             orig_calib_path_lm = _calibrate.CALIBRATION_PATH
             orig_annot_path_lm = _annotations.ANNOTATION_PATH
@@ -7616,7 +7692,10 @@ def render_check():
                 try:
                     click_x, click_y = 250.0, 320.0
                     expected = native_point_from_preview_click(
-                        click_x, click_y, win3._disp_rect(), GREEN_PLANE_RES)
+                        click_x, click_y, win3._disp_rect(),
+                        win3.camera.sensor_crop_for_size(win3.camera.preview_resolution()),
+                        win3.camera.sensor_crop_for_size(win3.camera.capture_resolution()),
+                        GREEN_PLANE_RES)
                     press = QMouseEvent(QEvent.MouseButtonPress, QPointF(click_x, click_y),
                                         Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
                     win3.eventFilter(win3.preview, press)
@@ -7698,7 +7777,10 @@ def render_check():
                         raise RuntimeError("forced sync capture failure (render-check)")
                     win5.camera.capture_still_async = _raising_capture
                     native_ff = native_point_from_preview_click(
-                        200, 300, win5._disp_rect(), GREEN_PLANE_RES)
+                        200, 300, win5._disp_rect(),
+                        win5.camera.sensor_crop_for_size(win5.camera.preview_resolution()),
+                        win5.camera.sensor_crop_for_size(win5.camera.capture_resolution()),
+                        GREEN_PLANE_RES)
                     win5._live_measure_freeze(native_ff)
                     assert not win5._capturing, \
                         "_capturing must clear when capture_still_async raises " \
