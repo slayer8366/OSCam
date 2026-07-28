@@ -2100,9 +2100,9 @@ review, and post-capture QC. If you make an architecturally-visible change
 (new tool, new menu, a file removed or renamed), update `README.md` in the
 same commit rather than letting it drift again.
 
-### PRIORITY: preview-to-green-plane click mapping is wrong — intent recorded, not yet built
+### PRIORITY: preview-to-green-plane click mapping is wrong — BUILT
 
-Phase 1 of 2 (record intent). Full brief in a user-provided
+Full brief in a user-provided
 `PRIORITY_click_mapping_fix.md` (not checked into the repo), plus a
 mid-turn clarification from the user on the sensor-profile module's naming
 (folded in below). **This is a measurement-accuracy defect, confirmed
@@ -2139,9 +2139,14 @@ Pre-existing, not introduced by the freeze-on-first-click fix — but that
 fix made the inaccurate path mandatory (before it, a click with no tool
 armed was discarded, so the bad conversion was avoidable).
 
-**Interim workaround, for the user, until this lands**: freeze with the
-click, press **Escape** to cancel the in-progress shape, then place both
-points on the frozen canvas — avoids the cross-view conversion entirely.
+**Interim workaround, for the user, until this is confirmed on-rig**:
+freeze with the click, press **Escape** to cancel the in-progress shape,
+then place both points on the frozen canvas — avoids the cross-view
+conversion entirely. The fix below is now built and self-check-verified,
+but per this file's standing rule, a self-check proves internal
+consistency, not that it works on the rig — keep using the workaround
+until someone runs the stage-micrometer test in the Verification section
+below and confirms it.
 
 **Also worth recording**: any measurement already committed whose first
 point came from a freeze click placed off-centre carries this error.
@@ -2150,8 +2155,9 @@ ones taken after it — no way to retroactively correct them, since the
 click's own screen position wasn't recorded, only its (wrong) converted
 coordinate.
 
-**The plan** (promotes roadmap item 3, the sensor-profile module, from an
-architectural tidy-up to a prerequisite for measuring correctly):
+**Landed exactly as planned, no deviations** (promotes roadmap item 3, the
+sensor-profile module, from an architectural tidy-up to a prerequisite for
+measuring correctly):
 
 1. **New `imx477.py`** (sensor profile module, driver layer, alongside
    `camera_backend.py`). Exposes, for a given output size, the crop
@@ -2248,21 +2254,41 @@ corroboration, but on-rig confirmation (reading real `crop_limits`
 directly) should still replace this table's role as anything but a
 fallback/fixture the moment hardware is available.
 
-**Verification plan**: `--render-check` proves the conversion chain as a
-pure function against several crop-rectangle pairs, including an
-off-centre crop and the identity case (same crop for both views ->
-result matches the OLD single-fraction behaviour exactly, proving the fix
-provably doesn't change the already-correct case). **On-rig verification
-is explicitly NOT done by this session** (no hardware access, same
-standing limitation as the rest of this file's Qt-facing work) — the real
-test is the stage micrometer: click exactly on a clearly identifiable
-division near the left edge, the right edge, and the centre of the
-preview; point 1 must land on that same division in the frozen plane each
-time. Worth re-running at a second preview resolution once item 2 (the
-user-settable `preview_res`) is itself on-rig.
+**Verification**: `--render-check` proves the conversion chain as a pure
+function against several crop-rectangle pairs, including a real off-centre
+crop (imx477's own 1332x990-vs-4056x3040 pairing, via a real
+`FakeCamera.sensor_crop_for_size`, not a hand-fabricated rectangle) and the
+identity case (same crop for both views -> result matches the OLD
+single-fraction formula exactly, byte-for-byte, proving the fix provably
+doesn't change the already-correct case). Also new: `imx477.py`'s own
+self-check (crop-table internal consistency — every entry inside
+`FULL_ARRAY_SIZE`, aspect-preserving — an unknown-size failure, and the
+FOV-ratio cross-check against this brief's own ~1.52 expectation);
+`camera_backend.py`'s self-check gained coverage for
+`preview_resolution()`/`capture_resolution()`/`sensor_crop_for_size()`
+being general across a non-default preview/full pairing (not hardcoded to
+1332x990/4056x3040), and for `_resolve_sensor_profile` resolving `"imx477"`
+by exact name while rejecting an unrecognised, wrongly-cased
+(`"Imx477"`), or unsafe (`"../imx477"`, a shell-injection-shaped string)
+model rather than silently falling back to IMX477 geometry. Full project
+`--render-check` sweep run and passing (exit 0): `imx477.py`,
+`camera_backend.py`, `qt_shell.py`, and every other module with its own
+`--render-check` (17 total, including `measure.py`, `calibrate.py`,
+`gallery.py`, `plane_cache.py`, `provenance.py`, `annotations.py`,
+`ca_measure.py`, `export.py`, `focus.py`, `process_wizard.py`,
+`publish.py`, `stacks.py`, `wizard_pages.py` — `test_burst_backend.py`
+skipped, hardware-only by design).
 
-No code has changed for this yet — see the matching Build entry once it
-lands.
+**On-rig verification is explicitly NOT done by this session** (no
+hardware access, same standing limitation as the rest of this file's
+Qt-facing work) — a self-check proves internal consistency, not that this
+works on the rig. The real test, per the brief: with a stage micrometer in
+view, click exactly on a clearly identifiable division near the left edge
+of the preview, the right edge, and the centre; point 1 must land on that
+same division in the frozen plane each time. Worth re-running at a second
+preview resolution once item 2 (the user-settable `preview_res`) is itself
+on-rig. Until that confirmation happens, keep using the interim workaround
+above.
 
 ## Design conventions worth knowing before you add anything
 

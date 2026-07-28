@@ -7,6 +7,52 @@ this file is the historical record of what happened and why.
 
 ## 2026-07-28
 
+### Build: preview-to-green-plane click mapping fix — landed as planned
+
+Builds the intent recorded in the entry below, exactly as planned, no
+deviations. New `imx477.py` (driver layer): `FULL_ARRAY_SIZE` +
+`crop_for_size(size)`, a static crop-rectangle table for the 5 real
+IMX477 modes this project's own on-rig `sensor_modes` read already
+confirmed (off-rig fallback / `--render-check` fixture only — on-rig, a
+live `sensor_modes` `crop_limits` read is authoritative), plus a
+self-check (internal consistency, unknown-size failure, and a
+cross-check against the brief's own "~1.52 expected FOV ratio" note,
+which came back 1.5225).
+
+`camera_backend.py`: `CameraBackend` gains `preview_resolution()`,
+`capture_resolution()`, and `sensor_crop_for_size(size)`. `FakeCamera`
+implements all three (delegating crop lookup to `imx477` directly, since
+its `get_capabilities()` already reports real IMX477 sizes) and gained
+`preview_res`/`full_res` constructor kwargs for render_check coverage of
+a non-default pairing. `Picamera2Camera` resolves its sensor-profile
+module from the hardware's own `camera_properties['Model']` string (new
+`_resolve_sensor_profile`: exact-name import, restricted to a same-named
+`.py` file next to `camera_backend.py`, never a same-named package
+elsewhere on `sys.path`; an unrecognised model raises, naming the real
+sensor) — `camera_backend.py` itself never hardcodes `"imx477"`. Per-mode
+crop rectangles are cached from the same `sensor_modes` read
+`get_capabilities()` already primes, never a second sweep.
+
+`qt_shell.py`: `native_point_from_preview_click` keeps its name (the Live
+Measuring boundary check already forbids it in the unrelated pixel-only
+feature) but its body is now the full three-step chain instead of one
+letterboxing-aware fraction. The one production call site
+(`_live_measure_preview_event`) sources both crop rectangles from
+`self.camera.sensor_crop_for_size()`, fed by the new accessors — never a
+`GREEN_PLANE_RES`/`PREVIEW_RES` module constant. Every render_check call
+site updated; new coverage proves the identity case matches the OLD
+formula exactly and a real off-centre crop pair converts through both
+rectangles and lands somewhere genuinely different.
+
+**Verified**: `python3 imx477.py`, `camera_backend.py`, and `qt_shell.py
+--render-check` all pass, plus a full sweep of every other module with
+its own `--render-check` (17 total). **On-rig verification is explicitly
+NOT done** — no hardware access this session; the stage-micrometer test
+the brief specifies is still outstanding, so the interim workaround
+(freeze, Escape, place both points on the frozen canvas) stays in effect
+until someone runs it. See `HANDOFF.md`'s matching entry for the full
+verification list and the interim workaround.
+
 ### Intent: preview-to-green-plane click mapping fix (promotes roadmap item 3)
 
 Recording intent before building, per this repo's two-phase documentation
