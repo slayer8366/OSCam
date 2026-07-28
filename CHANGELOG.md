@@ -5,6 +5,40 @@ dump — each entry names the commit(s) it corresponds to for traceability.
 See `HANDOFF.md` for what a fresh agent needs to know before working here;
 this file is the historical record of what happened and why.
 
+## 2026-07-28
+
+### Fix: `_resolution_combo()` silently misrepresented a persisted value absent from `get_capabilities()`
+
+Found in passing while investigating a user-reported roadmap item (a
+preview-resolution setting, its own separate entry below), not the subject
+of that work — this defect is independent of it and predates it. Applies
+to every resolution combo the Preferences dialog builds through this one
+shared helper (capture/video/stream today; any future one), not just the
+control it happened to be noticed against.
+
+**Defect**: `_resolution_combo()` can only ever display a value that's
+also present in the driver-reported list it's built from. A persisted
+preference outside that list (a discrete, sensor-mode-derived list — e.g.
+`video_resolution` persisted as `[2028, 1080]`, which isn't an actual
+IMX477 sensor mode) silently rendered as "Default (current preview)"
+instead of the true stored value. Worse: since Preferences' OK button
+unconditionally re-saves every next-launch combo's `currentData()`, this
+meant simply opening Preferences and pressing OK — for any reason,
+touching that control or not — could silently overwrite a real persisted
+preference with `null`.
+
+**Fix**: `_resolution_combo()` now prepends the persisted value as its own
+selectable entry when it isn't already in the reported list, instead of
+falling back to "Default". It displays honestly and round-trips through
+OK unchanged.
+
+**Verified (self-check only, not yet on-rig)**: new render_check coverage
+persists `video_resolution` as `[2028, 1080]` (confirmed absent from
+`FakeCamera`'s own `video_resolutions`), constructs `PreferencesDialog`,
+and confirms the disabled Video resolution combo shows `(2028, 1080)`/
+"2028x1080" rather than Default, and that pressing OK persists it
+unchanged. Full 16-module `--render-check` sweep passes, no regressions.
+
 ## 2026-07-27
 
 ### Fix: `Picamera2Camera` construction order left the camera in the `sensor_modes` probe's leftover config

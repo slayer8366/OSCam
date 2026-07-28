@@ -1908,6 +1908,18 @@ if _HAVE_QT:
             combo = QComboBox()
             current = tuple(current) if current is not None else None
             combo.addItem("Default (current preview)", None)
+            resolutions = list(resolutions)
+            if current is not None and current not in resolutions:
+                # The persisted value doesn't match anything get_capabilities()
+                # currently reports (e.g. set by an older build before this
+                # combo validated against the driver's own list, or hardware
+                # whose reported modes changed since). Show it anyway, as its
+                # own entry, rather than silently falling back to "Default"
+                # -- a disabled/next-launch control displaying something
+                # other than what's actually stored is exactly the class of
+                # defect the video-resolution decoupling fix (HANDOFF.md)
+                # already had to correct once.
+                resolutions = [current] + resolutions
             for w, h in resolutions:
                 combo.addItem("{}x{}".format(w, h), (w, h))
             idx = PreferencesDialog._index_for_data(combo, current)
@@ -6811,6 +6823,33 @@ def render_check():
                 load_pref("export_format_png", "sentinel") is False, \
                 "Cancel must not revert live-applied export-format settings either"
 
+            # _resolution_combo fallback fix: a persisted resolution
+            # preference that doesn't match anything get_capabilities()
+            # currently reports must still show as ITSELF, not silently
+            # fall back to "Default (current preview)" -- exactly the
+            # scenario a real rig hit (video_resolution persisted as
+            # [2028, 1080], no exact sensor mode of that size). Found while
+            # investigating a user-reported roadmap item unrelated to this
+            # combo's own construction logic; exercised here against the
+            # disabled Video resolution combo, the control the defect was
+            # actually reported against, but the fix lives in the one
+            # shared _resolution_combo() helper every resolution combo in
+            # this dialog (capture/video/stream, and any future one) uses.
+            save_pref("video_resolution", [2028, 1080])
+            assert (2028, 1080) not in pcam.get_capabilities()["video_resolutions"], \
+                "test setup: this value must genuinely be absent from the " \
+                "reported list for the fallback case to be exercised"
+            dlg4 = PreferencesDialog(pcam)
+            assert dlg4._video_res_combo.currentData() == (2028, 1080), \
+                "a disabled control must display the TRUE persisted value, " \
+                "even one absent from get_capabilities(), not silently " \
+                "fall back to Default"
+            assert dlg4._video_res_combo.currentText() == "2028x1080"
+            dlg4._on_accept()
+            assert load_pref("video_resolution", None) == [2028, 1080], \
+                "OK must round-trip the disabled control's own displayed " \
+                "value unchanged, never clobber it with a fallback"
+
             pcam.stop()
         finally:
             PREFS_PATH = orig_prefs_path
@@ -6820,7 +6859,10 @@ def render_check():
               "OK, Advanced settings persist immediately regardless of "
               "OK/Cancel, Keep RAW Images defaults on, TIFF/PNG/JPG/DNG "
               "export-format settings are all four real, independently "
-              "togglable checkboxes that persist immediately")
+              "togglable checkboxes that persist immediately, and a "
+              "resolution preference absent from get_capabilities() "
+              "displays as itself rather than silently falling back to "
+              "Default (and round-trips through OK unchanged)")
 
         # Preferences dialog, part 2: stream_formats/stream_resolutions
         # present -> real controls appear (the flip side of the omitted-

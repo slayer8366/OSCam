@@ -2244,6 +2244,41 @@ output is the whole check:
       `lores` present, `main`/`raw` match `self._preview_cfg`, not the
       probe's leftover state.
 
+### `_resolution_combo()` fallback fix — BUILT
+
+Found in passing while investigating a user-reported roadmap item (a
+preview-resolution setting — its own separate section below), not that
+work's subject; independent of it and predates it. Applies to every
+resolution combo the Preferences dialog builds through this one shared
+helper (capture/video/stream today; any future one), not just the control
+it happened to be noticed against.
+
+**Defect**: `_resolution_combo()` can only display a value that's also in
+the driver-reported list it's built from. A persisted preference outside
+that list (a discrete, sensor-mode-derived list — e.g. `video_resolution`
+persisted as `[2028, 1080]`, not an actual IMX477 sensor mode) silently
+rendered as "Default (current preview)" instead of the true stored value.
+Worse: Preferences' OK button unconditionally re-saves every next-launch
+combo's `currentData()`, so simply opening Preferences and pressing OK —
+regardless of whether that control was touched — could silently overwrite
+a real persisted preference with `null`.
+
+**Fix**: `_resolution_combo()` now prepends the persisted value as its own
+selectable entry when absent from the reported list, instead of falling
+back to "Default". Displays honestly, round-trips through OK unchanged.
+
+**Verified (self-check only, not on-rig)**: render_check persists
+`video_resolution` as `[2028, 1080]` (confirmed absent from `FakeCamera`'s
+own `video_resolutions`), constructs `PreferencesDialog`, confirms the
+disabled Video resolution combo shows `(2028, 1080)`/"2028x1080" rather
+than Default, and that OK persists it unchanged. Full 16-module
+`--render-check` sweep passes, no regressions.
+
+**On-rig verification NOT done**: confirm against real (non-`FakeCamera`)
+sensor-mode data — the disabled Video resolution combo should show its
+true persisted value rather than "Default" whenever that value isn't one
+of the real reported sensor modes.
+
 ## Things that will bite you if you don't know them
 
 **`qt_shell.py`'s `render_check()` now monkeypatches `PROFILE_PATH` for
