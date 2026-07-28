@@ -2188,20 +2188,30 @@ measuring correctly):
    stand-in for THIS project's real rig, and its `get_capabilities()`
    already returns real IMX477 mode sizes).
 
-   Worth flagging explicitly: `PHILOSOPHY.md`'s hardened rule says
-   `camera_backend.py` is "the only file in this project that may know
-   what an IMX477 is." A separate `imx477.py` reads, on its face, like it
-   crosses that line. Resolution: the enforceable content of that rule —
-   checked structurally by `assert_only_camera_backend_imports_picamera2`
-   — is that no OTHER module may import `picamera2`/`libcamera` or see a
-   libcamera-typed value, and that higher layers never encode sensor
-   geometry. `imx477.py` imports neither, is imported ONLY from
-   `camera_backend.py` (never from `qt_shell.py`/`measure.py`/anything
-   above the seam), and the dynamic-resolution-by-hardware-reported-name
-   design above means `camera_backend.py` itself carries zero hardcoded
-   IMX477 knowledge. Both halves of the rule hold; this is "driver layer"
-   in the plural (`camera_backend.py` + per-sensor profile modules it
-   dispatches to), not a violation of "one file total."
+   **`PHILOSOPHY.md`'s rule itself was rewritten, not just reasoned
+   around.** The old wording ("`camera_backend.py` is the only file in
+   this project that may know what an IMX477 is") had a property worth
+   keeping even though it was outgrown here: it was checkable, by a plain
+   grep. Just arguing that `imx477.py` doesn't really violate the spirit
+   of that sentence would have thrown that property away — the next
+   reader would hit the stale wording, see `imx477.py` sitting right next
+   to `camera_backend.py`, and could reasonably "fix" it by folding the
+   module back in, undoing the modularity on the authority of a document
+   that no longer described the code. Caught on review (by the user, not
+   by this session) before it could cause exactly that. Fix: the rule now
+   reads "sensor-specific knowledge lives in sensor-named modules matching
+   the hardware-reported model; those modules may be imported only by
+   `camera_backend.py`, which itself contains no sensor-specific
+   constants" — and a NEW structural self-check,
+   `assert_only_camera_backend_imports_sensor_profiles`
+   (`camera_backend.py`), makes that checkable again: it discovers
+   sensor-profile modules by shape (exposing `FULL_ARRAY_SIZE`/
+   `crop_for_size`, imx477.py's own contract — never a maintained name
+   list, so a future `imx519.py` is covered the moment it exists) and
+   greps every OTHER file for a direct import of one, the same style as
+   the pre-existing `assert_only_camera_backend_imports_picamera2`. Both
+   checks run from `camera_backend.py`'s own self-check block. The
+   Picamera2/libcamera half of the original rule is unchanged.
 
 2. **`CameraBackend` gains three new methods** — `preview_resolution()`
    and `capture_resolution()` (the ACTUAL configured `(w, h)` for the live

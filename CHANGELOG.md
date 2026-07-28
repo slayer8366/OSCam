@@ -7,6 +7,39 @@ this file is the historical record of what happened and why.
 
 ## 2026-07-28
 
+### Fix: PHILOSOPHY.md's sensor-profile rule had gone stale (and uncheckable)
+
+Follow-up correction, caught on review of the click-mapping fix below,
+not found by this session on its own. The rule as written ("`camera_
+backend.py` is the only file in this project that may know what an
+IMX477 is") had a property worth keeping even though `imx477.py` had
+already outgrown it: it was checkable by a plain grep. Reasoning past the
+stale wording without updating it would have left a document that
+disagreed with the code it's supposed to govern — the next reader could
+reasonably "fix" the disagreement by folding `imx477.py` back into
+`camera_backend.py`, undoing the modularity on the authority of a rule
+nobody had corrected.
+
+**Rule rewritten** (`PHILOSOPHY.md`): sensor-specific knowledge lives in
+sensor-named modules matching the hardware-reported model; those modules
+may be imported only by `camera_backend.py`, which itself carries no
+sensor-specific constants and dispatches by the hardware's own reported
+name. The Picamera2/libcamera half of the original rule is unchanged.
+
+**Made checkable again** (`camera_backend.py`): new
+`assert_only_camera_backend_imports_sensor_profiles`, run from the
+self-check block alongside the pre-existing
+`assert_only_camera_backend_imports_picamera2`. Discovers sensor-profile
+modules by shape (`FULL_ARRAY_SIZE` + `crop_for_size`, `imx477.py`'s own
+contract) rather than a maintained name list, so a future `imx519.py`
+imported straight from `qt_shell.py` would fail this check the moment it
+exists. Verified the check actually catches a violation, not just passes
+vacuously (a throwaway sibling file importing `imx477` directly, deleted
+after confirming the assertion fired).
+
+Verified: `python3 camera_backend.py` self-check passes with the new
+assertion included.
+
 ### Build: preview-to-green-plane click mapping fix — landed as planned
 
 Builds the intent recorded in the entry below, exactly as planned, no

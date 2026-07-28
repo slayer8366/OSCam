@@ -1394,6 +1394,58 @@ def assert_only_camera_backend_imports_picamera2():
         .format(sorted(exceptions), offenders))
 
 
+def _sensor_profile_module_names(project_dir):
+    """Discover sensor-profile modules by SHAPE, never by importing them
+    (matches this file's existing structural-check style above -- a
+    source-text scan, not a runtime import, so this never has side
+    effects or a maintained list to go stale). A sensor-profile module is
+    any top-level .py file (other than camera_backend.py) that defines
+    both FULL_ARRAY_SIZE and crop_for_size at module level -- imx477.py's
+    own contract. A future imx519.py etc. is covered automatically the
+    moment it exists, with nothing here to remember to update."""
+    names = set()
+    for path in sorted(project_dir.glob("*.py")):
+        if path.name == "camera_backend.py":
+            continue
+        src = path.read_text()
+        if re.search(r'^FULL_ARRAY_SIZE\s*=', src, re.MULTILINE) and \
+           re.search(r'^def crop_for_size\(', src, re.MULTILINE):
+            names.add(path.stem)
+    return names
+
+
+def assert_only_camera_backend_imports_sensor_profiles():
+    """Structural half of PHILOSOPHY.md's sensor-profile rule
+    (PRIORITY_click_mapping_fix.md's follow-up correction to that rule,
+    after review flagged the original wording as no longer checkable):
+    sensor-profile modules (imx477.py today, any future sibling matching
+    a hardware model name) may be imported ONLY by camera_backend.py.
+    Scans every OTHER .py file for a direct import of a discovered
+    profile module -- 'import NAME', 'from NAME import ...', or
+    'from . import ... NAME ...' (the try-relative-then-bare pattern this
+    project's other cross-module imports already use)."""
+    project_dir = Path(__file__).resolve().parent
+    profile_names = _sensor_profile_module_names(project_dir)
+    if not profile_names:
+        return
+    offenders = []
+    for path in sorted(project_dir.glob("*.py")):
+        if path.name == "camera_backend.py" or path.stem in profile_names:
+            continue
+        src = path.read_text()
+        for name in profile_names:
+            pattern = re.compile(
+                r'^\s*(?:from\s+\.\s+import\s+[\w,\s]*\b{0}\b'
+                r'|import\s+{0}\b'
+                r'|from\s+{0}\s+import\b)'.format(re.escape(name)),
+                re.MULTILINE)
+            if pattern.search(src):
+                offenders.append((path.name, name))
+    assert not offenders, (
+        "only camera_backend.py may import a sensor-profile module -- "
+        "found a violation: {}".format(offenders))
+
+
 if __name__ == "__main__":
     # Self-check with no hardware: sweep the fake through focus, exercise the
     # exposure surface, the async capture path, and the two burst primitives.
@@ -1595,6 +1647,12 @@ if __name__ == "__main__":
         print("assert_only_camera_backend_imports_picamera2 PASS: no other "
               "module imports picamera2/libcamera directly (documented "
               "exceptions aside)")
+
+        assert_only_camera_backend_imports_sensor_profiles()
+        print("assert_only_camera_backend_imports_sensor_profiles PASS: no "
+              "other module imports a sensor-profile module (imx477.py "
+              "discovered by shape, not a maintained list) directly -- the "
+              "checkable half of PHILOSOPHY.md's revised sensor-profile rule")
 
         # Sensor crop geometry (PRIORITY_click_mapping_fix.md): FakeCamera's
         # own contract, general across arbitrary preview/full resolutions,
