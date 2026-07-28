@@ -165,6 +165,127 @@ and confirms the disabled Video resolution combo shows `(2028, 1080)`/
 "2028x1080" rather than Default, and that pressing OK persists it
 unchanged. Full 16-module `--render-check` sweep passes, no regressions.
 
+### Fix: PHILOSOPHY.md's sensor-profile rule had gone stale (and uncheckable)
+
+Follow-up correction, caught on review of the click-mapping fix below,
+not found by this session on its own. The rule as written ("`camera_
+backend.py` is the only file in this project that may know what an
+IMX477 is") had a property worth keeping even though `imx477.py` had
+already outgrown it: it was checkable by a plain grep. Reasoning past the
+stale wording without updating it would have left a document that
+disagreed with the code it's supposed to govern — the next reader could
+reasonably "fix" the disagreement by folding `imx477.py` back into
+`camera_backend.py`, undoing the modularity on the authority of a rule
+nobody had corrected.
+
+**Rule rewritten** (`PHILOSOPHY.md`): sensor-specific knowledge lives in
+sensor-named modules matching the hardware-reported model; those modules
+may be imported only by `camera_backend.py`, which itself carries no
+sensor-specific constants and dispatches by the hardware's own reported
+name. The Picamera2/libcamera half of the original rule is unchanged.
+
+**Made checkable again** (`camera_backend.py`): new
+`assert_only_camera_backend_imports_sensor_profiles`, run from the
+self-check block alongside the pre-existing
+`assert_only_camera_backend_imports_picamera2`. Discovers sensor-profile
+modules by shape (`FULL_ARRAY_SIZE` + `crop_for_size`, `imx477.py`'s own
+contract) rather than a maintained name list, so a future `imx519.py`
+imported straight from `qt_shell.py` would fail this check the moment it
+exists. Verified the check actually catches a violation, not just passes
+vacuously (a throwaway sibling file importing `imx477` directly, deleted
+after confirming the assertion fired).
+
+Verified: `python3 camera_backend.py` self-check passes with the new
+assertion included.
+
+### Build: preview-to-green-plane click mapping fix — landed as planned
+
+Builds the intent recorded in the entry below, exactly as planned, no
+deviations. New `imx477.py` (driver layer): `FULL_ARRAY_SIZE` +
+`crop_for_size(size)`, a static crop-rectangle table for the 5 real
+IMX477 modes this project's own on-rig `sensor_modes` read already
+confirmed (off-rig fallback / `--render-check` fixture only — on-rig, a
+live `sensor_modes` `crop_limits` read is authoritative), plus a
+self-check (internal consistency, unknown-size failure, and a
+cross-check against the brief's own "~1.52 expected FOV ratio" note,
+which came back 1.5225).
+
+`camera_backend.py`: `CameraBackend` gains `preview_resolution()`,
+`capture_resolution()`, and `sensor_crop_for_size(size)`. `FakeCamera`
+implements all three (delegating crop lookup to `imx477` directly, since
+its `get_capabilities()` already reports real IMX477 sizes) and gained
+`preview_res`/`full_res` constructor kwargs for render_check coverage of
+a non-default pairing. `Picamera2Camera` resolves its sensor-profile
+module from the hardware's own `camera_properties['Model']` string (new
+`_resolve_sensor_profile`: exact-name import, restricted to a same-named
+`.py` file next to `camera_backend.py`, never a same-named package
+elsewhere on `sys.path`; an unrecognised model raises, naming the real
+sensor) — `camera_backend.py` itself never hardcodes `"imx477"`. Per-mode
+crop rectangles are cached from the same `sensor_modes` read
+`get_capabilities()` already primes, never a second sweep.
+
+`qt_shell.py`: `native_point_from_preview_click` keeps its name (the Live
+Measuring boundary check already forbids it in the unrelated pixel-only
+feature) but its body is now the full three-step chain instead of one
+letterboxing-aware fraction. The one production call site
+(`_live_measure_preview_event`) sources both crop rectangles from
+`self.camera.sensor_crop_for_size()`, fed by the new accessors — never a
+`GREEN_PLANE_RES`/`PREVIEW_RES` module constant. Every render_check call
+site updated; new coverage proves the identity case matches the OLD
+formula exactly and a real off-centre crop pair converts through both
+rectangles and lands somewhere genuinely different.
+
+**Verified**: `python3 imx477.py`, `camera_backend.py`, and `qt_shell.py
+--render-check` all pass, plus a full sweep of every other module with
+its own `--render-check` (17 total). **On-rig verification is explicitly
+NOT done** — no hardware access this session; the stage-micrometer test
+the brief specifies is still outstanding, so the interim workaround
+(freeze, Escape, place both points on the frozen canvas) stays in effect
+until someone runs it. See `HANDOFF.md`'s matching entry for the full
+verification list and the interim workaround.
+
+### Intent: preview-to-green-plane click mapping fix (promotes roadmap item 3)
+
+Recording intent before building, per this repo's two-phase documentation
+rule. Full brief in a user-provided `PRIORITY_click_mapping_fix.md` (not
+checked into the repo). **Measurement-accuracy defect, confirmed on-rig,
+outranking the rest of the roadmap**: a stage micrometer shows 19
+divisions in the live preview but 27 in the frozen plane (~1.42x wider
+field) — the freeze-triggering click's point 1 lands at a different place
+on the frozen plane than where it was actually clicked. Points 2+ are
+unaffected (frozen-canvas clicks, no cross-view conversion).
+
+**Root cause**: `native_point_from_preview_click` (`qt_shell.py`) converts
+a preview click to green-plane coordinates via one letterboxing-aware
+fraction, correct only if the preview and the green plane share a field of
+view. They don't — `preview_res` (1332x990) and `full_res` (4056x3040) are
+different IMX477 sensor modes with different crop rectangles read off the
+array, and the smaller mode is a genuine crop, not a binned-down full view.
+
+**The plan**: a new `imx477.py` sensor-profile module (driver layer,
+alongside `camera_backend.py`) exposing each mode's own crop rectangle
+(origin + extent, never a scale factor — an off-centre crop can't be
+expressed as a ratio); three new `CameraBackend` methods
+(`preview_resolution`/`capture_resolution`/`sensor_crop_for_size`, with a
+plausible `FakeCamera` implementation); `native_point_from_preview_click`'s
+body replaced with the full three-step chain (fraction -> sensor
+coordinate via the preview mode's crop -> green-plane coordinate via the
+still mode's crop), staying a pure, Qt-free function. Full reasoning,
+including the user's own mid-brief instruction that the profile module's
+name must match `Picamera2().camera_properties['Model']` EXACTLY (a direct
+lookup with no mapping table to drift from reality, so an unrecognised
+sensor fails loudly by name instead of silently reusing IMX477 geometry),
+lives in `HANDOFF.md`'s matching entry — including how this squares with
+`PHILOSOPHY.md`'s "only `camera_backend.py` may know what an IMX477 is"
+rule.
+
+**Interim workaround for the user until this lands**: freeze with the
+click, press Escape to cancel the in-progress shape, then place both
+points on the frozen canvas.
+
+No code changed in this commit — `HANDOFF.md`/`CHANGELOG.md` only. See the
+matching Build entry once it lands.
+
 ## 2026-07-27
 
 ### Fix: `Picamera2Camera` construction order left the camera in the `sensor_modes` probe's leftover config
