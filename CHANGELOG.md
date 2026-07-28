@@ -7,6 +7,45 @@ this file is the historical record of what happened and why.
 
 ## 2026-07-27
 
+### Fix: `Picamera2Camera` construction order left the camera in the `sensor_modes` probe's leftover config
+
+Root-caused from a user-supplied on-rig failure log, not found by this
+session. A live-measure freeze capture was coming back as
+`main=640x480@XBGR8888, raw=4056x3040@SBGGR16` with `lores` entirely
+missing — an earlier main/lores aspect-ratio theory was disproved by the
+user reading the log's own libcamera stream-negotiation sweep, whose exact
+last line matched the failure byte for byte, including the unrecognized
+`SBGGR16` format.
+
+**Root cause**: `get_capabilities()` reads `self._picam2.sensor_modes`,
+which is not a passive lookup — internally it calls `Picamera2.configure()`
+once per sensor mode to enumerate them, sweeping the camera through every
+mode and leaving it sitting in whichever mode was swept last (no lores
+stream, since the probe never asks for one). `Picamera2Camera.__init__`
+applied the real `self._preview_cfg` (with lores) and built the
+`QGlPicamera2` widget against it *before* calling `get_capabilities()` to
+prime its cache at the very end of construction — so the sweep ran last,
+silently clobbering the real config nothing ever re-applied afterward.
+
+**Fix**: `camera_backend.py` — moved the capability probe to run
+immediately after `Picamera2()` construction, before `self._preview_cfg`
+is even built. `self._picam2.configure(self._preview_cfg)` and the
+`QGlPicamera2` widget construction now happen strictly after the
+sensor-mode sweep has already settled, so they're the last thing to touch
+the camera's config during `__init__`. `get_capabilities()` itself is
+unchanged — only its call site moved.
+
+**Not fixed here**: a second, distinct bug the same failure log surfaces —
+a `G_IS_OBJECT` assertion at teardown, a different mechanism from this
+ordering bug. Flagged in `HANDOFF.md` as a follow-up, not addressed by
+this change.
+
+**Verification**: `camera_backend.py`'s `FakeCamera`-only self-check still
+passes. The ordering bug is only reachable through `Picamera2Camera`
+(needs real hardware plus a `QGlPicamera2` widget), so this fix is not yet
+confirmed on-rig — see `HANDOFF.md`'s own entry for the exact re-test
+procedure to run against the failure log this was diagnosed from.
+
 ### Build: Decouple video resolution from preview
 
 Builds the intent recorded in the two entries below (Intent, then its
