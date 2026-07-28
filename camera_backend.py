@@ -48,6 +48,26 @@ PREVIEW_RES = (1332, 990)
 LORES_RES = (640, 480)     # small enough for real-time scoring, 4:3 like the sensor
 
 
+def derive_lores_res(preview_res, target_pixels=LORES_RES[0] * LORES_RES[1]):
+    """The lores stream size to pair against a given preview_res: same
+    aspect ratio as preview_res, at roughly LORES_RES's own pixel count
+    (target_pixels), rounded to even dimensions (some lores formats, e.g.
+    YUV420, require them). Replaces the old fixed (640, 480) constant --
+    ROADMAP item 2 (preview-resolution setting) means preview_res is no
+    longer always 4:3, and pairing an arbitrary main aspect against a
+    hardcoded 4:3 lores size is exactly the class of pairing failure that
+    caused the focus-aid bug ROADMAP item 1 fixed. Matching the aspect
+    instead of pinning it removes the mismatch outright, regardless of
+    whether that specific failure mode was ever real here."""
+    w, h = preview_res
+    aspect = w / h
+    lores_h = int(round((target_pixels / aspect) ** 0.5))
+    lores_h -= lores_h % 2
+    lores_w = int(round(lores_h * aspect))
+    lores_w -= lores_w % 2
+    return (lores_w, lores_h)
+
+
 @dataclass(frozen=True)
 class LoresFrame:
     """One lores frame reduced to the single channel the focus score runs on.
@@ -302,6 +322,17 @@ class CameraBackend(abc.ABC):
         ("I know, there are none"). The two must never be conflated --
         the caller (the Preferences dialog) renders them differently: no
         control at all versus an empty one."""
+
+    @abc.abstractmethod
+    def lores_resolution(self):
+        """The (width, height) of the CURRENT lores stream, i.e. the
+        coordinate space focus-aid overlays and Live Measuring marks are
+        drawn/hit-tested in right now for this instance. Not necessarily
+        LORES_RES: Picamera2Camera derives it from preview_res's own
+        aspect (see derive_lores_res) rather than pinning it, so it varies
+        per instance once a non-default preview resolution is in play.
+        Anything drawing into or converting clicks against the live lores
+        frame must call this instead of assuming the module constant."""
 
 
 class FakeCamera(CameraBackend):
@@ -583,6 +614,9 @@ class FakeCamera(CameraBackend):
     def video_resolution(self):
         return self._video_res
 
+    def lores_resolution(self):
+        return (self._w, self._h)
+
     # --- capability query ----------------------------------------------------
     def get_capabilities(self) -> dict:
         # Cached (Fix: Preferences dialog crash on get_capabilities()): see
@@ -627,7 +661,7 @@ class Picamera2Camera(CameraBackend):
     start_preview: the embedded widget is the preview and Qt's exec() drives it.
     """
 
-    def __init__(self, preview_res=PREVIEW_RES, lores_res=LORES_RES,
+    def __init__(self, preview_res=PREVIEW_RES, lores_res=None,
                  full_res=FULL_RES):
         if not _HAVE_PICAMERA2:
             raise RuntimeError("picamera2 not available; this backend runs on the Pi. "
@@ -637,7 +671,14 @@ class Picamera2Camera(CameraBackend):
 
         self._picam2 = Picamera2()
         self._preview_res = preview_res
-        self._lores_res = lores_res
+        # lores_res=None (ROADMAP item 2, preview-resolution setting):
+        # derive from preview_res's own aspect rather than defaulting to
+        # the fixed 4:3 LORES_RES -- preview_res is no longer always 4:3
+        # now that it's user-settable, and pairing an arbitrary main aspect
+        # against a hardcoded 4:3 lores size is exactly the pairing
+        # mismatch that broke focus aid before (see derive_lores_res). An
+        # explicit lores_res override still wins, same as before.
+        self._lores_res = lores_res if lores_res is not None else derive_lores_res(preview_res)
         self._full_res = full_res
 
         # Capability cache (Fix: Preferences dialog crash on
@@ -673,7 +714,7 @@ class Picamera2Camera(CameraBackend):
         self._source = "green"
         self._preview_cfg = self._picam2.create_preview_configuration(
             main={"size": preview_res},
-            lores={"size": lores_res, "format": "RGB888"},
+            lores={"size": self._lores_res, "format": "RGB888"},
             # RECORD BUTTON (separable): 6, not the 4 this started with.
             # create_video_configuration defaults to 6 precisely because an
             # encoder is a heavier, slower consumer than a display read, and
@@ -711,9 +752,10 @@ class Picamera2Camera(CameraBackend):
         # pass into assuming that wiring already existed (see HANDOFF.md's
         # "Decouple video resolution from preview" entry for the
         # correction). Kept as a placeholder for that rework, not because
-        # it does anything yet. lores stays fixed (LORES_RES) regardless:
-        # it does double duty as both the widget's display source during
-        # recording and the focus aid's own input.
+        # it does anything yet. lores stays fixed at self._lores_res
+        # (derived once, above, from preview_res) regardless of recording
+        # state: it does double duty as both the widget's display source
+        # during recording and the focus aid's own input.
         self._video_res = preview_res   # dead: nothing reads this yet
 
         self._picam2.configure(self._preview_cfg)
@@ -1216,6 +1258,9 @@ class Picamera2Camera(CameraBackend):
     def video_resolution(self):
         return self._video_res
 
+    def lores_resolution(self):
+        return self._lores_res
+
     # --- capability query (PLAN_02_camera_capability_query.md;
     # PLAN_fix_capabilities_cache.md for the caching added after) ----------
     def get_capabilities(self) -> dict:
@@ -1545,6 +1590,37 @@ if __name__ == "__main__":
               "exact same cached object (identity, not just equal value), "
               "both for __init__'s own eager priming and a cold first "
               "real computation")
+
+        # derive_lores_res (ROADMAP item 2, preview-resolution setting):
+        # lores size must match preview_res's own aspect, not the old fixed
+        # 4:3 LORES_RES, at roughly LORES_RES's own pixel count, rounded to
+        # even dimensions.
+        for w, h in [(2028, 1080), (1920, 1080), (4056, 3040), (640, 480),
+                     PREVIEW_RES]:
+            dw, dh = derive_lores_res((w, h))
+            assert dw % 2 == 0 and dh % 2 == 0, \
+                "derived lores size must be even: got {}x{} for preview {}x{}".format(
+                    dw, dh, w, h)
+            assert abs((dw / dh) - (w / h)) < 0.01, \
+                "derived lores aspect must match preview_res's own aspect: " \
+                "{}x{} -> {}x{}".format(w, h, dw, dh)
+        print("derive_lores_res check PASS: including the actual PREVIEW_RES "
+              "default and a wide non-4:3 case (2028x1080), every derived "
+              "lores size is even-dimensioned and matches preview_res's own "
+              "aspect rather than pinning 4:3")
+
+        # lores_resolution(): both backends expose the CURRENT lores size,
+        # not just the module constant -- needed since Picamera2Camera's own
+        # value now varies per-instance (derived above).
+        assert cam.lores_resolution() == LORES_RES, \
+            "a default-constructed FakeCamera's lores_resolution() must " \
+            "match its own (default) lores_res"
+        custom_lores_cam = FakeCamera(lores_res=(320, 240))
+        assert custom_lores_cam.lores_resolution() == (320, 240), \
+            "lores_resolution() must reflect an explicit override, not the " \
+            "module default"
+        print("lores_resolution() check PASS: reflects the instance's own "
+              "lores_res, default and overridden")
 
         assert_only_camera_backend_imports_picamera2()
         print("assert_only_camera_backend_imports_picamera2 PASS: no other "

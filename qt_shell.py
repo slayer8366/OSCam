@@ -436,6 +436,28 @@ PREFS_PATH = Path.home() / ".zynergy" / "gui_prefs.json"
 # encoding at a size other than main means either a mode switch on record
 # start or a third stream, and both are exactly the pairing/mode-switch
 # fragility that produced this bug in the first place.
+#
+# ROADMAP item 2 correction, later: item 1's own root cause turned out to be
+# something else entirely (the sensor_modes probe's leftover config, fixed
+# in camera_backend.py -- see HANDOFF.md), not a main/lores aspect mismatch.
+# So there is no evidence a non-4:3 preview_res ever broke the lores pairing
+# on its own merits. That does NOT make preview_res meaningless, though --
+# main's size still IS preview_res, and it is still the real, user-facing
+# control over the live preview AND (per the same reasoning as video
+# resolution above) recorded video size, since start_recording() encodes
+# whatever "main" already is. So preview_res is reinstated as a real,
+# enabled, user-settable "Preview resolution" preference
+# (preview_resolution_kwargs() below) -- NOT a revival of the old removed
+# video_resolution_kwargs(), a distinct setting with its own honest name.
+# The lores pairing risk that motivated filtering the menu is closed a
+# different way: camera_backend.py's derive_lores_res() now sizes lores to
+# match preview_res's own aspect instead of pinning a fixed 4:3, so an
+# arbitrary preview_res can no longer mismatch it. NOTE ON NAMING: this is
+# "preview_resolution", NOT "stream_resolution" -- a dormant
+# "stream_resolution" pref already exists a little further down (the
+# stream_formats/stream_resolutions combo), reserved for a future network
+# streaming server this backend does not implement yet. Different concept;
+# do not collide the two.
 
 
 def capture_resolution_kwargs(pref=None):
@@ -447,6 +469,19 @@ def capture_resolution_kwargs(pref=None):
         return {}
     w, h = pref
     return {"full_res": (int(w), int(h))}
+
+
+def preview_resolution_kwargs(pref=None):
+    """Camera-construction kwargs for the persisted "preview_resolution"
+    pref: {} if none set (the camera's own PREVIEW_RES default applies),
+    else {"preview_res": (w, h)}. Mirrors capture_resolution_kwargs exactly
+    -- see the ROADMAP item 2 correction above for why this exists as its
+    own setting, distinct from both the removed video_resolution_kwargs()
+    and the dormant, unrelated "stream_resolution" pref."""
+    if pref is None:
+        return {}
+    w, h = pref
+    return {"preview_res": (int(w), int(h))}
 
 
 def format_lores_config_summary(cfg):
@@ -637,8 +672,8 @@ def live_measure_mark_segments(mark):
 # inspection, not just code review).
 # ---------------------------------------------------------------------------
 
-def lores_point_from_preview_click(px, py, disp_rect):
-    """A preview-widget click (px, py) converted to LORES_RES-space pixel
+def lores_point_from_preview_click(px, py, disp_rect, lores_res=LORES_RES):
+    """A preview-widget click (px, py) converted to lores-space pixel
     coordinates -- the SAME overlay-buffer space render_overlay_into already
     draws the focus box/bar/ruler into (see FocusPreviewWindow._ov_bufs'
     own shape). Reuses frac_from_point's existing letterboxing-aware
@@ -646,9 +681,15 @@ def lores_point_from_preview_click(px, py, disp_rect):
     the green plane -- but deliberately NOT that function: Live Measuring
     reports raw preview pixels, never a calibrated sensor-space value, and
     PLAN_quick_ruler.md is explicit that reusing a function named for that
-    other purpose would blur the line this feature exists to keep sharp."""
+    other purpose would blur the line this feature exists to keep sharp.
+
+    lores_res defaults to the LORES_RES constant for callers with no live
+    camera (e.g. this module's own render_check fixtures), but a real call
+    site MUST pass camera.lores_resolution() instead -- lores_res is no
+    longer always LORES_RES now that Picamera2Camera derives it per-
+    instance from preview_res's own aspect (ROADMAP item 2)."""
     fx, fy = frac_from_point(px, py, disp_rect)
-    return fx * LORES_RES[0], fy * LORES_RES[1]
+    return fx * lores_res[0], fy * lores_res[1]
 
 
 def _live_measuring_tool_hint(name):
@@ -1680,6 +1721,21 @@ if _HAVE_QT:
                 "has no format-selection hook for a still capture yet.")
             cap_form.addRow("Capture file format (next launch):", self._capture_fmt_combo)
 
+            # Preview resolution (ROADMAP item 2, REVISED): governs
+            # preview_res -- the live preview AND, currently, recorded video
+            # size (start_recording() always encodes whatever "main" is).
+            # Built against the unfiltered "video_resolutions" list (same
+            # sensor-mode sizes the now-disabled "Video resolution" combo
+            # below uses) -- no aspect filter, since camera_backend.py's
+            # derive_lores_res() now sizes lores to match whatever aspect
+            # preview_res turns out to be, closing the pairing-mismatch risk
+            # that used to motivate filtering. NOT "stream_resolution" -- see
+            # this file's banner comment above capture_resolution_kwargs for
+            # why that name is reserved for something else.
+            self._preview_res_combo = self._resolution_combo(
+                caps.get("video_resolutions", []), load_pref("preview_resolution", None))
+            cap_form.addRow("Preview resolution (next launch):", self._preview_res_combo)
+
             self._video_res_combo = self._resolution_combo(
                 caps.get("video_resolutions", []), load_pref("video_resolution", None))
             # Disabled, not just disclosed (Decouple video resolution from
@@ -1971,6 +2027,7 @@ if _HAVE_QT:
                 return list(data) if data is not None else None
             save_pref("capture_resolution", _res(self._capture_res_combo))
             save_pref("capture_format", self._capture_fmt_combo.currentData())
+            save_pref("preview_resolution", _res(self._preview_res_combo))
             save_pref("video_resolution", _res(self._video_res_combo))
             save_pref("video_format", self._video_fmt_combo.currentData())
             if self._stream_fmt_combo is not None:
@@ -2402,7 +2459,13 @@ if _HAVE_QT:
             # opt-out, read at gate-check time by _maybe_show_onboarding_gate.
             self._no_onboarding = bool(no_onboarding)
             self._drag = None
-            self._aspect = LORES_RES[0] / LORES_RES[1]
+            # This instance's OWN current lores size, not the LORES_RES
+            # constant -- Picamera2Camera derives it per-instance from
+            # preview_res's own aspect now (ROADMAP item 2), so it is only
+            # guaranteed to equal LORES_RES for a default-constructed
+            # FakeCamera/Picamera2Camera.
+            lores_w, lores_h = camera.lores_resolution()
+            self._aspect = lores_w / lores_h
             self._tick_ms = tick_ms
             # Passed straight to hdr_from_session.py on a process offer, e.g.
             # ["--wl", "65520", "--lw", "2.2", ...], built by build_display_flags
@@ -2412,7 +2475,7 @@ if _HAVE_QT:
             self._display_flags = list(display_flags) if display_flags else []
             self._last_sig = None
             self._zero_lores_ticks = 0   # see _readout: diagnoses a stuck lores stream
-            self._ov_bufs = [np.zeros((LORES_RES[1], LORES_RES[0], 4), dtype=np.uint8)
+            self._ov_bufs = [np.zeros((lores_h, lores_w, 4), dtype=np.uint8)
                             for _ in range(2)]
             self._ov_idx = 0
             self._aid_on = False
@@ -3606,7 +3669,8 @@ if _HAVE_QT:
                 if ev.button() == Qt.RightButton:
                     self._live_measuring_context_menu(ev.pos())
                 elif ev.button() == Qt.LeftButton and self._live_measuring_tool is not None:
-                    pt = lores_point_from_preview_click(ev.x(), ev.y(), self._disp_rect())
+                    pt = lores_point_from_preview_click(
+                        ev.x(), ev.y(), self._disp_rect(), self.camera.lores_resolution())
                     self._live_measuring_add_point(pt)
                 return True
             if ev.type() == QEvent.MouseButtonDblClick:
@@ -3655,15 +3719,18 @@ if _HAVE_QT:
             self._live_measuring_notify_changed()
 
         def _live_measuring_view_point(self, lores_pt):
-            """LORES_RES-space (x, y) back to CURRENT on-screen preview-widget
+            """Lores-space (x, y) back to CURRENT on-screen preview-widget
             pixel coordinates -- the inverse of lores_point_from_preview_click,
             needed for the right-click hit test: LIVE_MEASURE_HIT_RADIUS_PX
             means view-space pixels (same reasoning as Part 05's own hit
             test), so the grab radius stays constant regardless of window
-            size, not scaled by it."""
+            size, not scaled by it. Divides by self.camera's own current
+            lores_resolution(), not the LORES_RES constant -- see that
+            function's own docstring for why."""
             x, y, w, h = self._disp_rect()
-            fx = lores_pt[0] / LORES_RES[0]
-            fy = lores_pt[1] / LORES_RES[1]
+            lores_w, lores_h = self.camera.lores_resolution()
+            fx = lores_pt[0] / lores_w
+            fy = lores_pt[1] / lores_h
             return (x + fx * w, y + fy * h)
 
         def _live_measuring_hit_test(self, view_pos):
@@ -5668,7 +5735,8 @@ def main(argv=None):
         except ImportError:
             from camera_backend import Picamera2Camera
         camera = Picamera2Camera(
-            **capture_resolution_kwargs(load_pref("capture_resolution", None)))
+            **capture_resolution_kwargs(load_pref("capture_resolution", None)),
+            **preview_resolution_kwargs(load_pref("preview_resolution", None)))
     else:
         camera = FakeCamera()
 
@@ -6063,6 +6131,63 @@ def render_check():
     print("capture_resolution_kwargs check PASS: no preference means no kwarg "
           "(camera's own default applies), a set preference becomes an "
           "explicit full_res tuple, both list and tuple input accepted")
+
+    # preview_resolution_kwargs (ROADMAP item 2, REVISED): mirrors
+    # capture_resolution_kwargs exactly, but feeds preview_res -- reinstated
+    # as its own real, enabled setting now that the aspect-mismatch theory
+    # behind removing video_resolution_kwargs is disproven (see the ROADMAP
+    # item 2 correction banner comment above). Distinct from the dormant,
+    # unrelated "stream_resolution" pref -- deliberately not tested for here,
+    # since preview_resolution_kwargs must never emit that key.
+    assert preview_resolution_kwargs(None) == {}, \
+        "no preference should mean no kwarg, not some hardcoded default"
+    assert preview_resolution_kwargs([2028, 1080]) == {"preview_res": (2028, 1080)}, \
+        "must emit preview_res, not stream_res or anything else"
+    assert preview_resolution_kwargs((1920, 1080)) == {"preview_res": (1920, 1080)}, \
+        "must accept a tuple too, not just the list JSON round-trips through"
+    print("preview_resolution_kwargs check PASS: no preference means no kwarg "
+          "(camera's own PREVIEW_RES default applies), a set preference "
+          "becomes an explicit preview_res tuple (never stream_res), both "
+          "list and tuple input accepted")
+
+    # FocusPreviewWindow's lores-derived state (ROADMAP item 2): _aspect and
+    # _ov_bufs must come from the camera's OWN lores_resolution(), not the
+    # LORES_RES constant -- Picamera2Camera now derives a per-instance size
+    # from preview_res's own aspect (camera_backend.derive_lores_res), so a
+    # non-default instance's lores size can differ from LORES_RES. A
+    # default-constructed FakeCamera can't prove this wiring (its
+    # lores_resolution() equals LORES_RES by construction, so a bug that
+    # silently kept reading the constant would still pass) -- proven here
+    # with an explicit non-default override instead, per this project's own
+    # rule (PHILOSOPHY.md) that a self-check must exercise the real wiring,
+    # not just the default case.
+    custom_lores = (400, 300)   # still 4:3, so the disp_rect trick below stays letterbox-free
+    lrcam = FakeCamera(async_delay_s=0.0, lores_res=custom_lores)
+    lrwin = FocusPreviewWindow(lrcam, FocusMeter())
+    try:
+        assert abs(lrwin._aspect - (custom_lores[0] / custom_lores[1])) < 1e-9, \
+            "_aspect must derive from the camera's own lores_resolution(), not LORES_RES"
+        assert lrwin._ov_bufs[0].shape[:2] == (custom_lores[1], custom_lores[0]), \
+            "_ov_bufs must be sized to the camera's own lores_resolution(), not LORES_RES"
+
+        lrwin.preview.resize(800, 600)
+        assert lrwin._disp_rect() == (0, 0, 800, 600)
+        px, py = 200, 150
+        lores_pt = lores_point_from_preview_click(px, py, lrwin._disp_rect(),
+                                                  lrcam.lores_resolution())
+        assert abs(lores_pt[0] - px / 2) < 1e-6 and abs(lores_pt[1] - py / 2) < 1e-6, \
+            "a click must convert into the camera's OWN lores size (400x300, " \
+            "half of 800x600), not LORES_RES (640x480)"
+        back = lrwin._live_measuring_view_point(lores_pt)
+        assert abs(back[0] - px) < 1e-6 and abs(back[1] - py) < 1e-6, \
+            "the inverse mapping must use the same camera lores size, so a " \
+            "click round-trips exactly regardless of the instance's lores size"
+    finally:
+        lrcam.stop()
+    print("FocusPreviewWindow lores-derived state check PASS: _aspect/_ov_bufs "
+          "come from the camera's own lores_resolution(), not the LORES_RES "
+          "constant, and click <-> lores-space <-> view-space conversion "
+          "round-trips correctly for a non-default lores size")
 
     # format_lores_config_summary: pure formatter for camera_backend.py's
     # lores_config_at_failure, tested standalone (no FocusPreviewWindow
@@ -6766,16 +6891,36 @@ def render_check():
             assert set(caps["capture_formats"]) == fmt_items, \
                 "capture format combo must be built from get_capabilities()"
 
+            # Preview resolution (ROADMAP item 2, REVISED): its own real,
+            # enabled combo, built from "video_resolutions" (the same list
+            # the now-disabled Video resolution combo uses) -- NOT from a
+            # "stream_resolutions" key, which is a different, dormant
+            # capability entirely.
+            preview_res_items = {dlg._preview_res_combo.itemData(i)
+                                for i in range(dlg._preview_res_combo.count())}
+            assert set(caps["video_resolutions"]) <= preview_res_items, \
+                "preview resolution combo must be built from get_capabilities()'s " \
+                "video_resolutions"
+            assert dlg._preview_res_combo.isEnabled(), \
+                "unlike Video resolution, Preview resolution is a real, live setting"
+
             # Next-launch settings (Capture/Video/Appearance): persist only
             # on OK, not on every selection change.
             idx = PreferencesDialog._index_for_data(dlg._capture_res_combo, (2028, 1520))
             assert idx >= 0
             dlg._capture_res_combo.setCurrentIndex(idx)
+            pidx = PreferencesDialog._index_for_data(dlg._preview_res_combo, (2048, 1080))
+            assert pidx >= 0
+            dlg._preview_res_combo.setCurrentIndex(pidx)
             assert load_pref("capture_resolution", "sentinel") == "sentinel", \
                 "a next-launch setting must not persist before OK is pressed"
+            assert load_pref("preview_resolution", "sentinel") == "sentinel", \
+                "preview resolution must not persist before OK either"
             dlg._on_accept()
             assert load_pref("capture_resolution", None) == [2028, 1520], \
                 "OK must persist every next-launch setting"
+            assert load_pref("preview_resolution", None) == [2048, 1080], \
+                "OK must persist the chosen preview resolution too"
 
             # Live-apply settings (Advanced): persist immediately on change,
             # independent of OK/Cancel. Keep RAW Images defaults on.
@@ -6855,12 +7000,13 @@ def render_check():
             PREFS_PATH = orig_prefs_path
         print("Preferences dialog check PASS: capture/video controls built "
               "entirely from get_capabilities() (an omitted capability "
-              "produces no control), next-launch settings persist only on "
-              "OK, Advanced settings persist immediately regardless of "
-              "OK/Cancel, Keep RAW Images defaults on, TIFF/PNG/JPG/DNG "
-              "export-format settings are all four real, independently "
-              "togglable checkboxes that persist immediately, and a "
-              "resolution preference absent from get_capabilities() "
+              "produces no control), Preview resolution is a real enabled "
+              "control built from video_resolutions, next-launch settings "
+              "persist only on OK, Advanced settings persist immediately "
+              "regardless of OK/Cancel, Keep RAW Images defaults on, "
+              "TIFF/PNG/JPG/DNG export-format settings are all four real, "
+              "independently togglable checkboxes that persist immediately, "
+              "and a resolution preference absent from get_capabilities() "
               "displays as itself rather than silently falling back to "
               "Default (and round-trips through OK unchanged)")
 

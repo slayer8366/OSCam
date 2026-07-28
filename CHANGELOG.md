@@ -7,10 +7,136 @@ this file is the historical record of what happened and why.
 
 ## 2026-07-28
 
+### Build: Preview resolution setting (ROADMAP item 2, REVISED) — self-check only, NOT yet on-rig
+
+User-provided, twice-revised brief (`ITEM2_preview_resolution_brief.md`,
+not checked into the repo — supersedes item 2 as originally written in
+`ROADMAP_resolution_sensor_calibration.md`). Built directly from the
+handed-over brief, no separate intent commit first — same call as the
+lores diagnostic: this project's usual intent → build → record convention
+is applied retroactively in this record, not manufactured as a commit that
+never happened.
+
+The roadmap's original item 2 argued for filtering the resolution menu to
+4:3-ish modes, on the theory that a non-4:3 main stream can't be paired
+with the fixed 4:3 `LORES_RES` without libcamera dropping lores. **That
+theory is dead** — the failure it was inferred from turned out to be the
+sensor-mode probe's leftover config (this file's own entry below),
+unrelated to aspect. No filtering was built on the strength of a disproven
+theory.
+
+**Naming catch before any code was written**: the brief's first draft
+called the new setting `stream_resolution`. A dormant `stream_resolution`
+pref already exists in this file (the `stream_formats`/`stream_resolutions`
+combo, ~qt_shell.py 1720-1723/1966-1967), reserved for a future network
+streaming server this backend doesn't implement yet
+(`Picamera2Camera.get_capabilities()` deliberately omits those keys — "no
+stream server exists in this backend yet"). Using the same name for a
+second, unrelated concept (this setting governs `preview_res`, not a
+streaming server) would have collided in `gui_prefs.json` and in the
+Preferences dialog's own labels. Flagged to the user before writing any
+code; the brief was revised to `preview_resolution` throughout (dialog
+label "Preview resolution (next launch)"), confirmed before building.
+
+**What landed**, the four pieces belonging to this setting (a fifth piece
+from the same investigation — the `_resolution_combo()` fallback fix — is
+its own separate commit/entry above: an unrelated defect found in passing,
+affecting every resolution combo, not specific to this setting):
+
+1. **The setting itself.** `preview_resolution_kwargs()` (qt_shell.py,
+   mirrors `capture_resolution_kwargs()` exactly): `None` → `{}` (camera's
+   own `PREVIEW_RES` default applies), else `{"preview_res": (w, h)}`.
+   Wired into `main()`'s `Picamera2Camera(...)` construction alongside
+   `capture_resolution_kwargs`. A real, enabled "Preview resolution (next
+   launch)" combo in Preferences, built from `get_capabilities()`'s
+   `video_resolutions` (the same unfiltered list the disabled Video
+   resolution combo already uses) — no aspect filter, per the brief's
+   explicit "build unfiltered, then test, then filter only if the test
+   demands it."
+
+2. **Lores derives from main's aspect.** `camera_backend.py` gains
+   `derive_lores_res(preview_res, target_pixels=LORES_RES[0]*LORES_RES[1])`:
+   a pure function computing an even-dimensioned lores size matching
+   `preview_res`'s own aspect at roughly `LORES_RES`'s pixel count, instead
+   of the old fixed `(640, 480)` "4:3 like the sensor" constant.
+   `Picamera2Camera.__init__`'s `lores_res` parameter defaults to `None`
+   now (was `LORES_RES`) and derives via this function when not explicitly
+   overridden, closing the pairing-mismatch class of failure regardless of
+   whether it was ever real here.
+
+   This is a real architectural change, not just a constructor default:
+   `Picamera2Camera`'s lores size is now per-instance, not always the
+   `LORES_RES` module constant. Every place in `qt_shell.py` that drew into
+   or converted clicks against the live lores frame by reading the bare
+   `LORES_RES` constant would have silently gone wrong for a non-default
+   preview resolution otherwise. Traced every such site (a full inventory,
+   not a guess) and fixed the ones that needed it: `FocusPreviewWindow.
+   __init__`'s `_aspect` and `_ov_bufs` allocation, `lores_point_from_
+   preview_click()` (gained a `lores_res` parameter, default `LORES_RES`
+   for callers with no live camera), and `_live_measuring_view_point()` —
+   all now read `self.camera.lores_resolution()`, a new accessor added to
+   `CameraBackend`/`FakeCamera`/`Picamera2Camera` (previously private,
+   asymmetric state: `Picamera2Camera` had `self._lores_res`, `FakeCamera`
+   had `self._w`/`self._h` and no attribute of that name at all). Render-
+   check fixtures using a default-constructed `FakeCamera` are correctly
+   unaffected (its `lores_resolution()` still equals `LORES_RES`) — the new
+   coverage proves the dynamic wiring with an explicit non-default
+   `lores_res` override instead, per this project's own rule (`PHILOSOPHY.
+   md`) that a self-check exercising only the default case can't tell
+   "wired to the instance" apart from "still silently reading the
+   constant."
+
+3. **Ruler overlay, traced per the brief's explicit instruction ("trace it
+   before building, not after")**: `_current_ruler_ticks()` computes
+   `fov_width_um`/`fov_height_um` from `GREEN_PLANE_RES` (the full-res
+   green plane) × calibration's stored `um_per_px` — entirely independent
+   of `preview_res`/lores size. `_draw_ruler_ticks_into()` then draws each
+   tick at `frac * ov.shape[...]`, i.e. against whatever the overlay
+   buffer's OWN actual shape is. So once `_ov_bufs` is correctly sized to
+   the derived lores size (item 2 above), tick placement is aspect-
+   independent by construction — no code fix needed here beyond that.
+   **What tracing could NOT settle, flagged rather than assumed**: whether
+   a non-4:3 `preview_res` on real IMX477 hardware actually preserves the
+   same physical field of view (just resampled to different pixel
+   dimensions) or crops it — a hardware behavior question, not something
+   pure code reading can answer. **Worth calling out explicitly**: this is
+   a genuinely different, and better, argument for an aspect filter than
+   the roadmap's original theory (disproven above) — if a wide preview
+   crops rather than preserves FOV, a wide preview shows the user *less
+   specimen*, which is a real reason to restrict the menu, not a pairing
+   mechanic. Only the rig can answer it; left for the on-rig test below.
+
+4. **Consequence recorded** (per the brief's own instruction): once this
+   lands, *preview* resolution is the real control over both live preview
+   AND recorded video size, since `start_recording()` always encodes
+   whatever "main" (== `preview_res`) currently is — same mechanism the
+   video-resolution decoupling entry below already established, just with
+   a real, enabled setting driving it now instead of an inert one.
+
+**Verified (self-check only, NOT yet on-rig)**: full 16-module
+`--render-check` sweep passes, no regressions. New coverage: `derive_lores_
+res` across several preview_res aspects (even-dimensioned, aspect-matched,
+including the actual `PREVIEW_RES` default and a wide `2028x1080` case);
+`lores_resolution()` on both backends; `preview_resolution_kwargs()`
+mirroring `capture_resolution_kwargs()`'s own coverage; the Preferences
+dialog's new Preview resolution combo (built from `video_resolutions`,
+enabled, persists on OK); `FocusPreviewWindow`'s `_aspect`/`_ov_bufs`/click-
+round-trip against a non-default `lores_res`.
+
+**On-rig verification explicitly NOT done this session** — needed before
+this can be trusted: set Preview resolution to **2028×1080** (non-4:3) and
+confirm focus aid still scores and lores is present in the active config
+(the brief's own build-order step 2); a normal launch at a 4:3 non-default
+preview resolution confirming preview, focus aid, AND the ruler all read
+correctly (settles the FOV-preservation question item 3 above flagged as
+unresolvable from code alone, and with it, whether a real aspect filter is
+actually warranted — for the FOV reason above, not the disproven pairing
+one).
+
 ### Fix: `_resolution_combo()` silently misrepresented a persisted value absent from `get_capabilities()`
 
 Found in passing while investigating a user-reported roadmap item (a
-preview-resolution setting, its own separate entry below), not the subject
+preview-resolution setting, its own separate entry above), not the subject
 of that work — this defect is independent of it and predates it. Applies
 to every resolution combo the Preferences dialog builds through this one
 shared helper (capture/video/stream today; any future one), not just the

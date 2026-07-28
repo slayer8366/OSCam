@@ -1099,14 +1099,20 @@ a real crash (a non-4:3-ish `preview_res` broke its pairing with the
 fixed `LORES_RES`, silently killing focus aid for the rest of the
 process) and has been **removed**. The combo is now disabled
 (`setEnabled(False)`, with an explanatory tooltip) rather than live — see
-"Decouple video resolution from preview" below. `preview_res` is fixed at
-its own `PREVIEW_RES` default again, unconditionally, until a
-stream-resolution setting (a separate, still-open roadmap item) gives the
-preview stream its own independently-settable size. If you ever want
-video resolution to apply live, that still means tearing down and
-rebuilding the camera+widget while running; think hard about it first,
-given this project's track record with in-session camera reconfiguration
-(see `start_recording`'s own docstring).
+"Decouple video resolution from preview" below. **Update**: `preview_res`
+is no longer pinned to `PREVIEW_RES` unconditionally — a real, enabled
+"Preview resolution (next launch)" setting now governs it (`preview_
+resolution_kwargs()`, ROADMAP item 2 REVISED — see this file's own section
+below and `CHANGELOG.md`'s matching entry), self-check-verified but NOT
+yet on-rig. Naming note, worth repeating since this file's own next
+section had to catch it once already: it is "preview_resolution", never
+"stream_resolution" — that name is reserved for a different, dormant,
+unbuilt feature (a future network streaming server). If you ever want
+video resolution (as opposed to preview resolution) to apply live, that
+still means tearing down and rebuilding the camera+widget while running;
+think hard about it first, given this project's track record with
+in-session camera reconfiguration (see `start_recording`'s own
+docstring).
 
 It lives entirely in `qt_shell.py`'s `FocusPreviewWindow`:
 
@@ -2278,6 +2284,94 @@ than Default, and that OK persists it unchanged. Full 16-module
 sensor-mode data — the disabled Video resolution combo should show its
 true persisted value rather than "Default" whenever that value isn't one
 of the real reported sensor modes.
+
+### Preview resolution setting (ROADMAP item 2, REVISED) — BUILT, self-check only, NOT yet on-rig
+
+User-provided, twice-revised brief (`ITEM2_preview_resolution_brief.md`,
+not checked into the repo). Built directly from the handed-over brief, no
+separate intent commit first — this project's usual intent → build →
+record convention applied retroactively in the record rather than
+manufactured as a commit that never happened (same call as the lores
+diagnostic). Full narrative in `CHANGELOG.md`'s matching entry; this
+section is the load-bearing summary for a fresh agent. The
+`_resolution_combo()` fallback fix directly above is a separate commit —
+an unrelated defect found while investigating this brief, not part of it.
+
+**Naming**: the setting is `preview_resolution`
+(`preview_resolution_kwargs()`, mirrors `capture_resolution_kwargs()`),
+**never** `stream_resolution` — a dormant `stream_resolution` pref already
+exists (the `stream_formats`/`stream_resolutions` combo,
+~qt_shell.py 1720-1723/1966-1967), reserved for a future network streaming
+server this backend doesn't implement. Caught before any code was written;
+do not let the two collide in a future session either.
+
+**What it does**: a real, enabled "Preview resolution (next launch)"
+control in Preferences, built from `get_capabilities()`'s unfiltered
+`video_resolutions` (no aspect filter — deliberate, per the brief's
+"build unfiltered, then test, then filter only if the test demands it").
+Feeds `preview_res` at `Picamera2Camera` construction, same shape as
+`capture_resolution_kwargs`/`full_res`. Per the same reasoning as "Video
+resolution menu detail worth knowing" above: since `start_recording()`
+always encodes whatever "main" (== `preview_res`) is, **preview resolution
+is now the real, live control over both the preview AND recorded video
+size** — video resolution stays inert until a future Record-button rework.
+
+**Lores now derives from preview_res's own aspect**, not a fixed 4:3
+constant: `camera_backend.derive_lores_res(preview_res, target_pixels=...)`
+computes an even-dimensioned lores size at roughly the old `LORES_RES`
+pixel count, matching whatever aspect `preview_res` has.
+`Picamera2Camera.__init__`'s `lores_res` parameter is now `None`-default
+and derives via this function unless explicitly overridden. **This means
+`Picamera2Camera`'s lores size is per-instance now, not always the
+`LORES_RES` module constant** — a real behavior change every place in
+`qt_shell.py` that read the bare constant needed checking against. Fixed:
+`FocusPreviewWindow.__init__`'s `_aspect`/`_ov_bufs`, `lores_point_from_
+preview_click()` (gained a `lores_res` parameter), `_live_measuring_view_
+point()` — all now call the new `camera.lores_resolution()` accessor
+(added to `CameraBackend`/`FakeCamera`/`Picamera2Camera`) instead of
+reading `LORES_RES` directly. If you add a NEW place that draws into or
+converts a click against the live lores frame, it must call
+`camera.lores_resolution()` too, not the module constant — a self-check
+using only a default-constructed `FakeCamera` cannot catch a regression
+here, since its `lores_resolution()` happens to equal `LORES_RES` anyway
+(see this project's own `PHILOSOPHY.md` rule on why the render_check
+coverage for this uses an explicit non-default override instead).
+
+**Ruler overlay, traced per the brief's own instruction**: tick generation
+(`_current_ruler_ticks`) depends only on `GREEN_PLANE_RES` × calibration's
+`um_per_px`, never on `preview_res`/lores size; drawing
+(`_draw_ruler_ticks_into`) uses the overlay buffer's own actual shape. So
+once lores/`_ov_bufs` are correctly sized (above), tick placement is
+aspect-independent by construction — no bug found in this path. **What
+tracing genuinely could not settle**: whether a non-4:3 `preview_res` on
+real IMX477 hardware preserves the same physical field of view (resampled
+to different pixel dimensions) or crops it. That's a hardware behavior
+question pure code reading cannot answer — on-rig test item below. **This
+is worth restating precisely, since it matters for a possible future
+filter**: if a wide preview turns out to crop rather than preserve FOV,
+that's a real, different argument for restricting the resolution menu —
+the user sees less specimen at a wide preview resolution — distinct from
+(and better than) the roadmap's original, disproven aspect-pairing theory.
+Only the rig can settle which situation is actually true.
+
+**Verified**: full 16-module `--render-check` sweep, no regressions. New
+coverage: `derive_lores_res`/`lores_resolution()` (camera_backend.py);
+`preview_resolution_kwargs()`; the Preferences dialog's new combo;
+`FocusPreviewWindow`'s dynamic `_aspect`/`_ov_bufs`/click round-trip
+against a non-default `lores_res` (proves the wiring, not just the
+default case).
+
+**On-rig verification explicitly NOT done — needed before this is
+trustworthy**:
+- [ ] Set Preview resolution to **2028×1080** (non-4:3), confirm focus aid
+      still scores and `lores` is present in the active config (the
+      brief's own build-order step 2 — the whole point of this change).
+- [ ] A normal launch at a 4:3 non-default preview resolution: confirm
+      preview, focus aid, AND the ruler all read correctly — this is what
+      actually settles the FOV-preservation question above, which code
+      tracing alone could not answer, and with it whether a future aspect
+      filter is actually warranted (for the FOV reason above, not the
+      disproven pairing one).
 
 ## Things that will bite you if you don't know them
 
