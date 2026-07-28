@@ -32,6 +32,7 @@ two different sessions had to be reconciled (see the comment there).
 from __future__ import annotations
 
 import abc
+import importlib
 import re
 import threading
 from dataclasses import dataclass
@@ -40,6 +41,17 @@ from pathlib import Path
 from typing import Callable, Optional
 
 import numpy as np
+
+# imx477.py is this project's own sensor-profile module (driver layer,
+# same directory) -- FakeCamera reuses it directly below (deliberate: a
+# FakeCamera is a stand-in for THIS project's real rig, and its
+# get_capabilities() already reports real IMX477 mode sizes). Picamera2Camera
+# never references this name directly; see _resolve_sensor_profile below for
+# why (PRIORITY_click_mapping_fix.md's exact-model-name dispatch).
+try:
+    from . import imx477 as _imx477
+except ImportError:
+    import imx477 as _imx477
 
 # Rig defaults (match capture.py). Tunable.
 FULL_RES = (4056, 3040)
@@ -268,6 +280,38 @@ class CameraBackend(abc.ABC):
     def video_resolution(self):
         """The (width, height) the next recording will use."""
 
+    # --- sensor crop geometry (PRIORITY_click_mapping_fix.md) ---------------
+    # Preview-to-green-plane click mapping requires knowing the ACTUAL crop
+    # rectangle each configured stream reads off the sensor's full array --
+    # a scale factor can't express an off-centre crop, which is exactly what
+    # made the old single-fraction mapping wrong. These three methods are
+    # deliberately separate from get_capabilities(): that method's fixed key
+    # set is about rendering choices in the Preferences dialog, this is about
+    # a live coordinate conversion.
+    @abc.abstractmethod
+    def preview_resolution(self):
+        """The ACTUAL (width, height) this camera's live preview/main stream
+        is configured at -- fixed at construction, may differ from this
+        module's own PREVIEW_RES constant once preview_res becomes a
+        per-launch setting. Never hardcode PREVIEW_RES where this is what's
+        actually needed."""
+
+    @abc.abstractmethod
+    def capture_resolution(self):
+        """The ACTUAL (width, height) this camera's still-capture path is
+        configured at -- same fixed-at-construction rule as
+        preview_resolution, mirroring this module's FULL_RES constant."""
+
+    @abc.abstractmethod
+    def sensor_crop_for_size(self, size):
+        """(x, y, w, h) crop rectangle, in full-sensor-array pixel units,
+        that the mode producing `size` reads. Origin and extent, never a
+        scale factor. `size` should be one of this backend's own advertised
+        resolutions (preview_resolution(), capture_resolution(), or an
+        entry from get_capabilities()'s capture_resolutions/
+        video_resolutions) -- an unrecognised size raises rather than
+        guessing."""
+
     # --- capability query (PLAN_02_camera_capability_query.md) -------------
     @abc.abstractmethod
     def get_capabilities(self) -> dict:
@@ -322,8 +366,17 @@ class FakeCamera(CameraBackend):
                  frame_source: Optional[Callable[[], np.ndarray]] = None,
                  seed: int = 0, async_delay_s: float = 0.05,
                  fail_capture: bool = False, stream_caps: bool = False,
-                 capture_shape=(64, 64)):
+                 capture_shape=(64, 64), preview_res=PREVIEW_RES,
+                 full_res=FULL_RES):
         self._w, self._h = lores_res
+        # preview_res/full_res: never varied by main() in real use (FakeCamera
+        # is only ever constructed bare there), but a real render_check needs
+        # to exercise preview_resolution()/capture_resolution()/
+        # sensor_crop_for_size() the same general way Picamera2Camera does --
+        # see PRIORITY_click_mapping_fix.md's "must be general across
+        # arbitrary preview modes" requirement.
+        self._preview_res = tuple(preview_res)
+        self._full_res = tuple(full_res)
         # capture_shape: the (rows, cols) of the stand-in array capture_still
         # writes. Default matches this class's own long-standing hardcoded
         # shape exactly, so every existing caller is unaffected. Exists so a
@@ -582,6 +635,21 @@ class FakeCamera(CameraBackend):
     def video_resolution(self):
         return self._video_res
 
+    # --- sensor crop geometry (PRIORITY_click_mapping_fix.md) ---------------
+    def preview_resolution(self):
+        return self._preview_res
+
+    def capture_resolution(self):
+        return self._full_res
+
+    def sensor_crop_for_size(self, size):
+        # Delegates straight to imx477's own table: FakeCamera's
+        # get_capabilities() already reports real IMX477 mode sizes, so
+        # this is a plausible stand-in, not a fabricated one -- see the
+        # module-level _imx477 import's own comment for why FakeCamera
+        # (and only FakeCamera) may reference it directly.
+        return _imx477.crop_for_size(size)
+
     # --- capability query ----------------------------------------------------
     def get_capabilities(self) -> dict:
         # Cached (Fix: Preferences dialog crash on get_capabilities()): see
@@ -618,6 +686,32 @@ except ImportError:
     _HAVE_PICAMERA2 = False
 
 
+def _resolve_sensor_profile(model):
+    """Resolve `model` (Picamera2().camera_properties['Model'], e.g.
+    "imx477") to its sensor-profile module -- PRIORITY_click_mapping_fix.md's
+    exact-name design: a direct import of the string the hardware itself
+    reports, never a separate mapping table that could drift from what's
+    actually attached. Restricted to a same-named .py file sitting right
+    next to this one (never a same-named package elsewhere on sys.path,
+    which importlib.import_module would otherwise happily resolve to) and
+    to identifier-safe characters, so `model` can only ever resolve to one
+    of this project's own sensor-profile modules. An unrecognised sensor
+    raises, naming the real model -- never a silent fallback to some other
+    sensor's geometry."""
+    if not model or not re.fullmatch(r"[a-z0-9_]+", model):
+        raise RuntimeError(
+            "camera model {!r} is not a valid sensor-profile module name "
+            "(expected lowercase letters/digits/underscore, matching "
+            "camera_properties['Model'] exactly)".format(model))
+    project_dir = Path(__file__).resolve().parent
+    if not (project_dir / "{}.py".format(model)).is_file():
+        raise RuntimeError(
+            "no sensor profile for camera model {!r} -- add {}.py "
+            "alongside camera_backend.py, matching imx477.py's contract "
+            "(FULL_ARRAY_SIZE, crop_for_size)".format(model, model))
+    return importlib.import_module(model)
+
+
 class Picamera2Camera(CameraBackend):
     """Picamera2 implementation of the seam for the Pi HQ camera on a Pi 5.
 
@@ -638,6 +732,22 @@ class Picamera2Camera(CameraBackend):
         self._preview_res = preview_res
         self._lores_res = lores_res
         self._full_res = full_res
+
+        # Sensor-profile resolution (PRIORITY_click_mapping_fix.md): resolve
+        # and cache once, by the hardware's OWN reported model name, never a
+        # hardcoded "imx477" anywhere in this class. camera_properties is a
+        # plain property dict populated at Picamera2() construction -- ON-RIG:
+        # believed passive (unlike sensor_modes below, it should not trigger
+        # a configure() sweep), but not independently confirmed on real
+        # hardware; if it ever turns out to have a side effect, apply the
+        # same read-immediately-after-Picamera2()-construction fix this class
+        # already needed once for sensor_modes.
+        self._sensor_profile = _resolve_sensor_profile(
+            self._picam2.camera_properties["Model"])
+        # Populated by get_capabilities() below, from the SAME sensor_modes
+        # read that primes self._capabilities -- never a second sweep (see
+        # that method's own comment on why sensor_modes can only be read once).
+        self._mode_crops = None
 
         # Capability cache (Fix: Preferences dialog crash on
         # get_capabilities()): self._picam2.sensor_modes is not a passive
@@ -1153,6 +1263,29 @@ class Picamera2Camera(CameraBackend):
     def video_resolution(self):
         return self._video_res
 
+    # --- sensor crop geometry (PRIORITY_click_mapping_fix.md) ---------------
+    def preview_resolution(self):
+        return self._preview_res
+
+    def capture_resolution(self):
+        return self._full_res
+
+    def sensor_crop_for_size(self, size):
+        if self._mode_crops is None:
+            # Not yet built -- shouldn't happen in practice, since
+            # get_capabilities() already runs in __init__, but force it here
+            # too rather than assume, reusing the same cached sensor_modes
+            # read (get_capabilities() never re-touches _picam2 once cached).
+            self.get_capabilities()
+        key = (int(size[0]), int(size[1]))
+        if key in self._mode_crops:
+            return self._mode_crops[key]
+        # A size this real sensor_modes read didn't cover (shouldn't happen
+        # for preview_resolution()/capture_resolution(), which are always
+        # sensor-mode sizes themselves) -- fall back to the profile's own
+        # static table rather than raising outright.
+        return self._sensor_profile.crop_for_size(key)
+
     # --- capability query (PLAN_02_camera_capability_query.md;
     # PLAN_fix_capabilities_cache.md for the caching added after) ----------
     def get_capabilities(self) -> dict:
@@ -1176,6 +1309,21 @@ class Picamera2Camera(CameraBackend):
         modes = self._picam2.sensor_modes
         sizes = sorted({(int(m["size"][0]), int(m["size"][1])) for m in modes})
         formats = sorted({str(m["unpacked"]) for m in modes if "unpacked" in m})
+
+        # Crop geometry (PRIORITY_click_mapping_fix.md): built from this SAME
+        # sensor_modes read, never a second self._picam2.sensor_modes access
+        # (see __init__'s and this method's own notes on why that sweep must
+        # only ever run once). "crop_limits" is already a plain tuple in
+        # picamera2's sensor_modes (unlike "format"), but cast defensively
+        # anyway -- no libcamera-typed value may cross this seam, full stop.
+        # A mode missing "crop_limits" entirely is simply not entered here;
+        # sensor_crop_for_size() falls back to the static profile table for
+        # any size that leaves uncovered.
+        self._mode_crops = {
+            (int(m["size"][0]), int(m["size"][1])):
+                tuple(int(v) for v in m["crop_limits"])
+            for m in modes if "crop_limits" in m
+        }
 
         # video_resolutions reuses the same sensor-mode sizes. Picamera2's
         # main stream can technically be scaled to an arbitrary size via the
@@ -1447,5 +1595,53 @@ if __name__ == "__main__":
         print("assert_only_camera_backend_imports_picamera2 PASS: no other "
               "module imports picamera2/libcamera directly (documented "
               "exceptions aside)")
+
+        # Sensor crop geometry (PRIORITY_click_mapping_fix.md): FakeCamera's
+        # own contract, general across arbitrary preview/full resolutions,
+        # not hardcoded to PREVIEW_RES/FULL_RES.
+        assert cam.preview_resolution() == PREVIEW_RES
+        assert cam.capture_resolution() == FULL_RES
+        assert cam.sensor_crop_for_size(PREVIEW_RES) == _imx477.crop_for_size(PREVIEW_RES)
+        assert cam.sensor_crop_for_size(FULL_RES) == (0, 0, 4056, 3040), \
+            "the full-resolution mode's own crop must be the whole array"
+        custom_cam = FakeCamera(preview_res=(2028, 1080), full_res=(4056, 2160))
+        assert custom_cam.preview_resolution() == (2028, 1080)
+        assert custom_cam.capture_resolution() == (4056, 2160)
+        assert custom_cam.sensor_crop_for_size((2028, 1080)) == (0, 440, 4056, 2160), \
+            "sensor_crop_for_size must be general across arbitrary preview " \
+            "resolutions, not hardcoded to the 1332x990 default"
+        try:
+            cam.sensor_crop_for_size((999, 999))
+            raise AssertionError("expected ValueError for an unknown size")
+        except ValueError:
+            pass
+        print("sensor crop geometry check PASS: preview_resolution/"
+              "capture_resolution report the ACTUAL configured sizes (not "
+              "just the module defaults), sensor_crop_for_size matches "
+              "imx477's own table and is general across a non-default "
+              "preview/full resolution pairing, and an unknown size raises "
+              "rather than guessing")
+
+        # Sensor-profile resolution by exact hardware-reported name
+        # (PRIORITY_click_mapping_fix.md, per the user's own mid-brief
+        # instruction): a direct import of the model string, no mapping
+        # table, and a loud failure naming the real unrecognised sensor.
+        resolved = _resolve_sensor_profile("imx477")
+        assert resolved is _imx477, \
+            "camera model 'imx477' must resolve to this project's own " \
+            "imx477.py, by exact name"
+        for bad_model in ("ov5647", "does_not_exist", "Imx477", "../imx477",
+                          "imx477; rm -rf /", None, ""):
+            try:
+                _resolve_sensor_profile(bad_model)
+                raise AssertionError(
+                    "expected a clear failure for unrecognised/unsafe model "
+                    "{!r}, not a silent resolution".format(bad_model))
+            except RuntimeError:
+                pass
+        print("_resolve_sensor_profile check PASS: 'imx477' resolves to "
+              "this project's own imx477.py by exact name; an unrecognised, "
+              "wrongly-cased, or unsafe model string fails loudly rather "
+              "than silently falling back to IMX477 geometry")
 
         print("camera_backend self-check PASS")
