@@ -2100,6 +2100,170 @@ review, and post-capture QC. If you make an architecturally-visible change
 (new tool, new menu, a file removed or renamed), update `README.md` in the
 same commit rather than letting it drift again.
 
+### PRIORITY: preview-to-green-plane click mapping is wrong — intent recorded, not yet built
+
+Phase 1 of 2 (record intent). Full brief in a user-provided
+`PRIORITY_click_mapping_fix.md` (not checked into the repo), plus a
+mid-turn clarification from the user on the sensor-profile module's naming
+(folded in below). **This is a measurement-accuracy defect, confirmed
+on-rig, and outranks every remaining roadmap item** — it supersedes the
+roadmap's ordering the same way the freeze-on-first-click bug did earlier.
+
+**The defect.** A stage micrometer in view: the live preview shows 19
+divisions across the frame; the frozen plane shows 27 divisions across the
+same frame (~1.42x wider field), plus the circular field stop and
+vignetted corners the preview never shows. Confirmed consequence: the
+freeze-triggering click registers point 1 at a visibly different place on
+the frozen plane than where it was actually clicked.
+
+**Root cause.** `native_point_from_preview_click(px, py, disp_rect,
+green_plane_res)` (`qt_shell.py`) converts a preview-widget click into
+green-plane coordinates via one letterboxing-aware fraction. That's only
+correct if the preview stream and the green plane cover the same field of
+view — they don't. The preview comes from `preview_res` (default
+1332x990); the green plane comes from the still config built on `full_res`
+(4056x3040). Those are two different IMX477 sensor modes with two
+different crop rectangles read off the sensor array — 1332x990 is a
+cropped mode, not a binned-down version of the same full-array view
+4056x3040 reads. Expected FOV ratio for this pairing is roughly 1.52
+against the on-rig-measured ~1.42 (division-counting at a frame edge is
+imprecise, so that gap isn't alarming) — **neither number is the
+calibration source; the fix derives the correction from the sensor's own
+reported crop geometry, never a hand-counted ratio.**
+
+**Scope**: point 1 of every measurement is affected (the only point that
+crosses between the live preview and the frozen plane); points 2+ are
+already correct (clicks on the frozen canvas, `mapToScene`, no cross-view
+conversion). Error is zero at frame centre and grows toward the edges.
+Pre-existing, not introduced by the freeze-on-first-click fix — but that
+fix made the inaccurate path mandatory (before it, a click with no tool
+armed was discarded, so the bad conversion was avoidable).
+
+**Interim workaround, for the user, until this lands**: freeze with the
+click, press **Escape** to cancel the in-progress shape, then place both
+points on the frozen canvas — avoids the cross-view conversion entirely.
+
+**Also worth recording**: any measurement already committed whose first
+point came from a freeze click placed off-centre carries this error.
+Those results predate the fix and should not be treated as equivalent to
+ones taken after it — no way to retroactively correct them, since the
+click's own screen position wasn't recorded, only its (wrong) converted
+coordinate.
+
+**The plan** (promotes roadmap item 3, the sensor-profile module, from an
+architectural tidy-up to a prerequisite for measuring correctly):
+
+1. **New `imx477.py`** (sensor profile module, driver layer, alongside
+   `camera_backend.py`). Exposes, for a given output size, the crop
+   rectangle that mode reads from the full sensor array — origin AND
+   extent (`(x, y, w, h)` in full-array pixel units), not a scale factor,
+   since a scale factor can't express an off-centre crop (exactly the bug
+   above). A static table is the off-rig/`--render-check` fixture only;
+   on-rig, `Picamera2().sensor_modes`' own `crop_limits` is authoritative
+   and must be read from the SAME cached sweep `get_capabilities()`
+   already primes at construction (see the "sensor_modes is not a passive
+   lookup" entries elsewhere in this file) — never a second sweep.
+   `FakeCamera` needs a plausible implementation too, or the self-check
+   can't run end to end.
+
+   **Naming, per the user's own instruction, given mid-brief**: the module
+   name must match `Picamera2().camera_properties['Model']` EXACTLY (e.g.
+   `"imx477"`), not a name chosen for readability. That buys a direct
+   lookup with no separate mapping table to drift from what the hardware
+   reports: `camera_backend.py` resolves a sensor to its profile module by
+   importing the exact string the hardware itself names, restricted to a
+   same-named `.py` file sitting next to `camera_backend.py` (never an
+   unrelated same-named package elsewhere on `sys.path`). An unrecognised
+   sensor fails as a missing module named after the real sensor model,
+   never a silent fallback to IMX477 geometry for hardware this project
+   has never seen. This is also why `camera_backend.py` itself stays fully
+   sensor-agnostic — it never hardcodes the string `"imx477"` anywhere in
+   its own dispatch logic, only `FakeCamera` does (deliberately: it's a
+   stand-in for THIS project's real rig, and its `get_capabilities()`
+   already returns real IMX477 mode sizes).
+
+   Worth flagging explicitly: `PHILOSOPHY.md`'s hardened rule says
+   `camera_backend.py` is "the only file in this project that may know
+   what an IMX477 is." A separate `imx477.py` reads, on its face, like it
+   crosses that line. Resolution: the enforceable content of that rule —
+   checked structurally by `assert_only_camera_backend_imports_picamera2`
+   — is that no OTHER module may import `picamera2`/`libcamera` or see a
+   libcamera-typed value, and that higher layers never encode sensor
+   geometry. `imx477.py` imports neither, is imported ONLY from
+   `camera_backend.py` (never from `qt_shell.py`/`measure.py`/anything
+   above the seam), and the dynamic-resolution-by-hardware-reported-name
+   design above means `camera_backend.py` itself carries zero hardcoded
+   IMX477 knowledge. Both halves of the rule hold; this is "driver layer"
+   in the plural (`camera_backend.py` + per-sensor profile modules it
+   dispatches to), not a violation of "one file total."
+
+2. **`CameraBackend` gains three new methods** — `preview_resolution()`
+   and `capture_resolution()` (the ACTUAL configured `(w, h)` for the live
+   preview stream and the still-capture path; needed so the fix is general
+   across arbitrary preview resolutions once item 2, the user-settable
+   preview_res, is on-rig — never a hardcoded 1332x990 correction) and
+   `sensor_crop_for_size(size)` (the `(x, y, w, h)` crop rectangle for
+   any of this backend's own advertised sizes). `FakeCamera` implements
+   all three plausibly (delegating the crop lookup straight to
+   `imx477.crop_for_size`, since its `get_capabilities()` already reports
+   real IMX477 sizes); `Picamera2Camera` implements them from cached
+   sensor data.
+
+3. **Fix the conversion** (`qt_shell.py`): `native_point_from_preview_click`
+   keeps its name (the Live Measuring boundary check at
+   `assert_live_measuring_has_no_calibration_dependency` already forbids
+   that exact name in the unrelated pixel-only feature, and that guard
+   should keep working unchanged) but its body becomes the full chain: (1)
+   widget point -> fraction of the preview stream (existing
+   `frac_from_point`, unchanged), (2) fraction -> full-sensor-array pixel
+   coordinate, via the PREVIEW mode's own crop rectangle, (3) sensor
+   coordinate -> green-plane pixel coordinate, via the STILL mode's crop
+   rectangle. Stays a pure function taking both crop rectangles as
+   arguments — Qt-free, camera-free, testable in `--render-check` with no
+   hardware, matching how this file already separates decisions from Qt.
+   The one production call site (`_live_measure_preview_event`) sources
+   the two crop rectangles from `self.camera.sensor_crop_for_size(...)`
+   fed by the new `preview_resolution()`/`capture_resolution()` accessors,
+   never a module-level constant.
+
+4. **The interim-behaviour question the brief raised** ("stop
+   auto-registering point 1 until the fix lands, so the user places both
+   points on the frozen canvas") **does not apply** — the real fix (steps
+   1-3 above) lands in this same piece of work, so there is no gap for
+   that flip-flop to bridge.
+
+**Static crop table, `imx477.py`** (off-rig fallback / fixture only — full
+array `(0, 0, 4056, 3040)`, the 5 real discrete sizes this project's own
+on-rig `sensor_modes` read already confirmed, see the "Camera capability
+query: `sensor_modes` hardware-verified" entry above): full-FOV binned
+`2028x1520` and full-FOV unbinned `4056x3040` both read the whole array;
+the 16:9-cropped `2028x1080`/`4056x2160` pair reads a centred
+`(0, 440, 4056, 2160)` crop (binned/unbinned versions of the same window);
+`1332x990` reads a centred `(696, 530, 2664, 1980)` crop — derived from
+this mode's own 2x2-binning arithmetic and centring, **not** independently
+confirmed against a real `crop_limits` read. Cross-check: that derivation
+implies a preview/still FOV ratio of 4056/2664 ≈ 1.523, matching this same
+brief's own "expected ratio roughly 1.52" note almost exactly — reasonable
+corroboration, but on-rig confirmation (reading real `crop_limits`
+directly) should still replace this table's role as anything but a
+fallback/fixture the moment hardware is available.
+
+**Verification plan**: `--render-check` proves the conversion chain as a
+pure function against several crop-rectangle pairs, including an
+off-centre crop and the identity case (same crop for both views ->
+result matches the OLD single-fraction behaviour exactly, proving the fix
+provably doesn't change the already-correct case). **On-rig verification
+is explicitly NOT done by this session** (no hardware access, same
+standing limitation as the rest of this file's Qt-facing work) — the real
+test is the stage micrometer: click exactly on a clearly identifiable
+division near the left edge, the right edge, and the centre of the
+preview; point 1 must land on that same division in the frozen plane each
+time. Worth re-running at a second preview resolution once item 2 (the
+user-settable `preview_res`) is itself on-rig.
+
+No code has changed for this yet — see the matching Build entry once it
+lands.
+
 ## Design conventions worth knowing before you add anything
 
 - **Evidence, never a gate.** `poly2_flag`, `sharpness_relative_flag`,

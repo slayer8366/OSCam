@@ -5,6 +5,50 @@ dump — each entry names the commit(s) it corresponds to for traceability.
 See `HANDOFF.md` for what a fresh agent needs to know before working here;
 this file is the historical record of what happened and why.
 
+## 2026-07-28
+
+### Intent: preview-to-green-plane click mapping fix (promotes roadmap item 3)
+
+Recording intent before building, per this repo's two-phase documentation
+rule. Full brief in a user-provided `PRIORITY_click_mapping_fix.md` (not
+checked into the repo). **Measurement-accuracy defect, confirmed on-rig,
+outranking the rest of the roadmap**: a stage micrometer shows 19
+divisions in the live preview but 27 in the frozen plane (~1.42x wider
+field) — the freeze-triggering click's point 1 lands at a different place
+on the frozen plane than where it was actually clicked. Points 2+ are
+unaffected (frozen-canvas clicks, no cross-view conversion).
+
+**Root cause**: `native_point_from_preview_click` (`qt_shell.py`) converts
+a preview click to green-plane coordinates via one letterboxing-aware
+fraction, correct only if the preview and the green plane share a field of
+view. They don't — `preview_res` (1332x990) and `full_res` (4056x3040) are
+different IMX477 sensor modes with different crop rectangles read off the
+array, and the smaller mode is a genuine crop, not a binned-down full view.
+
+**The plan**: a new `imx477.py` sensor-profile module (driver layer,
+alongside `camera_backend.py`) exposing each mode's own crop rectangle
+(origin + extent, never a scale factor — an off-centre crop can't be
+expressed as a ratio); three new `CameraBackend` methods
+(`preview_resolution`/`capture_resolution`/`sensor_crop_for_size`, with a
+plausible `FakeCamera` implementation); `native_point_from_preview_click`'s
+body replaced with the full three-step chain (fraction -> sensor
+coordinate via the preview mode's crop -> green-plane coordinate via the
+still mode's crop), staying a pure, Qt-free function. Full reasoning,
+including the user's own mid-brief instruction that the profile module's
+name must match `Picamera2().camera_properties['Model']` EXACTLY (a direct
+lookup with no mapping table to drift from reality, so an unrecognised
+sensor fails loudly by name instead of silently reusing IMX477 geometry),
+lives in `HANDOFF.md`'s matching entry — including how this squares with
+`PHILOSOPHY.md`'s "only `camera_backend.py` may know what an IMX477 is"
+rule.
+
+**Interim workaround for the user until this lands**: freeze with the
+click, press Escape to cancel the in-progress shape, then place both
+points on the frozen canvas.
+
+No code changed in this commit — `HANDOFF.md`/`CHANGELOG.md` only. See the
+matching Build entry once it lands.
+
 ## 2026-07-27
 
 ### Fix: `Picamera2Camera` construction order left the camera in the `sensor_modes` probe's leftover config
