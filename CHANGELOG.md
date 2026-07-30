@@ -5,6 +5,92 @@ dump — each entry names the commit(s) it corresponds to for traceability.
 See `HANDOFF.md` for what a fresh agent needs to know before working here;
 this file is the historical record of what happened and why.
 
+## 2026-07-29
+
+### Record intent: PyQt5 to PyQt6 port
+
+Branch `port/pyqt6`, deliberately not main. Everything currently marked
+confirmed on-rig in the UI layer drops to unconfirmed the moment this
+lands, and the old build has to stay benchable against the new one during
+the deep verification session. That is the reason for the branch, not
+caution about the diff size.
+
+**Scope is the port and nothing else.** It is a port, not a rewrite. No
+restructuring, no renaming, no fixing things that are visible while
+passing through. The out-of-scope list is the one handed over in the port
+brief and it is reproduced in `HANDOFF.md` under the port section, because
+several items on it are things any agent working in these files will want
+to fix and must not.
+
+**Why now.** Qt5 is past end-of-life for open-source users, so Qt6 is
+where platform and Wayland fixes land. Sequencing it ahead of the pending
+sensor-geometry work means the same modules are not edited twice, and
+everything written after this point is built against the new API.
+
+**Method.** The enum-scoping rewrite is not being done from a hand-written
+mapping table. PyQt6 6.11.0 was installed and introspected, and every
+unscoped `Class.MEMBER` in the tree was resolved by asking the real
+library two questions in order: does the bare name still resolve on that
+class, and if not, which nested enum actually holds it. A name that
+resolved in more than one nested enum, or in none, was to be reported
+rather than guessed at. Neither case occurred. A hand-written table was
+the available alternative and was rejected because a wrong entry in it
+would produce a plausible-looking rewrite that fails at runtime on a rig,
+which is the most expensive place in this project to find a mistake.
+
+**Measured scope, before any edit** (13 files carry `PyQt5`, 18,536 of the
+project's ~22k lines):
+
+| Category | Count |
+|---|---|
+| Enum scopings | 153 |
+| `exec_()` to `exec()` | 31 across 6 files |
+| Module relocations | 1 (`QActionGroup`, `QtWidgets` to `QtGui`, qt_shell.py:366) |
+| Ambiguous or unresolved names | 0 |
+
+`qt_shell.py` holds 119 of the 153 scopings. `Qt.LeftButton` alone
+accounts for 22, `QEvent.MouseButtonPress` for 13, `Qt.NoModifier` for 12.
+
+**Four of the breakages the port brief warned about do not exist in this
+tree**, checked rather than assumed: no `QAction` import, no `QShortcut`,
+no `QRegExp`, no `QDesktopWidget`, and no `AA_EnableHighDpiScaling` or
+`AA_UseHighDpiPixmaps`. The brief flagged the last two as needing care
+given this project's compositor and display-scaling history. There is
+nothing to remove, so that history is not in play here. Qt6 turns scaling
+on unconditionally, which is a real behavioural difference from Qt5 on the
+tablet display over HDMI, but it arrives from Qt rather than from an edit
+in this diff, and it cannot be characterized without the rig.
+
+**Two silent-failure risks were probed and cleared, and they are the
+reason to write this down rather than trust the loud failures.** Qt6
+enums mostly compare equal to their old integer values, but not all of
+them do. `Qt.MouseButton.LeftButton == 1` is False and
+`Qt.KeyboardModifier.NoModifier == 0` is False, because those two are flag
+types rather than int enums. Code comparing `ev.button()` or
+`ev.modifiers()` against an integer literal would therefore go quietly
+false rather than raising. Every comparison site in this tree was
+inspected: all five `button()` comparisons and the single `modifiers()`
+site compare enum to enum, so none are affected. This is recorded because
+the next person to write `== 0` against a modifier here will not get an
+error.
+
+`QMouseEvent.pos()` is deprecated in Qt6 but still present in 6.11.0 and
+still returns `QPoint`, verified by probe, so the four call sites are left
+alone. `globalPos()` is genuinely gone, and is not used anywhere in the
+tree. The 5-argument `QMouseEvent` and 3-argument `QKeyEvent`
+constructors that the embedded self-check suite depends on both still
+work in 6.11.0, also verified by probe.
+
+**What this port cannot prove.** No rig here, and no picamera2 or
+libcamera. Verification available on this branch is limited to: no
+`PyQt5` import surviving anywhere, every file compiling, every Qt
+attribute in the tree resolving against real PyQt6, and whichever of the
+embedded self-checks run headless under the offscreen platform. That last
+one is a genuine check of behaviour and not just of syntax, but it is not
+the rig, and per `PHILOSOPHY.md` it does not count as verification. The
+four deep-verification items are handed over unconfirmed. See the port
+section in `HANDOFF.md` for the split lists.
+
 ## 2026-07-28
 
 ### Build: Preview resolution setting (ROADMAP item 2, REVISED) — self-check only, NOT yet on-rig

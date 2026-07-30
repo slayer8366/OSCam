@@ -22,6 +22,94 @@ for durable rules about *how* things get verified here (as opposed to what
 currently is or was built) — in particular, its rule on what a self-check
 actually has to prove before it counts as verification.
 
+## READ FIRST: the Qt6 port is on a branch (`port/pyqt6`)
+
+If you are on `main`, this project is PyQt5 and everything below about
+verification state still holds. If you are on `port/pyqt6`, the UI layer
+is PyQt6 and **every on-rig confirmation in the UI layer has dropped to
+unconfirmed**, by design and not by accident. Both builds are kept
+available so the new one can be benched against the old one in a single
+deep verification session.
+
+The port is mechanical. Nothing was restructured, renamed, or improved
+while converting. If you find something in the Qt6 files that looks
+better or worse than its Qt5 counterpart beyond enum spelling, `exec()`,
+and one moved import, that is a bug in the port and should be treated as
+one.
+
+### Out of scope for the port, and still out of scope
+
+These are known problems, they are all visible from inside the files the
+port touches, and they are all scheduled work with their own sequencing.
+Folding any of them in makes the port unreviewable and makes a later
+regression ambiguous between "the port broke it" and "the fix broke it."
+
+- `GREEN_PLANE_RES` and `FULL_RES` duplicated across `measure.py`,
+  `qt_shell.py`, `gallery.py`, `calibrate.py`
+- The live bug at `qt_shell.py:3452` passing the module `GREEN_PLANE_RES`
+  constant instead of the camera's own configured size
+- The green-plane loader hardcoding `(3040, 4056)` and `(1520, 2028)`
+  instead of deriving shapes from the sensor profile
+- Missing mono / no-CFA path
+- BGGR assumed as the only CFA pattern in `calibrate.py` and
+  `ca_measure.py`
+- `FULL_MODE_LBL` hardcoded into every `session.json` provenance record
+- Open `G_IS_OBJECT` assertion at teardown
+- Extracting capture logic out of `qt_shell.py`
+- provenance.py phase 2
+
+The line numbers above are as of the port. The port does not change line
+counts in a way that moves them, but check before trusting one.
+
+### What the port actually changes
+
+Three things, and only these three:
+
+1. **Enum scoping**, 153 sites. `Qt.AlignCenter` becomes
+   `Qt.AlignmentFlag.AlignCenter` and so on throughout. Resolved by
+   introspecting real PyQt6 6.11.0 rather than from a written table, so
+   the target of every rewrite is a name the library confirmed it has.
+2. **`exec_()` becomes `exec()`**, 31 sites across 6 files.
+3. **`QActionGroup` moves** from `QtWidgets` to `QtGui`, one import line
+   in `qt_shell.py`.
+
+Plus `PyQt5` to `PyQt6` in the import lines themselves. Nothing else.
+
+### The trap that does not fail loudly
+
+Most of the Qt6 enum changes fail at import or first use, which is
+helpful. Two do not, and they are worth knowing before you write new
+event-handling code here:
+
+- `Qt.MouseButton.LeftButton == 1` is **False**
+- `Qt.KeyboardModifier.NoModifier == 0` is **False**
+
+Both are flag types in Qt6, not int enums, so they no longer compare equal
+to the raw integers they used to be. `Qt.Key.Key_Escape == 16777216` is
+still True, and `QEvent.Type`, `QDialog.DialogCode` and
+`QMessageBox.StandardButton` all still compare equal to their old ints, so
+the inconsistency is the dangerous part rather than the rule.
+
+Every existing comparison site in the tree was checked at port time and
+all compare enum to enum, so nothing is broken today. If you write
+`if ev.modifiers() == 0` in this codebase you will get a silently false
+branch and no error.
+
+`QMouseEvent.pos()` is deprecated but alive in 6.11.0 and still returns
+`QPoint`. It was left alone at all four sites, because changing it would
+be a behavioural edit and this was a port. `globalPos()` is gone from Qt6
+entirely; it was never used here.
+
+### Verification state of the port
+
+Self-checked only. No rig was available to the porting agent, and neither
+was picamera2 or libcamera, so the ceiling on this branch was: no `PyQt5`
+import surviving, every file compiling, every Qt attribute resolving
+against real PyQt6, and the embedded self-checks that run headless. Per
+`PHILOSOPHY.md` that is not verification. The split light/deep lists are
+in the `CHANGELOG.md` build entry for this port.
+
+
 ## Current state (as of this handoff)
 
 The build checklist referenced throughout commit messages and code comments
