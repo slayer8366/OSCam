@@ -7,6 +7,127 @@ this file is the historical record of what happened and why.
 
 ## 2026-07-29
 
+### Build: PyQt5 to PyQt6 port — self-check only, NOT yet on-rig
+
+Branch `port/pyqt6`. Built to the intent recorded below it, with one
+correction to that intent: it said the port changes three things. It
+changes five. The two the intent did not anticipate are the interesting
+ones.
+
+**The three formulaic categories, as scoped:** 153 enum scopings, 31
+`exec_()` to `exec()` (two of them `QMenu.exec_(pos)` call sites, not
+bare `exec_()`), and `QActionGroup` moving from `QtWidgets` to `QtGui`.
+The `preexec_fn` mention in the ffmpeg comment is a subprocess kwarg, not
+Qt, and was correctly not swept up — which is the argument for having
+matched `.exec_()` specifically instead of the bare token `exec_`.
+
+**Fourth: `_FakeWizard.exec_` had to become `exec`.** It is the test
+double `render_check` substitutes for `ProcessWizard` in the z-stack
+section. Its production caller is `wiz.exec()` now, so a double still
+offering `exec_` would have failed with an AttributeError. Loud, but it
+would have failed. The dict key `"exec_called"` is a label rather than an
+API name and was left alone.
+
+**Fifth, and the one worth the entry: `ev.x()` and `ev.y()` are removed
+in Qt6.** 10 sites over 5 lines, in `calibrate.py` and `qt_shell.py`.
+
+Static analysis did not find this, and no amount of it would have. Both
+resolvers written for this port work on `Class.MEMBER` lookups — one
+asking whether a bare enum name still resolves, one asking whether every
+Qt attribute in the tree exists on real PyQt6. An instance method call on
+an event object is invisible to both. What found it was
+`qt_shell.py --render-check`, dying in `_live_measure_preview_event` on
+the crop-aware click-mapping path — the path confirmed on-rig only
+recently, and the first item on the deep verification list.
+
+The lesson is not that the static passes were wasted; they cleared 153
+sites with zero ambiguity and confirmed every import. The lesson is that
+they were **necessary and not sufficient**, and that this project's habit
+of embedding real self-checks in the modules is what covered the gap.
+
+**`pos()` and not `position()`, deliberately.** Qt6 offers
+`position().x()` as the modern replacement and it is the wrong choice
+here:
+
+- Qt5's `ev.x()` returned `int`
+- `position().x()` returns `float`
+- `native_point_from_preview_click` and `widget_to_native` both do float
+  arithmetic, so a float argument does **not** raise
+
+That combination is the bad one. It would not have failed; it would have
+moved every click by up to a pixel. At the current 4x calibration of
+1.4084 um/px that is a real change in measured values, arriving inside a
+port whose whole promise was that it changes nothing. `pos()` still
+returns `QPoint` in 6.11.0, verified by probe, so the values handed to
+the geometry functions are bit-for-bit what Qt5 handed them.
+
+`pos()` is deprecated and will eventually go. Recorded in `HANDOFF.md` as
+open with a known cause and a decision deliberately not made: choosing
+`position()` means choosing float coordinates, and that wants the stage
+micrometer, not a code review.
+
+**Zero line drift.** All 13 files have the same line count they have on
+`main`; the commit is 205 insertions against 205 deletions. Every
+line-number reference in `HANDOFF.md`, in this file, and in the code
+comments still points where it did. The out-of-scope `GREEN_PLANE_RES`
+bug is still at `qt_shell.py:3452`, the same line the port brief cited.
+This cost one deliberate re-edit: a comment correction had grown to
+eleven lines and was cut back to two, because nine lines of drift in
+`qt_shell.py` would have quietly invalidated every line reference below
+it in two documents. Reasoning goes in the docs; the code keeps the
+pointer stable.
+
+**Two comments, handled differently, for the same reason.** The blanket
+`PyQt5` to `PyQt6` swap ran through prose as well as imports, and two of
+its rewrites were not automatically safe:
+
+- The `QWidget.screen()` comment explained the code was avoiding a Qt
+  5.14+ API "for broader PyQt5 compatibility." Rewritten mechanically it
+  claimed broader *PyQt6* compatibility, which is meaningless when 5.14
+  is not a floor anyone can be below. Corrected by hand.
+  `QApplication.primaryScreen()` itself needs no migration; this project
+  never used the removed `QDesktopWidget`.
+- The `findData` comment recorded an empirical finding: `findData` fails
+  to match an equal-but-distinct runtime-built tuple, which is why
+  `_index_for_data` scans with `==` instead. Reattributing that finding
+  to PyQt6 without testing would have been asserting something nobody
+  checked. It was tested: `combo.findData(probe)` returns -1 while
+  `combo.itemData(1) == probe` is True, under PyQt6 6.11.0. The quirk
+  survives, so the workaround stays justified and the comment is now
+  true of the library it names.
+
+**Out-of-scope list: nothing touched.** Verified rather than asserted —
+zero lines in the diff mention `GREEN_PLANE_RES`, `FULL_RES`,
+`FULL_MODE_LBL`, `G_IS_OBJECT`, `BGGR`, or the hardcoded `(3040, 4056)` /
+`(1520, 2028)` green-plane shapes.
+
+**Four of the port brief's expected breakages are absent from this tree**,
+checked rather than assumed: no `QAction` import, no `QShortcut`, no
+`QRegExp`, no `QDesktopWidget`, and neither High-DPI attribute. The brief
+flagged the last two as needing care given this project's compositor and
+display-scaling history. There was nothing to remove, so that history is
+not in play in this diff. Qt6 does turn scaling on unconditionally, which
+is a real difference on the tablet display over HDMI, but it arrives from
+Qt and not from an edit here, and it cannot be characterized without the
+rig.
+
+**What was proved.** No `PyQt5` import anywhere, and the token in no
+comment or string either. Every file compiles. Every Qt attribute
+resolves against real PyQt6 6.11.0, including every scoped enum path and
+every imported name against its module. No event-object method call in
+the tree is missing from the PyQt6 event classes. All 12 modules with a
+`--render-check` pass headless under the offscreen platform, exit 0, with
+48 PASS lines in `qt_shell.py` alone including the live-measure panel,
+freeze-fix cases 1-5, canvas-fit cases 1-5, and the Live Measuring click
+conversion.
+
+**What was not proved.** Any of it, on hardware. `FakeCamera`, no
+libcamera, no sensor, offscreen QPA. Per `PHILOSOPHY.md` this is a
+self-check and not verification. The light and deep verification lists,
+and the reason all four deep items drop to unconfirmed, are in
+`HANDOFF.md` under the port section.
+
+
 ### Record intent: PyQt5 to PyQt6 port
 
 Branch `port/pyqt6`, deliberately not main. Everything currently marked

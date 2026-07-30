@@ -63,17 +63,65 @@ counts in a way that moves them, but check before trusting one.
 
 ### What the port actually changes
 
-Three things, and only these three:
+Five things, and only these five. The first three are formulaic. The
+last two are not, and the fifth is the one to read.
 
 1. **Enum scoping**, 153 sites. `Qt.AlignCenter` becomes
    `Qt.AlignmentFlag.AlignCenter` and so on throughout. Resolved by
    introspecting real PyQt6 6.11.0 rather than from a written table, so
    the target of every rewrite is a name the library confirmed it has.
-2. **`exec_()` becomes `exec()`**, 31 sites across 6 files.
+2. **`exec_()` becomes `exec()`**, 31 sites across 6 files. Two of those
+   are `QMenu.exec_(pos)` call sites rather than bare `exec_()`.
+   `preexec_fn` in the ffmpeg comment is not Qt and was left alone.
 3. **`QActionGroup` moves** from `QtWidgets` to `QtGui`, one import line
    in `qt_shell.py`.
+4. **`_FakeWizard.exec_` becomes `exec`** in `render_check`'s z-stack
+   section. It is a test double standing in for `ProcessWizard`; when the
+   production caller renamed, the double had to rename with it or the
+   self-check would have died on an AttributeError.
+5. **`ev.x()` / `ev.y()` become `ev.pos().x()` / `ev.pos().y()`**, 10
+   sites over 5 lines, in `calibrate.py` and `qt_shell.py`.
 
-Plus `PyQt5` to `PyQt6` in the import lines themselves. Nothing else.
+Plus `PyQt5` to `PyQt6` in the import lines. Nothing else.
+
+**The port introduces zero line drift.** All 13 files have exactly the
+same line count as they do on `main`, and the build commit is 205
+insertions against 205 deletions. Every line-number reference in this
+file, in `CHANGELOG.md`, and in the code comments therefore still points
+where it did before the port. The out-of-scope `GREEN_PLANE_RES` bug is
+still at `qt_shell.py:3452`. This was worth one deliberate re-edit: an
+explanatory comment that had grown to eleven lines was cut back to two
+so it would not shift everything below it by nine. Long-form reasoning
+belongs in this file and the changelog, which is where it went.
+
+### Item 5 is the one that matters
+
+Qt6 removes `QMouseEvent.x()` and `y()` outright. **Static analysis did
+not catch this and could not have.** Both the enum resolver and the
+attribute resolver work on `Class.MEMBER` lookups; this is an instance
+method call, so it is invisible to them. `qt_shell.py --render-check`
+caught it, inside `_live_measure_preview_event`, on the crop-aware
+click-mapping path that had only just been confirmed on-rig.
+
+`pos()` rather than `position()` is a behavioural decision, not a style
+one, and it should not be quietly reversed later:
+
+- Qt5's `ev.x()` returned **int**
+- Qt6's `position().x()` returns **float**
+- `native_point_from_preview_click` and `widget_to_native` both do float
+  math, so a float input would **not** raise
+
+So switching to `position()` would not fail loudly. It would shift every
+click by up to a pixel. At the current 4x calibration of 1.4084 um/px
+that is a real change to measured values, introduced by a port that was
+supposed to change nothing. `pos()` returns `QPoint`, so the numbers
+reaching the geometry functions are identical to what Qt5 delivered.
+
+**Open, cause known, decision not made:** `pos()` is deprecated in Qt6.
+It is alive in 6.11.0 and still returns `QPoint`, verified by probe, but
+it will go eventually. Moving to `position()` is the int-versus-float
+call above and wants the rig and a stage micrometer, not a code review.
+Left characterized rather than decided.
 
 ### The trap that does not fail loudly
 
@@ -102,12 +150,67 @@ entirely; it was never used here.
 
 ### Verification state of the port
 
-Self-checked only. No rig was available to the porting agent, and neither
-was picamera2 or libcamera, so the ceiling on this branch was: no `PyQt5`
-import surviving, every file compiling, every Qt attribute resolving
-against real PyQt6, and the embedded self-checks that run headless. Per
-`PHILOSOPHY.md` that is not verification. The split light/deep lists are
-in the `CHANGELOG.md` build entry for this port.
+**Self-checked. NOT confirmed on-rig.** No rig was available to the
+porting agent, and neither was picamera2 or libcamera.
+
+What was actually proved here:
+
+- No `PyQt5` import survives anywhere in the tree, and the token appears
+  in no comment or string either
+- All files compile
+- Every Qt attribute in the tree resolves against real PyQt6 6.11.0,
+  including every scoped enum path and every imported name against the
+  module it is imported from
+- No event-object method call in the tree is missing from the PyQt6
+  event classes
+- **All 12 modules carrying a `--render-check` pass headless under the
+  offscreen platform, exit 0.** `qt_shell.py` alone reports 48 PASS
+  lines, among them the live-measure panel, freeze-fix cases 1-5,
+  canvas-fit cases 1-5, and the Live Measuring click conversion
+
+That last one is a genuine check of behaviour rather than syntax, and it
+is what caught the `ev.x()` removal. It is still `FakeCamera` with no
+libcamera, no sensor, and an offscreen QPA, so per `PHILOSOPHY.md` it
+does not count as verification.
+
+### Light verification (fails loudly, two minutes each)
+
+Enum mistakes surface here, immediately and noisily.
+
+- App launches under labwc
+- Preview streams
+- Capture writes a file
+- Dialogs open
+- Menus and toolbars populate
+- Settings persist
+
+### Deep verification (needs the stage micrometer, one session)
+
+**All four drop to unconfirmed.** That is expected and is the known cost
+of the port: the UI layer that was verified no longer exists in the same
+form.
+
+1. **Live Measure freeze and crop-aware coordinate conversion.** A click
+   on the preview must land on the clicked feature in the frozen still.
+   Relevant ratio 1.5225, for a 1332x990 preview against the 4056x3040
+   array. **Check this one first.** It is the only place the port made a
+   non-formulaic change, item 5 above, and it is the exact code path
+   that change sits in.
+2. **Measure tool at 4x** against a 1 DIV = 0.1mm stage micrometer.
+   Current 4x calibration 1.4084 um/px, calibration history entry #4. A
+   systematic offset of about one preview pixel here would point back at
+   the `pos()` versus `position()` decision.
+3. **Z-stacking**, including per-plane ROI reset and focus-aid sharpening
+   across planes.
+4. **Focus aid scoring**, Laplacian variance based.
+
+One thing to watch that is not on either list, because it comes from Qt
+rather than from this diff and cannot be characterized without the rig:
+Qt6 turns high-DPI scaling on unconditionally. There was nothing to
+remove here, since the tree never set `AA_EnableHighDpiScaling` or
+`AA_UseHighDpiPixmaps`, but given this project's history with compositor
+output scale on HDMI-A-1, the preview's size and the tablet display are
+worth a look on the first launch.
 
 
 ## Current state (as of this handoff)
