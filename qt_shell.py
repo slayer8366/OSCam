@@ -3443,13 +3443,21 @@ if _HAVE_QT:
                 # rectangles -- never GREEN_PLANE_RES/PREVIEW_RES module
                 # constants here, always the camera's OWN actual configured
                 # sizes (general across a user-set preview_res, item 2).
+                # green_plane_res must be derived from still_res THE SAME WAY
+                # -- the module-level GREEN_PLANE_RES constant is only ever
+                # right when capture_resolution() happens to equal the
+                # module's own FULL_RES default; a user-set "Capture
+                # resolution" preference (still_res != FULL_RES) silently
+                # broke this click mapping while leaving preview_crop/
+                # still_crop looking correctly dynamic right next to it.
                 preview_res = self.camera.preview_resolution()
                 still_res = self.camera.capture_resolution()
                 preview_crop = self.camera.sensor_crop_for_size(preview_res)
                 still_crop = self.camera.sensor_crop_for_size(still_res)
+                green_plane_res = (still_res[0] // 2, still_res[1] // 2)
                 native = native_point_from_preview_click(
                     ev.pos().x(), ev.pos().y(), self._disp_rect(),
-                    preview_crop, still_crop, GREEN_PLANE_RES)
+                    preview_crop, still_crop, green_plane_res)
                 self._live_measure_freeze(native)
             return True
 
