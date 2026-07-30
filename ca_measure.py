@@ -40,7 +40,7 @@ Two ways to run:
     python3 ca_measure.py --render-check  headless: fit_lateral_ca recovers a
                                           known injected CA shift, poly2_flag's
                                           both branches, and the calibration
-                                          store's supersedes chain, no PyQt5,
+                                          store's supersedes chain, no PyQt6,
                                           no image file.
 """
 import argparse
@@ -434,11 +434,11 @@ def load_rgb_or_mosaic(path):
 # Qt-bound wizard (build checklist section 4)
 # ---------------------------------------------------------------------------
 try:
-    from PyQt5.QtWidgets import (QApplication, QWizard, QWizardPage, QWidget,
+    from PyQt6.QtWidgets import (QApplication, QWizard, QWizardPage, QWidget,
                                  QLabel, QVBoxLayout, QHBoxLayout, QPushButton,
                                  QComboBox, QDoubleSpinBox, QFileDialog,
                                  QMessageBox)
-    from PyQt5.QtGui import QPixmap
+    from PyQt6.QtGui import QPixmap
     _HAVE_QT = True
 except ImportError:
     _HAVE_QT = False
@@ -668,7 +668,7 @@ if _HAVE_QT:
         app = QApplication(sys.argv)
         wiz = CAWizard()
         wiz.resize(900, 700)
-        if wiz.exec_() != QWizard.Accepted:
+        if wiz.exec() != QWizard.DialogCode.Accepted:
             return
         objective = wiz.setup_page.objective()
         entry = build_ca_calibration_entry(wiz.fit_result, objective, wiz.source_path)
@@ -697,7 +697,7 @@ def main(argv=None):
 
     if a.wizard:
         if not _HAVE_QT:
-            sys.exit("PyQt5 not available. Use --render-check for the headless "
+            sys.exit("PyQt6 not available. Use --render-check for the headless "
                      "self-check, or install python3-pyqt5 for --wizard.")
         run_wizard()
         return

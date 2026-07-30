@@ -36,7 +36,7 @@ resolves to a file on disk, because the master was legitimately reprocessed
 dropped or errored on; the checklist explicitly calls this "not a bug to
 design out."
 
-Run standalone for the headless self-check (no PyQt5, no image files,
+Run standalone for the headless self-check (no PyQt6, no image files,
 no camera):
   python3 annotations.py
 """

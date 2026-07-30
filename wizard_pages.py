@@ -9,7 +9,7 @@ provenance-guarded load stay exactly as different as those two tools' own
 Two ways to run:
   python3 wizard_pages.py --render-check   headless: the ad hoc session-dir
                                            helper plus a full FakeCamera
-                                           capture round-trip, no PyQt5, no
+                                           capture round-trip, no PyQt6, no
                                            real camera.
   python3 wizard_pages.py                  not a standalone tool; import
                                            ImageSourcePage from calibrate.py
@@ -89,9 +89,9 @@ def _overlay_helpers():
 
 
 try:
-    from PyQt5.QtWidgets import (QWizardPage, QWidget, QLabel, QVBoxLayout,
+    from PyQt6.QtWidgets import (QWizardPage, QWidget, QLabel, QVBoxLayout,
                                  QHBoxLayout, QPushButton, QDialog, QMessageBox)
-    from PyQt5.QtCore import QTimer, pyqtSignal
+    from PyQt6.QtCore import QTimer, pyqtSignal
     _HAVE_QT = True
 except ImportError:
     _HAVE_QT = False
@@ -281,7 +281,7 @@ if _HAVE_QT:
             except ImportError:
                 import gallery as _gallery
             dlg = _gallery.GalleryPickDialog(parent=self)
-            if dlg.exec_() != QDialog.Accepted:
+            if dlg.exec() != QDialog.DialogCode.Accepted:
                 return
             paths = dlg.selected_paths()
             if paths:

@@ -26,7 +26,7 @@ Two ways to run:
                                       timestamp/stack tag, no raw decode)
                                       plus a real capture_has_annotation
                                       round-trip against a temp annotations
-                                      store. No PyQt5, no camera.
+                                      store. No PyQt6, no camera.
   python3 gallery.py                  not a standalone tool; import
                                       GalleryWidget/GalleryPickDialog/
                                       GalleryBrowseWindow from qt_shell.py,
@@ -248,11 +248,11 @@ def known_green_hashes(out_root=None):
 
 
 try:
-    from PyQt5.QtWidgets import (QWidget, QDialog, QVBoxLayout, QHBoxLayout,
+    from PyQt6.QtWidgets import (QWidget, QDialog, QVBoxLayout, QHBoxLayout,
                                  QPushButton, QListWidget, QListWidgetItem,
                                  QAbstractItemView, QFileDialog)
-    from PyQt5.QtCore import Qt, QSize, QThread, pyqtSignal
-    from PyQt5.QtGui import QIcon, QPixmap
+    from PyQt6.QtCore import Qt, QSize, QThread, pyqtSignal
+    from PyQt6.QtGui import QIcon, QPixmap
     _HAVE_QT = True
 except ImportError:
     _HAVE_QT = False
@@ -267,7 +267,7 @@ if _HAVE_QT:
         # never gets one): a flat tile, not a raw decode just to have
         # something to show.
         pm = QPixmap(*_THUMB_SIZE)
-        pm.fill(Qt.darkGray)
+        pm.fill(Qt.GlobalColor.darkGray)
         return QIcon(pm)
 
     def _thumb_icon(preview_path):
@@ -276,8 +276,8 @@ if _HAVE_QT:
         pm = QPixmap(str(preview_path))
         if pm.isNull():
             return _placeholder_icon()
-        pm = pm.scaled(_THUMB_SIZE[0], _THUMB_SIZE[1], Qt.KeepAspectRatio,
-                       Qt.SmoothTransformation)
+        pm = pm.scaled(_THUMB_SIZE[0], _THUMB_SIZE[1], Qt.AspectRatioMode.KeepAspectRatio,
+                       Qt.TransformationMode.SmoothTransformation)
         return QIcon(pm)
 
     class _AnnotationWorker(QThread):
@@ -318,14 +318,14 @@ if _HAVE_QT:
             self._worker = None
 
             self.list_widget = QListWidget()
-            self.list_widget.setViewMode(QListWidget.IconMode)
+            self.list_widget.setViewMode(QListWidget.ViewMode.IconMode)
             self.list_widget.setIconSize(QSize(*_THUMB_SIZE))
-            self.list_widget.setResizeMode(QListWidget.Adjust)
-            self.list_widget.setMovement(QListWidget.Static)
+            self.list_widget.setResizeMode(QListWidget.ResizeMode.Adjust)
+            self.list_widget.setMovement(QListWidget.Movement.Static)
             self.list_widget.setSpacing(8)
             self.list_widget.setSelectionMode(
-                QAbstractItemView.ExtendedSelection if multi_select
-                else QAbstractItemView.SingleSelection)
+                QAbstractItemView.SelectionMode.ExtendedSelection if multi_select
+                else QAbstractItemView.SelectionMode.SingleSelection)
 
             lay = QVBoxLayout(self)
             lay.setContentsMargins(0, 0, 0, 0)

@@ -1640,7 +1640,7 @@ if __name__ == "__main__":
         # Capture-enforces-lock, at the CameraBackend seam: a metered snapshot goes
         # into apply_exposure_lock, and auto drops on both channels with the exact
         # metered values held. The Qt half (the sliders/checkboxes
-        # _enforce_exposure_lock also updates) needs PyQt5 to run and is not
+        # _enforce_exposure_lock also updates) needs PyQt6 to run and is not
         # exercised here.
         lockcam = FakeCamera()
         lockcam.set_exposure(auto_exposure=True, auto_white_balance=True)

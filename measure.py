@@ -46,7 +46,7 @@ Two ways to run:
   python3 measure.py --render-check      headless: pure logic only (loading,
                                          the provenance guard, hash
                                          consistency, calibration gating),
-                                         no PyQt5, no image file.
+                                         no PyQt6, no image file.
   python3 measure.py [image]             the GUI. image is optional; File >
                                          Open works from inside too.
 """
@@ -462,7 +462,7 @@ def format_mark_result(mark):
     that mattered (a measurement tool exists to produce a trustworthy number)
     is visible the moment it exists, not only recoverable by opening
     annotations.json by hand. Pure and Qt-free so it's covered by
-    render_check regardless of whether PyQt5 is even installed here."""
+    render_check regardless of whether PyQt6 is even installed here."""
     d = mark["derived"]
     t = mark["type"]
     if t == "distance":
@@ -589,13 +589,13 @@ def collect_stack_planes(captures_root):
 
 
 try:
-    from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QLabel,
+    from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QLabel,
                                  QVBoxLayout, QHBoxLayout, QPushButton, QComboBox,
                                  QGraphicsView, QGraphicsScene, QFileDialog,
                                  QDialog, QMessageBox, QButtonGroup, QWizard,
                                  QWizardPage, QInputDialog)
-    from PyQt5.QtGui import QPen, QColor, QPolygonF, QPainter, QPixmap, QIcon
-    from PyQt5.QtCore import Qt, QPointF, pyqtSignal
+    from PyQt6.QtGui import QPen, QColor, QPolygonF, QPainter, QPixmap, QIcon
+    from PyQt6.QtCore import Qt, QPointF, pyqtSignal
     _HAVE_QT = True
 except ImportError:
     _HAVE_QT = False
@@ -605,7 +605,7 @@ if _HAVE_QT:
 
     MARK_PEN = QPen(QColor(80, 220, 255), 2)        # committed marks
     PENDING_PEN = QPen(QColor(255, 210, 80), 2)      # in-progress
-    PENDING_PEN.setStyle(Qt.DashLine)
+    PENDING_PEN.setStyle(Qt.PenStyle.DashLine)
     POINT_RADIUS = 4
 
     # ---------------------------------------------------------------------------
@@ -635,7 +635,7 @@ if _HAVE_QT:
             self._init_ui()
 
         def _init_ui(self):
-            from PyQt5.QtWidgets import QScrollArea
+            from PyQt6.QtWidgets import QScrollArea
             self.scroll_area = QScrollArea()
             self.scroll_area.setWidgetResizable(True)
             container = QWidget()
@@ -655,7 +655,7 @@ if _HAVE_QT:
             because Qt stylesheets have no `opacity` property on plain
             widgets -- a stylesheet attempt is silently ignored."""
             t = pixmap.scaled(FILMSTRIP_THUMB[0], FILMSTRIP_THUMB[1],
-                              Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                              Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
             if not dimmed:
                 return t
             t = QPixmap(t)   # detach before painting on it
@@ -734,8 +734,8 @@ if _HAVE_QT:
             self.scene_ = QGraphicsScene()
             super().__init__(self.scene_)
             self.window_ = window
-            self.setRenderHint(QPainter.Antialiasing)
-            self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
+            self.setRenderHint(QPainter.RenderHint.Antialiasing)
+            self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
             self._pixmap_item = None
             self._onionskin_items = []  # faint neighbor planes
             self._pending_points = []   # native green-plane (x, y) floats
@@ -761,7 +761,7 @@ if _HAVE_QT:
             self._pending_points = []
             self._pending_items = []
             self.resetTransform()
-            self.fitInView(self._pixmap_item, Qt.KeepAspectRatio)
+            self.fitInView(self._pixmap_item, Qt.AspectRatioMode.KeepAspectRatio)
 
         def set_onionskin_enabled(self, enabled):
             """Toggle onion-skin display. Requires re-rendering the image."""
@@ -775,7 +775,7 @@ if _HAVE_QT:
             if self._pixmap_item is None or self.window_.active_tool is None:
                 super().mousePressEvent(ev)
                 return
-            if ev.button() == Qt.RightButton:
+            if ev.button() == Qt.MouseButton.RightButton:
                 self._cancel_pending()
                 return
             pt = self.mapToScene(ev.pos())
@@ -1049,7 +1049,7 @@ if _HAVE_QT:
             except ImportError:
                 import gallery as _gallery
             dlg = _gallery.GalleryPickDialog(parent=self)
-            if dlg.exec_() != QDialog.Accepted:
+            if dlg.exec() != QDialog.DialogCode.Accepted:
                 return
             paths = dlg.selected_paths()
             if paths:
@@ -1508,7 +1508,7 @@ if _HAVE_QT:
             except ImportError:
                 import gallery as _gallery
             dlg = _gallery.GalleryPickDialog(parent=self)
-            if dlg.exec_() != QDialog.Accepted:
+            if dlg.exec() != QDialog.DialogCode.Accepted:
                 return
             paths = dlg.selected_paths()
             if paths:
@@ -1919,7 +1919,7 @@ def render_check():
             # (config drift), but never re-closes the gate over it -- evidence,
             # not a block, same as every other flag this project raises.
             if not _HAVE_QT:
-                print("_refresh_gating staleness check SKIPPED: PyQt5 not available")
+                print("_refresh_gating staleness check SKIPPED: PyQt6 not available")
             else:
                 qtapp = QApplication.instance() or QApplication([])
                 win = MeasureWindow(objective="40x")
@@ -1950,13 +1950,13 @@ def render_check():
                 # mousePressEvent/mouseDoubleClickEvent handlers with
                 # synthetic QMouseEvents against a real loaded image, not a
                 # reimplementation of the fix.
-                from PyQt5.QtCore import QEvent
-                from PyQt5.QtGui import QMouseEvent
+                from PyQt6.QtCore import QEvent
+                from PyQt6.QtGui import QMouseEvent
 
                 def _click(view, x, y, dbl=False):
-                    kind = QEvent.MouseButtonDblClick if dbl else QEvent.MouseButtonPress
-                    ev = QMouseEvent(kind, QPointF(x, y), Qt.LeftButton,
-                                     Qt.LeftButton, Qt.NoModifier)
+                    kind = QEvent.Type.MouseButtonDblClick if dbl else QEvent.Type.MouseButtonPress
+                    ev = QMouseEvent(kind, QPointF(x, y), Qt.MouseButton.LeftButton,
+                                     Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
                     if dbl:
                         view.mouseDoubleClickEvent(ev)
                     else:
@@ -2227,7 +2227,7 @@ def render_check():
             # --- MeasureWindow._load_stack / _on_exclude_toggled, against the
             # SAME synthetic stack, exercising the real GUI methods end to end ---
             if not _HAVE_QT:
-                print("_load_stack / _on_exclude_toggled check SKIPPED: PyQt5 not available")
+                print("_load_stack / _on_exclude_toggled check SKIPPED: PyQt6 not available")
             else:
                 qtapp = QApplication.instance() or QApplication([])
 
@@ -2324,7 +2324,7 @@ def main():
         return
 
     if not _HAVE_QT:
-        print("PyQt5 is not available; only --render-check can run here.", file=sys.stderr)
+        print("PyQt6 is not available; only --render-check can run here.", file=sys.stderr)
         sys.exit(1)
 
     app = QApplication(sys.argv)
@@ -2333,28 +2333,28 @@ def main():
         win = ReviewWindow(image_path=args.image, objective=args.objective)
         win.resize(1200, 800)
         win.show()
-        sys.exit(app.exec_())
+        sys.exit(app.exec())
 
     if args.image or args.objective:
         # CLI shortcut, unchanged: skip the wizard, open the window directly.
         win = MeasureWindow(image_path=args.image, objective=args.objective)
         win.resize(1200, 800)
         win.show()
-        sys.exit(app.exec_())
+        sys.exit(app.exec())
 
     # No args: the wizard is the new default interactive entry point. Looping
-    # on app.exec_() is what makes "Restart wizard..." work -- see
+    # on app.exec() is what makes "Restart wizard..." work -- see
     # calibrate.py's main() for the identical pattern.
     while True:
         wizard = MeasureWizard()
-        if wizard.exec_() != QWizard.Accepted:
+        if wizard.exec() != QWizard.DialogCode.Accepted:
             return
         win = MeasureWindow(image_path=wizard.image_path(), objective=wizard.objective())
         win.resize(1200, 800)
         restarted = []
         win.restart_requested.connect(lambda: restarted.append(True))
         win.show()
-        app.exec_()
+        app.exec()
         if not restarted:
             return
 

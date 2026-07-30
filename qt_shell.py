@@ -20,7 +20,7 @@ capturable pixel, the same rule the score obeys.
 Two ways to run:
   python3 qt_shell.py --render-check   headless: exercises the pure overlay art,
                                        the letterbox mouse math, the shutter stop
-                                       table, and record_capture, no PyQt5, no
+                                       table, and record_capture, no PyQt6, no
                                        camera. Same self-check spirit as the rest.
   python3 qt_shell.py                  the GUI on the FakeCamera: a real window,
                                        real overlay, real box drag and resize,
@@ -66,7 +66,7 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
-# Force XWayland (xcb) over Qt's native "wayland" QPA platform, before PyQt5
+# Force XWayland (xcb) over Qt's native "wayland" QPA platform, before PyQt6
 # resolves one at QApplication construction time -- setdefault so an explicit
 # QT_QPA_PLATFORM in the environment still wins. self.preview (the real
 # QGlPicamera2 on-rig, --camera) is a WA_NativeWindow child widget doing its
@@ -278,7 +278,7 @@ def discover_themes(themes_root=None):
     [(name, qss_path), ...] -- [] if the folder doesn't exist or holds
     nothing yet, which is a normal, expected state (no themes designed
     yet), not an error. Qt-free, so the menu-building logic this feeds is
-    testable without PyQt5."""
+    testable without PyQt6."""
     themes_root = Path(themes_root) if themes_root is not None else THEMES_ROOT
     if not themes_root.is_dir():
         return []
@@ -363,18 +363,18 @@ def build_display_flags(args):
 VIDEO_OUT_ROOT = provenance.OUT_ROOT / "video"
 
 try:
-    from PyQt5.QtWidgets import (QApplication, QMainWindow, QLabel, QWidget,
+    from PyQt6.QtWidgets import (QApplication, QMainWindow, QLabel, QWidget,
                                  QVBoxLayout, QPushButton, QSlider, QCheckBox,
                                  QHBoxLayout, QSplitter, QMessageBox, QInputDialog,
-                                 QDialog, QComboBox, QActionGroup, QFileDialog,
+                                 QDialog, QComboBox, QFileDialog,
                                  QFormLayout, QGroupBox, QSpinBox, QLineEdit,
                                  QDialogButtonBox, QStackedLayout, QMenu,
                                  QGraphicsView, QGraphicsScene, QButtonGroup, QFrame)
-    from PyQt5.QtCore import QTimer, Qt, QRect, QEvent, pyqtSignal, QObject, QPointF
-    from PyQt5.QtGui import (QImage, QPainter, QKeyEvent, QCloseEvent, QPen,
-                             QColor, QPolygonF, QMouseEvent)
+    from PyQt6.QtCore import QTimer, Qt, QRect, QEvent, pyqtSignal, QObject, QPointF
+    from PyQt6.QtGui import (QImage, QPainter, QKeyEvent, QCloseEvent, QPen,
+                             QColor, QPolygonF, QMouseEvent, QActionGroup)
     _HAVE_QT = True
-except ImportError:                 # PyQt5 absent: --render-check still runs
+except ImportError:                 # PyQt6 absent: --render-check still runs
     _HAVE_QT = False
 
 MIN_FRAC = 0.03                      # smallest box a resize will commit (fractional)
@@ -1112,7 +1112,7 @@ def _onboarding_session_is_interactive(no_onboarding_flag=False):
       the platform name alone -- QT_QPA_PLATFORM may carry backend options
       after a colon (e.g. "offscreen:some=option").
     - no live QApplication instance: defensive only (QMessageBox.question
-      itself requires one to exist), and Qt-free when PyQt5 isn't even
+      itself requires one to exist), and Qt-free when PyQt6 isn't even
       importable here."""
     if no_onboarding_flag:
         return False
@@ -1492,7 +1492,7 @@ if _HAVE_QT:
             if self._frame is not None:
                 arr = np.clip(self._frame * 255, 0, 255).astype(np.uint8)
                 h, w = arr.shape
-                img = QImage(arr.tobytes(), w, h, w, QImage.Format_Grayscale8)
+                img = QImage(arr.tobytes(), w, h, w, QImage.Format.Format_Grayscale8)
                 painter.drawImage(self.rect(), img)
             painter.end()
 
@@ -1967,14 +1967,14 @@ if _HAVE_QT:
 
             layout.addWidget(adv_group)
 
-            buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+            buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
             buttons.accepted.connect(self._on_accept)
             buttons.rejected.connect(self.reject)
             layout.addWidget(buttons)
 
         @staticmethod
         def _index_for_data(combo, value):
-            # NOT combo.findData(value): PyQt5's findData does not reliably
+            # NOT combo.findData(value): PyQt6's findData does not reliably
             # match tuple item data built at runtime against an equal-but-
             # distinct tuple passed to findData (confirmed empirically --
             # itemData(i) == value is True while findData(value) still
@@ -2103,16 +2103,16 @@ if _HAVE_QT:
             self.scene_ = QGraphicsScene()
             super().__init__(self.scene_)
             self.window_ = window
-            self.setRenderHint(QPainter.Antialiasing)
-            self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
+            self.setRenderHint(QPainter.RenderHint.Antialiasing)
+            self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
             # Match self.preview's own appearance (black letterbox, no
             # border, no scrollbars) so the freeze reads as the same frame
             # freezing in place, not a different, patchier widget appearing
             # underneath it (PLAN_live_measure_canvas_fit).
             self.setBackgroundBrush(QColor("black"))
-            self.setFrameShape(QFrame.NoFrame)
-            self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-            self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            self.setFrameShape(QFrame.Shape.NoFrame)
+            self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
             self._pixmap_item = None
             self._pending_points = []   # native green-plane (x, y) floats
             self._pending_items = []    # scene items for the in-progress shape
@@ -2129,7 +2129,7 @@ if _HAVE_QT:
             if self._pixmap_item is None or self._user_zoomed:
                 return
             self.resetTransform()
-            self.fitInView(self._pixmap_item, Qt.KeepAspectRatio)
+            self.fitInView(self._pixmap_item, Qt.AspectRatioMode.KeepAspectRatio)
 
         def set_image(self, pixmap):
             self.scene_.clear()
@@ -2157,7 +2157,7 @@ if _HAVE_QT:
             if self._pixmap_item is None:
                 super().mousePressEvent(ev)
                 return
-            if ev.button() == Qt.RightButton:
+            if ev.button() == Qt.MouseButton.RightButton:
                 self._show_context_menu(ev.pos())
                 return
             if self.window_._live_measure_tool is None:
@@ -2173,7 +2173,7 @@ if _HAVE_QT:
                 super().mouseDoubleClickEvent(ev)
 
         def keyPressEvent(self, ev):
-            if ev.key() == Qt.Key_Escape:
+            if ev.key() == Qt.Key.Key_Escape:
                 self._clear_pending()
                 self.window_._live_measure_on_point_added([])
             else:
@@ -2269,7 +2269,7 @@ if _HAVE_QT:
             delete_point.setEnabled(entry is not None and not entry["committed"])
             commit_all.setEnabled(any(not e["committed"] for e in marks))
             delete_all.setEnabled(any(not e["committed"] for e in marks))
-            chosen = menu.exec_(self.mapToGlobal(pos))
+            chosen = menu.exec(self.mapToGlobal(pos))
             if chosen is commit_point and entry is not None:
                 self.window_._live_measure_commit_entry(entry)
             elif chosen is commit_all:
@@ -2301,7 +2301,7 @@ if _HAVE_QT:
         and the preview/canvas swap."""
 
         def __init__(self, window):
-            super().__init__(window, Qt.Tool)
+            super().__init__(window, Qt.WindowType.Tool)
             self.window_ = window
             self.setWindowTitle("Live measure")
 
@@ -2356,7 +2356,7 @@ if _HAVE_QT:
         closed, while the live feed underneath stays interactive."""
 
         def __init__(self, window):
-            super().__init__(window, Qt.Tool)
+            super().__init__(window, Qt.WindowType.Tool)
             self.window_ = window
             self.setWindowTitle("Live Measuring")
 
@@ -2691,22 +2691,22 @@ if _HAVE_QT:
             self.ae_box.toggled.connect(self._on_ae_toggled)
             self.long_exp_box = QCheckBox("Long")
             self.long_exp_box.toggled.connect(self._on_long_exposure_toggled)
-            self.shutter_slider = QSlider(Qt.Horizontal)
+            self.shutter_slider = QSlider(Qt.Orientation.Horizontal)
             self.shutter_slider.setRange(0, len(self._shutter_stops) - 1)
             self.shutter_slider.valueChanged.connect(self._on_shutter)
             self.shutter_label = QLabel("shutter")
-            self.gain_slider = QSlider(Qt.Horizontal)
+            self.gain_slider = QSlider(Qt.Orientation.Horizontal)
             self.gain_slider.setRange(0, GAIN_STEPS)
             self.gain_slider.valueChanged.connect(self._on_gain)
             self.gain_label = QLabel("gain")
 
             self.awb_box = QCheckBox("Auto")
             self.awb_box.toggled.connect(self._on_awb_toggled)
-            self.red_slider = QSlider(Qt.Horizontal)
+            self.red_slider = QSlider(Qt.Orientation.Horizontal)
             self.red_slider.setRange(0, GAIN_STEPS)
             self.red_slider.valueChanged.connect(self._on_red)
             self.red_label = QLabel("red")
-            self.blue_slider = QSlider(Qt.Horizontal)
+            self.blue_slider = QSlider(Qt.Orientation.Horizontal)
             self.blue_slider.setRange(0, GAIN_STEPS)
             self.blue_slider.valueChanged.connect(self._on_blue)
             self.blue_label = QLabel("blue")
@@ -2862,7 +2862,7 @@ if _HAVE_QT:
             self._preview_stack_layout.addWidget(self._live_measure_canvas)
             self._preview_stack_layout.setCurrentWidget(self.preview)
 
-            splitter = QSplitter(Qt.Horizontal)
+            splitter = QSplitter(Qt.Orientation.Horizontal)
             splitter.addWidget(self._preview_stack)
             splitter.addWidget(panel)
             splitter.setStretchFactor(0, 1)   # preview absorbs window resizes
@@ -2876,7 +2876,7 @@ if _HAVE_QT:
             splitter.setCollapsible(1, False)
             self._splitter = splitter   # closeEvent reads .sizes() from this on exit
             self.setCentralWidget(splitter)
-            self.setFocusPolicy(Qt.StrongFocus)
+            self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
             filemenu = self.menuBar().addMenu("File")
             self._capture_action = filemenu.addAction("Capture", self._start_capture)
@@ -3092,7 +3092,7 @@ if _HAVE_QT:
             # open time, same as those old menus reading their own source
             # once at window-construction time.
             dlg = PreferencesDialog(self.camera, parent=self)
-            dlg.exec_()
+            dlg.exec()
 
         # --- FULL SCREEN MODE (BUILD_LIST Tier 2) ----------------------------
         def _toggle_fullscreen(self):
@@ -3113,7 +3113,7 @@ if _HAVE_QT:
                 if self._pre_fullscreen_title is not None:
                     self.setWindowTitle(self._pre_fullscreen_title)
                     self._pre_fullscreen_title = None
-                self.setWindowFlags(self.windowFlags() & ~Qt.FramelessWindowHint)
+                self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.FramelessWindowHint)
                 if self._pre_fullscreen_geometry is not None:
                     self.setGeometry(self._pre_fullscreen_geometry)
                 self.show()   # changing windowFlags unmaps the window; re-show it
@@ -3134,7 +3134,7 @@ if _HAVE_QT:
                     # this one, no separate taskbar entry, doesn't steal
                     # keyboard focus from the preview underneath it.
                     self._floating_panel = QWidget(
-                        self, Qt.Tool | Qt.FramelessWindowHint)
+                        self, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint)
                     lay = QVBoxLayout(self._floating_panel)
                     lay.setContentsMargins(0, 0, 0, 0)
                 # Reparent the panel into the floating window EVERY entry,
@@ -3178,7 +3178,7 @@ if _HAVE_QT:
                 # restore).
                 self._pre_fullscreen_title = self.windowTitle()
                 self.setWindowTitle(self._pre_fullscreen_title + FULLSCREEN_TITLE_MARKER)
-                self.setWindowFlags(self.windowFlags() | Qt.FramelessWindowHint)
+                self.setWindowFlags(self.windowFlags() | Qt.WindowType.FramelessWindowHint)
                 # The window starts real-maximized (main()'s showMaximized()),
                 # and Qt.WindowMaximized can still be set here on a later
                 # entry too (the user maximizing normally in windowed mode
@@ -3194,7 +3194,7 @@ if _HAVE_QT:
                 # in HANDOFF.md); if `xprop` still shows the maximized atoms
                 # after this, an explicit wmctrl/xdotool unmaximize call
                 # will be needed here too.
-                self.setWindowState(self.windowState() & ~Qt.WindowMaximized)
+                self.setWindowState(self.windowState() & ~Qt.WindowState.WindowMaximized)
                 self.setGeometry(QApplication.primaryScreen().geometry())
                 self.show()   # changing windowFlags unmaps the window; re-show it
 
@@ -3210,8 +3210,8 @@ if _HAVE_QT:
                 self._floating_panel.adjustSize()
                 # Top-right corner of the screen, matching where the panel
                 # already sits relative to the preview in normal mode.
-                # QApplication.primaryScreen() rather than the newer (Qt
-                # 5.14+) QWidget.screen(), for broader PyQt5 compatibility.
+                # QApplication.primaryScreen(): still correct under Qt6, and
+                # this project never used the removed QDesktopWidget.
                 screen = QApplication.primaryScreen().availableGeometry()
                 w = self._floating_panel.width()
                 self._floating_panel.move(screen.right() - w, screen.top())
@@ -3346,7 +3346,7 @@ if _HAVE_QT:
                 existing.activateWindow()
                 return
             obj = self.ruler_objective_combo.currentText().strip() or None
-            # Held on self, not a local: PyQt5 garbage-collects a window with no
+            # Held on self, not a local: PyQt6 garbage-collects a window with no
             # surviving Python reference, closing it out from under itself the
             # moment this method returns.
             self._calibrate_window = _calibrate.CalibrationWindow(objective=obj)
@@ -3372,7 +3372,7 @@ if _HAVE_QT:
                 return
             obj = self.ruler_objective_combo.currentText().strip() or None
             # Held on self, not a local: see _launch_calibrate's own note --
-            # PyQt5 garbage-collects a window with no surviving reference.
+            # PyQt6 garbage-collects a window with no surviving reference.
             self._measure_window = _measure.MeasureWindow(objective=obj)
             self._measure_window.show()
 
@@ -3397,7 +3397,7 @@ if _HAVE_QT:
             if self._live_measuring_active:
                 self._live_measuring_panel.close()
             self._live_measure_active = True
-            # Held on self, not a local: PyQt5 garbage-collects a Qt.Tool
+            # Held on self, not a local: PyQt6 garbage-collects a Qt.Tool
             # window with no surviving Python reference, same reason
             # _measure_window/_calibrate_window are held above.
             self._live_measure_panel = LiveMeasurePanel(self)
@@ -3428,7 +3428,7 @@ if _HAVE_QT:
             guard."""
             if self._live_measure_frozen or self._live_measure_freezing:
                 return True
-            if ev.type() == QEvent.MouseButtonPress and ev.button() == Qt.LeftButton:
+            if ev.type() == QEvent.Type.MouseButtonPress and ev.button() == Qt.MouseButton.LeftButton:
                 if self._live_measure_tool is None:
                     # No tool armed yet -- a freeze click with nothing to do
                     # with the resulting point would either strand it (the
@@ -3448,7 +3448,7 @@ if _HAVE_QT:
                 preview_crop = self.camera.sensor_crop_for_size(preview_res)
                 still_crop = self.camera.sensor_crop_for_size(still_res)
                 native = native_point_from_preview_click(
-                    ev.x(), ev.y(), self._disp_rect(),
+                    ev.pos().x(), ev.pos().y(), self._disp_rect(),
                     preview_crop, still_crop, GREEN_PLANE_RES)
                 self._live_measure_freeze(native)
             return True
@@ -3682,7 +3682,7 @@ if _HAVE_QT:
             if self._live_measure_active:
                 self._live_measure_panel.close()
             self._live_measuring_active = True
-            # Held on self, not a local: PyQt5 garbage-collects a Qt.Tool
+            # Held on self, not a local: PyQt6 garbage-collects a Qt.Tool
             # window with no surviving Python reference, same reason every
             # other floating panel in this file is held.
             self._live_measuring_panel = LiveMeasuringPanel(self)
@@ -3703,15 +3703,15 @@ if _HAVE_QT:
             point directly against the CURRENT live frame, in LORES_RES-space
             pixel coordinates (lores_point_from_preview_click), never sensor
             space -- PLAN_quick_ruler.md's whole point."""
-            if ev.type() == QEvent.MouseButtonPress:
-                if ev.button() == Qt.RightButton:
+            if ev.type() == QEvent.Type.MouseButtonPress:
+                if ev.button() == Qt.MouseButton.RightButton:
                     self._live_measuring_context_menu(ev.pos())
-                elif ev.button() == Qt.LeftButton and self._live_measuring_tool is not None:
+                elif ev.button() == Qt.MouseButton.LeftButton and self._live_measuring_tool is not None:
                     pt = lores_point_from_preview_click(
-                        ev.x(), ev.y(), self._disp_rect(), self.camera.lores_resolution())
+                        ev.pos().x(), ev.pos().y(), self._disp_rect(), self.camera.lores_resolution())
                     self._live_measuring_add_point(pt)
                 return True
-            if ev.type() == QEvent.MouseButtonDblClick:
+            if ev.type() == QEvent.Type.MouseButtonDblClick:
                 min_points = {"polygon": 3, "ellipse": 5}.get(self._live_measuring_tool)
                 if (min_points is not None
                         and len(self._live_measuring_pending_points) >= min_points):
@@ -3794,7 +3794,7 @@ if _HAVE_QT:
             delete_all = delete_menu.addAction("All")
             delete_point.setEnabled(entry is not None)
             delete_all.setEnabled(bool(marks))
-            chosen = menu.exec_(self.preview.mapToGlobal(pos))
+            chosen = menu.exec(self.preview.mapToGlobal(pos))
             if chosen is delete_point and entry is not None:
                 self._live_measuring_delete_point(entry)
             elif chosen is delete_all:
@@ -3802,7 +3802,7 @@ if _HAVE_QT:
 
         def _live_measuring_delete_point(self, entry):
             """Split out of _live_measuring_context_menu so render_check can
-            drive real deletion without going through QMenu.exec_ (a blocking
+            drive real deletion without going through QMenu.exec (a blocking
             modal call) -- same reason Part 05's own commit/delete are their
             own methods rather than living inline in ITS context-menu
             handler."""
@@ -3887,8 +3887,8 @@ if _HAVE_QT:
                 "Measurements won't convert to real units until one exists.\n\n"
                 "Calibrate now, or skip? (Calibrate stays in the menu for "
                 "later either way.)",
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-            if resp == QMessageBox.Yes:
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+            if resp == QMessageBox.StandardButton.Yes:
                 self._launch_calibrate()
         # --- end calibration integration (methods) --------------------------
 
@@ -4354,22 +4354,22 @@ if _HAVE_QT:
             box = QMessageBox(self)
             box.setWindowTitle(title)
             box.setText(text)
-            box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
-            box.setDefaultButton(default if default is not None else QMessageBox.No)
+            box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            box.setDefaultButton(default if default is not None else QMessageBox.StandardButton.No)
             box.setStyleSheet(
                 "QLabel{{min-width: {}px; qproperty-alignment: AlignCenter;}}"
                 .format(self._DIALOG_MIN_WIDTH))
-            return box.exec_()
+            return box.exec()
 
         def _flat_information(self, title, text):
             box = QMessageBox(self)
             box.setWindowTitle(title)
             box.setText(text)
-            box.setStandardButtons(QMessageBox.Ok)
+            box.setStandardButtons(QMessageBox.StandardButton.Ok)
             box.setStyleSheet(
                 "QLabel{{min-width: {}px; qproperty-alignment: AlignCenter;}}"
                 .format(self._DIALOG_MIN_WIDTH))
-            box.exec_()
+            box.exec()
 
         def _flat_ask_int(self, title, label, value, minv, maxv, step=1):
             dlg = QInputDialog(self)
@@ -4378,7 +4378,7 @@ if _HAVE_QT:
             dlg.setIntRange(minv, maxv)
             dlg.setIntValue(value)
             dlg.setIntStep(step)
-            ok = dlg.exec_() == QDialog.Accepted
+            ok = dlg.exec() == QDialog.DialogCode.Accepted
             return dlg.intValue(), ok
 
         def _flat_ask_text(self, title, label, value=""):
@@ -4386,7 +4386,7 @@ if _HAVE_QT:
             dlg.setWindowTitle(title)
             dlg.setLabelText(label)
             dlg.setTextValue(value)
-            ok = dlg.exec_() == QDialog.Accepted
+            ok = dlg.exec() == QDialog.DialogCode.Accepted
             return dlg.textValue().strip(), ok
 
         def _reshoot_guard(self, prefixes, kinds_set, label):
@@ -4399,7 +4399,7 @@ if _HAVE_QT:
             resp = self._flat_question(
                 "Re-shoot {}?".format(label),
                 "Clear {} existing {} frame(s) and re-shoot?".format(len(hits), label))
-            if resp != QMessageBox.Yes:
+            if resp != QMessageBox.StandardButton.Yes:
                 self._set_capture_status("{} cancelled".format(label),
                                          "kept - {} walkthrough cancelled.".format(label))
                 return False
@@ -4638,7 +4638,7 @@ if _HAVE_QT:
                 "Process this stack?",
                 "Z-stack {!r} ended with {} plane(s).\n{}\n\n"
                 "Process it now?".format(zstack["stack_id"], len(plane_dirs), detail))
-            if resp != QMessageBox.Yes:
+            if resp != QMessageBox.StandardButton.Yes:
                 return
             if _process_wizard is None:
                 self._set_capture_status(
@@ -4647,7 +4647,7 @@ if _HAVE_QT:
                 return
             wiz = _process_wizard.ProcessWizard(zstack["root"], self)
             wiz.file_page.gallery.list_widget.selectAll()
-            wiz.exec_()
+            wiz.exec()
         # --- end Z-STACK AID --------------------------------------------
 
         def _walkthrough_burst(self, kind, prefix, kinds_set, instruction, auto_fire=False):
@@ -4762,7 +4762,7 @@ if _HAVE_QT:
             if self.camera.is_recording():
                 return
             dlg = BatchSelectDialog(self)
-            if dlg.exec_() != QDialog.Accepted:
+            if dlg.exec() != QDialog.DialogCode.Accepted:
                 return
             kinds = dlg.selected_kinds()
             if not kinds:
@@ -5125,7 +5125,7 @@ if _HAVE_QT:
             if self._capturing:
                 return
             dlg = ProcessSessionDialog(provenance.OUT_ROOT, self._display_flags, self)
-            if dlg.exec_() != QDialog.Accepted:
+            if dlg.exec() != QDialog.DialogCode.Accepted:
                 return
             picked = dlg.selected()
             if picked is None:
@@ -5141,7 +5141,7 @@ if _HAVE_QT:
             if self._capturing:
                 return
             dlg = ArchiveSessionDialog(provenance.OUT_ROOT, self)
-            if dlg.exec_() != QDialog.Accepted:
+            if dlg.exec() != QDialog.DialogCode.Accepted:
                 return
             session_dir = dlg.selected_session_dir()
             if session_dir is None:
@@ -5153,7 +5153,7 @@ if _HAVE_QT:
             # separate from _open_processing_wizard's session/kind-based
             # ProcessSessionDialog above -- both stay, see process_wizard.py's
             # own module docstring for why. Independent of self._capturing
-            # for the same reason _open_gallery_browser is: modal (exec_),
+            # for the same reason _open_gallery_browser is: modal (exec()),
             # so it cannot race a capture in progress.
             if _process_wizard is None:
                 self._set_capture_status(
@@ -5161,7 +5161,7 @@ if _HAVE_QT:
                     "process_wizard.py not found beside this file, skipped")
                 return
             wiz = _process_wizard.ProcessWizard(provenance.OUT_ROOT, self)
-            wiz.exec_()
+            wiz.exec()
 
         def _open_green_extraction(self):
             # GREEN-PLANE EXTRACTION UTILITY (BUILD_LIST Tier 1 item 4): the
@@ -5177,7 +5177,7 @@ if _HAVE_QT:
                     "gallery.py not found beside this file, skipped")
                 return
             dlg = _gallery.GalleryPickDialog(provenance.OUT_ROOT, self)
-            if dlg.exec_() != QDialog.Accepted:
+            if dlg.exec() != QDialog.DialogCode.Accepted:
                 return
             paths = dlg.selected_paths()
             if not paths:
@@ -5368,7 +5368,7 @@ if _HAVE_QT:
                     "beside this file, skipped")
                 return
             dlg = _gallery.GalleryPickDialog(provenance.OUT_ROOT, self)
-            if dlg.exec_() != QDialog.Accepted:
+            if dlg.exec() != QDialog.DialogCode.Accepted:
                 return
             paths = dlg.selected_paths()
             if not paths:
@@ -5429,7 +5429,7 @@ if _HAVE_QT:
         def _open_gallery_browser(self):
             # Standalone browse mode (gallery.py): just looking, no commit.
             # Independent of self._capturing -- it only reads the filesystem,
-            # and it is modal (exec_) like Process/Archive above, so it
+            # and it is modal (exec()) like Process/Archive above, so it
             # cannot race a capture in progress either way.
             if _gallery is None:
                 self._set_capture_status(
@@ -5437,7 +5437,7 @@ if _HAVE_QT:
                     "gallery.py not found beside this file, skipped")
                 return
             dlg = _gallery.GalleryBrowseWindow(provenance.OUT_ROOT, self)
-            dlg.exec_()
+            dlg.exec()
 
         def _offer_archive_raws(self, session_dir):
             # Bundle-only, not a size reduction (the tar is uncompressed,
@@ -5452,7 +5452,7 @@ if _HAVE_QT:
                 "Bundle this session's raw frames into one .tar and remove "
                 "the loose originals?\n(tidiness only, does not reduce disk "
                 "usage)")
-            if resp != QMessageBox.Yes:
+            if resp != QMessageBox.StandardButton.Yes:
                 return
             self._capturing = True
             self._set_capture_controls(enabled=False, label="Archiving ...")
@@ -5607,11 +5607,11 @@ if _HAVE_QT:
                     if self._live_measuring_preview_event(ev):
                         return True
                 t = ev.type()
-                if t == QEvent.MouseButtonPress:
-                    self._press(ev.x(), ev.y())
-                elif t == QEvent.MouseMove:
-                    self._move(ev.x(), ev.y())
-                elif t == QEvent.MouseButtonRelease:
+                if t == QEvent.Type.MouseButtonPress:
+                    self._press(ev.pos().x(), ev.pos().y())
+                elif t == QEvent.Type.MouseMove:
+                    self._move(ev.pos().x(), ev.pos().y())
+                elif t == QEvent.Type.MouseButtonRelease:
                     self._drag = None
             return super().eventFilter(obj, ev)
 
@@ -5641,20 +5641,20 @@ if _HAVE_QT:
 
         # --- keys -----------------------------------------------------------
         def keyPressEvent(self, ev):
-            if ev.key() == Qt.Key_F:
+            if ev.key() == Qt.Key.Key_F:
                 self._toggle_aid()
-            elif ev.key() == Qt.Key_R:
+            elif ev.key() == Qt.Key.Key_R:
                 self.meter.reset_field()
-            elif ev.key() == Qt.Key_Escape and self._armed is not None:
+            elif ev.key() == Qt.Key.Key_Escape and self._armed is not None:
                 self._cancel_armed()
-            elif ev.key() == Qt.Key_Escape and self._batch_active:
+            elif ev.key() == Qt.Key.Key_Escape and self._batch_active:
                 self._abort_batch()
-            elif ev.key() == Qt.Key_Escape and self._live_measuring_pending_points:
+            elif ev.key() == Qt.Key.Key_Escape and self._live_measuring_pending_points:
                 # LIVE MEASURING (PLAN_quick_ruler.md): cancels an in-progress,
                 # not-yet-finished click sequence, same convention as the
                 # armed-burst/batch-abort branches above.
                 self._live_measuring_cancel_pending()
-            elif (ev.key() == Qt.Key_Escape and ev.modifiers() & Qt.ControlModifier
+            elif (ev.key() == Qt.Key.Key_Escape and ev.modifiers() & Qt.KeyboardModifier.ControlModifier
                   and self._is_fullscreen):
                 # FULL SCREEN MODE: Ctrl+Escape exits, not plain Escape --
                 # that key already does real work above (cancel an armed
@@ -5662,13 +5662,13 @@ if _HAVE_QT:
                 # with a third meaning. Being a distinct key combination, this
                 # never collides with either branch above; no ordering needed.
                 self._toggle_fullscreen()
-            elif ev.key() == Qt.Key_F11:
+            elif ev.key() == Qt.Key.Key_F11:
                 self._toggle_fullscreen()
-            elif ev.key() == Qt.Key_P and self._is_fullscreen:
+            elif ev.key() == Qt.Key.Key_P and self._is_fullscreen:
                 self._toggle_floating_panel()
-            elif ev.key() == Qt.Key_Up and hasattr(self.camera, "focus_position"):
+            elif ev.key() == Qt.Key.Key_Up and hasattr(self.camera, "focus_position"):
                 self.camera.focus_position += 0.25
-            elif ev.key() == Qt.Key_Down and hasattr(self.camera, "focus_position"):
+            elif ev.key() == Qt.Key.Key_Down and hasattr(self.camera, "focus_position"):
                 self.camera.focus_position -= 0.25
             else:
                 super().keyPressEvent(ev)
@@ -5739,7 +5739,7 @@ def main(argv=None):
                          "a display-capable launch (see should_show_onboarding_gate)")
     a = ap.parse_args(argv)
     if not _HAVE_QT:
-        sys.exit("PyQt5 not available. Use --render-check for the headless self-check "
+        sys.exit("PyQt6 not available. Use --render-check for the headless self-check "
                  "test, or install python3-pyqt5 for the GUI.")
     app = QApplication(sys.argv)
     theme_qss = resolve_theme_qss_path(load_pref("theme", None))
@@ -5789,7 +5789,7 @@ def main(argv=None):
     win.resize(1550, 760)          # fallback size if the window manager ever
                                     # ignores the maximize request below
     win.showMaximized()
-    app.exec_()
+    app.exec()
 
 
 # ---------------------------------------------------------------------------
@@ -6018,7 +6018,7 @@ def render_check():
                 real_question1 = QMessageBox.question
                 def _stub_question1(*a, **kw):
                     og_calls1.append(1)
-                    return QMessageBox.No
+                    return QMessageBox.StandardButton.No
                 QMessageBox.question = _stub_question1
                 try:
                     og_win1._maybe_show_onboarding_gate()
@@ -6056,7 +6056,7 @@ def render_check():
                 def _stub_question2(*a, **kw):
                     og_pref_state_at_dialog.append(
                         bool(load_pref("onboarding_calibration_prompt_shown", False)))
-                    return QMessageBox.No
+                    return QMessageBox.StandardButton.No
                 QMessageBox.question = _stub_question2
                 try:
                     og_win2._maybe_show_onboarding_gate()
@@ -6090,7 +6090,7 @@ def render_check():
                 real_question3 = QMessageBox.question
                 def _stub_question3(*a, **kw):
                     og_calls3.append(1)
-                    return QMessageBox.No
+                    return QMessageBox.StandardButton.No
                 QMessageBox.question = _stub_question3
                 try:
                     og_win3._maybe_show_onboarding_gate()
@@ -6291,7 +6291,7 @@ def render_check():
     # Capture-enforces-lock, at the CameraBackend seam: _enforce_exposure_lock reads
     # the live metered values, then calls apply_exposure_lock with that exact
     # snapshot. This checks the seam holds up that contract; the Qt half (the
-    # sliders/checkboxes _enforce_exposure_lock also updates) needs PyQt5 to run
+    # sliders/checkboxes _enforce_exposure_lock also updates) needs PyQt6 to run
     # and is not exercised here.
     lockcam = FakeCamera()
     lockcam.set_exposure(auto_exposure=True, auto_white_balance=True)
@@ -6420,10 +6420,10 @@ def render_check():
 
     # _on_tag_stack: needs a real FocusPreviewWindow (a QMainWindow subclass),
     # so this one check -- unlike everything above it in render_check -- does
-    # need PyQt5. Gated so `--render-check` keeps working without PyQt5
+    # need PyQt6. Gated so `--render-check` keeps working without PyQt6
     # installed, same SKIPPED convention used elsewhere in this project.
     if not _HAVE_QT:
-        print("_on_tag_stack check SKIPPED: PyQt5 not available here")
+        print("_on_tag_stack check SKIPPED: PyQt6 not available here")
     else:
         qtapp = QApplication.instance() or QApplication([])
         tag_root = Path("/tmp/zynergy_render_check_tag")
@@ -6710,7 +6710,7 @@ def render_check():
             zwin._capturing = False
 
             # The hand-off's own Yes/No gate: No must NOT open the wizard.
-            zwin._flat_question = lambda title, text, default=None: QMessageBox.No
+            zwin._flat_question = lambda title, text, default=None: QMessageBox.StandardButton.No
             opened = {}
 
             class _FakeWizard:
@@ -6725,7 +6725,7 @@ def render_check():
                         })()
                     })()
 
-                def exec_(self):
+                def exec(self):
                     opened["exec_called"] = True
 
             global _process_wizard
@@ -6753,7 +6753,7 @@ def render_check():
                 zwin._start_zstack()
                 _pump_until_idle()
                 stack_root_2 = zwin._zstack["root"]
-                zwin._flat_question = lambda title, text, default=None: QMessageBox.Yes
+                zwin._flat_question = lambda title, text, default=None: QMessageBox.StandardButton.Yes
                 zwin._end_zstack()
                 assert opened["out_root"] == stack_root_2, \
                     "the wizard must be scoped to the stack's own root folder, " \
@@ -6852,7 +6852,7 @@ def render_check():
             # silently, just never routed to _toggle_floating_panel at all.
             called = []
             fswin._toggle_floating_panel = lambda: called.append(1)
-            p_ev = QKeyEvent(QEvent.KeyPress, Qt.Key_P, Qt.NoModifier)
+            p_ev = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_P, Qt.KeyboardModifier.NoModifier)
             fswin.keyPressEvent(p_ev)
             assert not called, "P must do nothing while not full screen"
 
@@ -6864,7 +6864,7 @@ def render_check():
             fswin._armed = {"kind": "science", "n": 1, "prefix": "science_"}
             cancelled = []
             fswin._cancel_armed = lambda: cancelled.append(1)
-            ctrl_esc_ev = QKeyEvent(QEvent.KeyPress, Qt.Key_Escape, Qt.ControlModifier)
+            ctrl_esc_ev = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Escape, Qt.KeyboardModifier.ControlModifier)
             fswin.keyPressEvent(ctrl_esc_ev)
             assert fswin._is_fullscreen, \
                 "an armed burst must still take priority over exiting " \
@@ -7187,7 +7187,7 @@ def render_check():
               "extraction is reported rather than swallowed")
 
         # Export / Publish menu actions (MeasureWindow extraction, step 3):
-        # workers driven directly (bypassing GalleryPickDialog.exec_, which
+        # workers driven directly (bypassing GalleryPickDialog.exec, which
         # can't run headless, same reason the green-extraction check above
         # calls its worker directly), processEvents() pumped until
         # _capturing clears since both done signals are genuinely queued
@@ -7428,7 +7428,7 @@ def render_check():
         ap_result = win.camera.capture_burst(ap_session.dir, "science_", 2)
         ap_idx = provenance.record_burst(ap_session, "science", "science_", ap_result)
         win._session = ap_session
-        win._flat_question = lambda title, text, default=None: QMessageBox.No   # decline archive offer
+        win._flat_question = lambda title, text, default=None: QMessageBox.StandardButton.No   # decline archive offer
         win._auto_process("science", ap_idx)
         assert win._capturing, \
             "_auto_process must go straight into processing, no Yes/No gate first"
@@ -7744,8 +7744,8 @@ def render_check():
                     # actually proves the click-repurposing wiring: ordinary
                     # box-drag must never fire while the panel is open.
                     assert lmwin._drag is None
-                    press1 = QMouseEvent(QEvent.MouseButtonPress, QPointF(200, 300),
-                                        Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+                    press1 = QMouseEvent(QEvent.Type.MouseButtonPress, QPointF(200, 300),
+                                        Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
                     lmwin.eventFilter(lmwin.preview, press1)
                     deadline = time.time() + 15.0
                     while lmwin._live_measure_freezing and time.time() < deadline:
@@ -7777,8 +7777,8 @@ def render_check():
                     # actually deliver them here on the real widget tree) --
                     # exercised just below via add_point_programmatic, the
                     # same entry point the canvas's own mousePressEvent uses.
-                    stray = QMouseEvent(QEvent.MouseButtonPress, QPointF(600, 300),
-                                        Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+                    stray = QMouseEvent(QEvent.Type.MouseButtonPress, QPointF(600, 300),
+                                        Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
                     lmwin.eventFilter(lmwin.preview, stray)
                     assert lmwin._live_measure_pixel_sha256 == first_hash, \
                         "freezing must happen exactly once per panel session; " \
@@ -7953,8 +7953,8 @@ def render_check():
                     real_calibrate_ff = globals()['_calibrate']
                     globals()['_calibrate'] = None
                     try:
-                        press = QMouseEvent(QEvent.MouseButtonPress, QPointF(200, 300),
-                                            Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+                        press = QMouseEvent(QEvent.Type.MouseButtonPress, QPointF(200, 300),
+                                            Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
                         win1.eventFilter(win1.preview, press)
                         _pump_until_not_freezing(win1)
                     finally:
@@ -7970,8 +7970,8 @@ def render_check():
 
                     # Not bricked: _calibrate is restored above, so a later
                     # click must still be able to complete a real freeze.
-                    press2 = QMouseEvent(QEvent.MouseButtonPress, QPointF(210, 300),
-                                         Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+                    press2 = QMouseEvent(QEvent.Type.MouseButtonPress, QPointF(210, 300),
+                                         Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
                     win1.eventFilter(win1.preview, press2)
                     _pump_until_not_freezing(win1)
                     assert win1._live_measure_frozen, \
@@ -7992,8 +7992,8 @@ def render_check():
                         raise RuntimeError("forced set_image failure (render-check)")
                     real_set_image = win2._live_measure_canvas.set_image
                     win2._live_measure_canvas.set_image = _raising_set_image
-                    press = QMouseEvent(QEvent.MouseButtonPress, QPointF(200, 300),
-                                        Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+                    press = QMouseEvent(QEvent.Type.MouseButtonPress, QPointF(200, 300),
+                                        Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
                     win2.eventFilter(win2.preview, press)
                     _pump_until_not_freezing(win2)
                     assert not win2._live_measure_frozen, \
@@ -8007,8 +8007,8 @@ def render_check():
                         "_capturing must clear after a set_image failure"
 
                     win2._live_measure_canvas.set_image = real_set_image
-                    press2 = QMouseEvent(QEvent.MouseButtonPress, QPointF(210, 300),
-                                         Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+                    press2 = QMouseEvent(QEvent.Type.MouseButtonPress, QPointF(210, 300),
+                                         Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
                     win2.eventFilter(win2.preview, press2)
                     _pump_until_not_freezing(win2)
                     assert win2._live_measure_frozen, \
@@ -8028,8 +8028,8 @@ def render_check():
                         win3.camera.sensor_crop_for_size(win3.camera.preview_resolution()),
                         win3.camera.sensor_crop_for_size(win3.camera.capture_resolution()),
                         GREEN_PLANE_RES)
-                    press = QMouseEvent(QEvent.MouseButtonPress, QPointF(click_x, click_y),
-                                        Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+                    press = QMouseEvent(QEvent.Type.MouseButtonPress, QPointF(click_x, click_y),
+                                        Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
                     win3.eventFilter(win3.preview, press)
                     _pump_until_not_freezing(win3)
                     assert win3._live_measure_frozen
@@ -8056,8 +8056,8 @@ def render_check():
                         calls.append(1)
                         return real_capture(*a, **kw)
                     win4.camera.capture_still_async = _counting_capture
-                    press = QMouseEvent(QEvent.MouseButtonPress, QPointF(200, 300),
-                                        Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+                    press = QMouseEvent(QEvent.Type.MouseButtonPress, QPointF(200, 300),
+                                        Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
                     consumed = win4.eventFilter(win4.preview, press)
                     assert consumed is True, \
                         "a click with no tool armed must still be consumed, " \
@@ -8092,8 +8092,8 @@ def render_check():
                         raise RuntimeError("forced load failure (render-check)")
                     _measure.load_measurement_plane = _raising_load_plane
                     try:
-                        press = QMouseEvent(QEvent.MouseButtonPress, QPointF(200, 300),
-                                            Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+                        press = QMouseEvent(QEvent.Type.MouseButtonPress, QPointF(200, 300),
+                                            Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
                         win5.eventFilter(win5.preview, press)
                         _pump_until_not_freezing(win5)
                     finally:
@@ -8372,9 +8372,9 @@ def render_check():
                 fx, fy = frac_from_point(px, py, (0, 0, 800, 600))
                 return (fx * LORES_RES[0], fy * LORES_RES[1])
 
-            def click(x, y, kind=QEvent.MouseButtonPress):
-                ev = QMouseEvent(kind, QPointF(x, y), Qt.LeftButton,
-                                 Qt.LeftButton, Qt.NoModifier)
+            def click(x, y, kind=QEvent.Type.MouseButtonPress):
+                ev = QMouseEvent(kind, QPointF(x, y), Qt.MouseButton.LeftButton,
+                                 Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
                 assert lqwin.eventFilter(lqwin.preview, ev), \
                     "Live Measuring must consume every click on the " \
                     "preview while active, never let it fall through to " \
@@ -8431,7 +8431,7 @@ def render_check():
             assert len(lqwin._live_measuring_pending_points) == 3, \
                 "a polygon must NOT auto-finish on reaching its minimum -- " \
                 "only an explicit double-click finishes it"
-            click(200, 200, kind=QEvent.MouseButtonDblClick)
+            click(200, 200, kind=QEvent.Type.MouseButtonDblClick)
             assert lqwin._live_measuring_pending_points == [], \
                 "a double-click at/past the minimum must finish the polygon"
             assert len(lqwin._live_measuring_marks) == 3
@@ -8440,14 +8440,14 @@ def render_check():
             # A double-click BEFORE the minimum is a no-op, not a short shape.
             lqwin._live_measuring_panel.polygon_btn.setChecked(True)
             click(100, 100)
-            click(100, 100, kind=QEvent.MouseButtonDblClick)
+            click(100, 100, kind=QEvent.Type.MouseButtonDblClick)
             assert len(lqwin._live_measuring_pending_points) == 1, \
                 "a double-click before the minimum point count must not " \
                 "finish the shape early"
 
             # Escape cancels the in-progress (not yet finished) sequence --
             # same convention as the armed-burst/batch-abort branches.
-            esc = QKeyEvent(QEvent.KeyPress, Qt.Key_Escape, Qt.NoModifier)
+            esc = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Escape, Qt.KeyboardModifier.NoModifier)
             lqwin.keyPressEvent(esc)
             assert lqwin._live_measuring_pending_points == [], \
                 "Escape must cancel an in-progress Live Measuring shape"
@@ -8468,7 +8468,7 @@ def render_check():
 
             # Delete Point / Delete All -- driven directly (same reason Part
             # 05's own check calls _live_measure_delete_entry directly rather
-            # than driving the actual, blocking QMenu.exec_).
+            # than driving the actual, blocking QMenu.exec).
             before = len(lqwin._live_measuring_marks)
             lqwin._live_measuring_delete_point(target_mark)
             assert len(lqwin._live_measuring_marks) == before - 1

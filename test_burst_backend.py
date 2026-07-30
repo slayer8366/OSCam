@@ -19,7 +19,7 @@ without a running event loop: nothing pumps a frame through, so the call waits
 forever. An earlier version of this script created a QApplication but never
 ran it, which hung exactly that way on real hardware even though rpicam-hello
 worked fine on its own. The fix: the checks below run on a background thread,
-the main thread runs app.exec_() to keep frames flowing, and the worker thread
+the main thread runs app.exec() to keep frames flowing, and the worker thread
 signals back through a Qt signal (the same done_signal pattern
 capture_still_async already uses) when it's finished.
 
@@ -46,10 +46,10 @@ except ImportError:
              "off-rig / no-hardware checks instead.")
 
 try:
-    from PyQt5.QtWidgets import QApplication
-    from PyQt5.QtCore import QObject, pyqtSignal
+    from PyQt6.QtWidgets import QApplication
+    from PyQt6.QtCore import QObject, pyqtSignal
 except ImportError:
-    sys.exit("PyQt5 not available; Picamera2Camera's preview widget needs a "
+    sys.exit("PyQt6 not available; Picamera2Camera's preview widget needs a "
              "running Qt application to deliver frames at all.")
 
 TEST_DIR = Path.home() / "captures" / "_burst_backend_test"
@@ -80,7 +80,7 @@ class _Done(QObject):
 
 def run_checks(cam):
     """Everything that actually exercises the camera. Runs on the worker
-    thread; app.exec_() on the main thread is what lets its frames arrive."""
+    thread; app.exec() on the main thread is what lets its frames arrive."""
     if TEST_DIR.exists():
         shutil.rmtree(TEST_DIR)
     TEST_DIR.mkdir(parents=True)
@@ -179,7 +179,7 @@ def main():
                                         # marshals it to app.quit on the main one
 
     threading.Thread(target=_worker, daemon=True).start()
-    app.exec_()                # keeps the event loop alive so frames actually
+    app.exec()                # keeps the event loop alive so frames actually
                                 # arrive; returns once the worker's signal fires
     return _exit_code[0]
 

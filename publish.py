@@ -22,7 +22,7 @@ bilinear for green-which=1; sub-pixel quad offset on binned).
 
 Two ways to run:
   python3 publish.py --render-check      headless: schema and provenance
-                                         validation, no PyQt5 or images.
+                                         validation, no PyQt6 or images.
   python3 publish.py -g green.tif        the interactive GUI (future work:
     -c calib.json -o /path/to/package    allow display derivative creation
     (output is a directory with the                    and mark burning).

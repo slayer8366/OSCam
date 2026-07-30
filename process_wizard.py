@@ -23,7 +23,7 @@ Two ways to run:
                                              construction and a real
                                              frame_average.py/debayer.py
                                              subprocess round-trip in both
-                                             green and rgb mode, no PyQt5.
+                                             green and rgb mode, no PyQt6.
   python3 process_wizard.py                  not a standalone tool; import
                                              ProcessWizard from qt_shell.py.
 """
@@ -176,11 +176,11 @@ def new_output_dir(out_root=None):
 
 
 try:
-    from PyQt5.QtWidgets import (QWizard, QWizardPage, QWidget, QVBoxLayout,
+    from PyQt6.QtWidgets import (QWizard, QWizardPage, QWidget, QVBoxLayout,
                                  QHBoxLayout, QLabel, QPushButton, QRadioButton,
                                  QCheckBox, QDoubleSpinBox, QPlainTextEdit,
                                  QFileDialog, QButtonGroup)
-    from PyQt5.QtCore import QThread, pyqtSignal
+    from PyQt6.QtCore import QThread, pyqtSignal
     _HAVE_QT = True
 except ImportError:
     _HAVE_QT = False

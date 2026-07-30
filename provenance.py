@@ -8,7 +8,7 @@ capture.py got folded in (see HANDOFF.md's own account). This session's own
 Tier 0 investigation confirmed camera_backend.py has zero session/
 provenance awareness of its own -- the "session" it talks about there is a
 still-mode camera-mode session, an unrelated concept -- so this module sits
-at the base of the import graph: stdlib only, no PyQt5, no camera_backend
+at the base of the import graph: stdlib only, no PyQt6, no camera_backend
 import at module level (only --render-check below reaches for FakeCamera,
 to prove the mechanics against something real rather than hand-built
 stand-ins).
@@ -34,7 +34,7 @@ Two ways to run:
                                          write behavior, new_session_dir/
                                          new_zstack_root_dir collision
                                          avoidance and session_dir= override.
-                                         No PyQt5, no real camera (FakeCamera
+                                         No PyQt6, no real camera (FakeCamera
                                          only).
   python3 provenance.py                  not a standalone tool; import from
                                          qt_shell.py, gallery.py, or

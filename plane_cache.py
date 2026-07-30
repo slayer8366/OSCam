@@ -54,7 +54,7 @@ Two ways to run:
                                           instruction) that measure.py can
                                           open a cached plane and resolve
                                           its annotations with no external
-                                          mapping. No PyQt5, no camera.
+                                          mapping. No PyQt6, no camera.
   python3 plane_cache.py                  not a standalone tool; import
                                           from qt_shell.py.
 """

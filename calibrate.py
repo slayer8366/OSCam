@@ -43,7 +43,7 @@ stage-micrometer divisions beats two adjacent ones.
 Two ways to run:
   python3 calibrate.py --render-check      headless: exercises the pure
                                            distance/calibration/green-plane
-                                           math and the JSON store, no PyQt5,
+                                           math and the JSON store, no PyQt6,
                                            no real image file.
   python3 calibrate.py [image] [--objective NAME]
                                            the GUI. Both arguments are
@@ -380,12 +380,12 @@ def format_staleness_suffix(reasons):
 
 
 try:
-    from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QLabel,
+    from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QLabel,
                                  QVBoxLayout, QHBoxLayout, QPushButton, QComboBox,
                                  QLineEdit, QScrollArea, QDialog, QMessageBox,
                                  QWizard, QWizardPage)
-    from PyQt5.QtGui import QPixmap, QPainter, QPen, QColor, QImage
-    from PyQt5.QtCore import Qt, pyqtSignal
+    from PyQt6.QtGui import QPixmap, QPainter, QPen, QColor, QImage
+    from PyQt6.QtCore import Qt, pyqtSignal
     _HAVE_QT = True
 except ImportError:
     _HAVE_QT = False
@@ -400,7 +400,7 @@ if _HAVE_QT:
         cannot corrupt the pixmap."""
         u8 = np.ascontiguousarray(u8)
         h, w = u8.shape
-        qimg = QImage(u8.data, w, h, w, QImage.Format_Grayscale8)
+        qimg = QImage(u8.data, w, h, w, QImage.Format.Format_Grayscale8)
         return QPixmap.fromImage(qimg.copy())
 
 
@@ -450,7 +450,7 @@ if _HAVE_QT:
             # aspect ratio; KeepAspectRatio here is just a safety backstop; it
             # should not actually rescale beyond int-rounding of w/h.
             self._scaled_pixmap = self._pixmap.scaled(
-                w, h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                w, h, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
             self.setFixedSize(self._scaled_pixmap.size())
             self.update()
 
@@ -461,7 +461,7 @@ if _HAVE_QT:
         def mousePressEvent(self, ev):
             if self._pixmap is None:
                 return
-            native = widget_to_native((ev.x(), ev.y()), self.zoom)
+            native = widget_to_native((ev.pos().x(), ev.pos().y()), self.zoom)
             self._on_click(native)
 
         def paintEvent(self, ev):
@@ -639,7 +639,7 @@ if _HAVE_QT:
             except ImportError:
                 import gallery as _gallery
             dlg = _gallery.GalleryPickDialog(parent=self)
-            if dlg.exec_() != QDialog.Accepted:
+            if dlg.exec() != QDialog.DialogCode.Accepted:
                 return
             paths = dlg.selected_paths()
             if paths:
@@ -765,8 +765,8 @@ if _HAVE_QT:
                     "nothing already saved is deleted or overwritten. Continue?"
                     .format(obj, n, existing["um_per_px"],
                             existing.get("calibrated_at", "unknown date")),
-                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-                if resp != QMessageBox.Yes:
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+                if resp != QMessageBox.StandardButton.Yes:
                     return
             save_calibration(obj, entry)
             self._refresh_existing_label()
@@ -892,7 +892,7 @@ def main(argv=None):
     ap.add_argument("--objective", default=None, help="objective name, e.g. 40x")
     a = ap.parse_args(argv)
     if not _HAVE_QT:
-        sys.exit("PyQt5 not available. Use --render-check for the headless self-check, "
+        sys.exit("PyQt6 not available. Use --render-check for the headless self-check, "
                  "or install python3-pyqt5 for the GUI.")
     app = QApplication(sys.argv)
 
@@ -901,24 +901,24 @@ def main(argv=None):
         win = CalibrationWindow(image_path=a.image, objective=a.objective)
         win.resize(1200, 800)
         win.show()
-        app.exec_()
+        app.exec()
         return
 
     # No args: the wizard is the new default interactive entry point. Looping
-    # on app.exec_() is what makes "Restart wizard..." work -- closing the
+    # on app.exec() is what makes "Restart wizard..." work -- closing the
     # window ends that inner event loop (quitOnLastWindowClosed), and the
     # restarted flag (set only by CalibrationWindow.restart_requested) decides
     # whether to run the wizard again or return.
     while True:
         wizard = CalibrationWizard()
-        if wizard.exec_() != QWizard.Accepted:
+        if wizard.exec() != QWizard.DialogCode.Accepted:
             return
         win = CalibrationWindow(image_path=wizard.image_path(), objective=wizard.objective())
         win.resize(1200, 800)
         restarted = []
         win.restart_requested.connect(lambda: restarted.append(True))
         win.show()
-        app.exec_()
+        app.exec()
         if not restarted:
             return
 
