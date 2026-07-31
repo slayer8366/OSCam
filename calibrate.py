@@ -893,7 +893,7 @@ def main(argv=None):
     a = ap.parse_args(argv)
     if not _HAVE_QT:
         sys.exit("PyQt6 not available. Use --render-check for the headless self-check, "
-                 "or install python3-pyqt5 for the GUI.")
+                 "or install python3-pyqt6 for the GUI.")
     app = QApplication(sys.argv)
 
     if a.image or a.objective:

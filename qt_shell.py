@@ -5740,7 +5740,7 @@ def main(argv=None):
     a = ap.parse_args(argv)
     if not _HAVE_QT:
         sys.exit("PyQt6 not available. Use --render-check for the headless self-check "
-                 "test, or install python3-pyqt5 for the GUI.")
+                 "test, or install python3-pyqt6 for the GUI.")
     app = QApplication(sys.argv)
     theme_qss = resolve_theme_qss_path(load_pref("theme", None))
     if theme_qss is not None:

@@ -698,7 +698,7 @@ def main(argv=None):
     if a.wizard:
         if not _HAVE_QT:
             sys.exit("PyQt6 not available. Use --render-check for the headless "
-                     "self-check, or install python3-pyqt5 for --wizard.")
+                     "self-check, or install python3-pyqt6 for --wizard.")
         run_wizard()
         return
 

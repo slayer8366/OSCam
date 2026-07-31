@@ -59,7 +59,7 @@ This is the actual design center of the project, not a footnote.
 
 ## Software
 
-- Python 3, PyQt5, Picamera2, NumPy, tifffile
+- Python 3, PyQt6, Picamera2, NumPy, tifffile
 - `FfmpegOutput` / ffmpeg (video recording, `.mp4` container)
 
 ## Quick start
@@ -105,8 +105,8 @@ for m in pixel_hash annotations export publish calibrate measure ca_measure \
   DISPLAY=:0 python3 $m.py --render-check || echo "FAILED: $m"
 done
 ```
-`qt_shell.py` and `measure.py` have PyQt5-gated checks that print
-`SKIPPED` rather than `FAILED` when PyQt5 isn't importable — that's
+`qt_shell.py` and `measure.py` have PyQt6-gated checks that print
+`SKIPPED` rather than `FAILED` when PyQt6 isn't importable — that's
 expected, not a bug to chase.
 
 ## Architecture

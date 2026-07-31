@@ -166,7 +166,7 @@ not a rule to route around.
 **Pure logic is Qt-free and camera-free.** Anything that isn't obviously
 GUI wiring belongs in a module-level, testable section, not inline in a
 widget method. Every module has a `--render-check` self-test that runs
-with no camera and (mostly) no PyQt5. This isn't a testing preference;
+with no camera and (mostly) no PyQt6. This isn't a testing preference;
 it's what makes the measurement logic verifiable at all.
 
 **`--render-check` coverage is the definition of done.** New logic
