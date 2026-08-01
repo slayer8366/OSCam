@@ -7,6 +7,94 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-01
 
+### Record on-rig confirmation: PyQt5 to PyQt6 port
+
+**Confirmed on-rig. All four deep-verification items pass. No port
+defect was found.** This is a single record, not an intent/build/record
+series — there is no build here, the port and its binding fix are
+already committed; this is the outcome record for work already landed.
+
+1. **Live Measure freeze and crop-aware conversion.** Clicks freeze and
+   register point 1 on the clicked feature. Tested at capture 4056x3040
+   and preview 1332x990 — the configuration that actually exercises the
+   1.5225 crop conversion. A specimen measurement at 40x read 22.658 um
+   over 162.5 px (0.1394 um/px), within 1% of the 4x calibration of
+   1.4084 scaled by ten — two independently calibrated objectives
+   agreeing.
+
+2. **Measure tool at 4x** against a 1 DIV = 0.1mm stage micrometer. This
+   is the item that mattered, because the port's only non-formulaic
+   change was `ev.x()`/`ev.y()` to `ev.pos().x()`/`ev.pos().y()`, and the
+   risk was a systematic offset of roughly one preview pixel, about
+   1.4 um at 4x.
+
+   Full span: 2607.345 um over 1851.3 px -> 1.40839 um/px against a
+   stored 1.4084. Confirms the calibration is applied intact, though it
+   is arithmetic rather than an independent check.
+
+   Single division, the sensitive form of the test, since a fixed pixel
+   error is diluted by a long span but not by a short one:
+
+   | Position | Sample 1 | Sample 2 | Mean |
+   |---|---|---|---|
+   | left | 100.774 | 98.828 | 99.80 |
+   | centre | 99.777 | 100.714 | 100.25 |
+   | right | 101.675 | 101.607 | 101.64 |
+
+   Mean error across all six samples is under 0.2 px, and individual
+   samples straddle the true 100 um in **both** directions. A truncation
+   offset is constant and unidirectional; this is not that. The `pos()`
+   over `position()` decision (see `HANDOFF.md`) is vindicated by
+   physical ground truth, which is stronger evidence than agreement with
+   `main` would have been.
+
+3. **Z-stacking.** Start Z-Stack works, ROI resets after each capture,
+   post-stack processing offer appears. That last one is the first
+   hardware confirmation of the `ProcessWizard.exec()` path, and
+   therefore of the `_FakeWizard.exec_` to `exec` rename, since nothing
+   else in the session opens the wizard.
+
+4. **Focus aid.** `F` enables and disables. Score and percentage both
+   respond across the focus range and reach 100%. ROI is draggable,
+   exercising the `ev.pos()` sites at `qt_shell.py:5620` and `:5622`.
+
+Light list also confirmed: app launches under labwc, preview streams,
+capture writes files, dialogs open, menus populate.
+
+Also confirms the picamera2 Qt binding fix (recorded below, this same
+date) — the branch would not have launched at all on-rig without it.
+That fix is now permanent rather than provisional.
+
+**Backlog found during the bench — not fixed, recorded only:**
+
+1. ROI box jumps inward slightly on resize before moving in the dragged
+   direction, making enlarging feel like it fights you. **Reproduced on
+   `main` under PyQt5 — pre-existing, not a port regression.** Suspected
+   anchor/hit-test logic rather than coordinate handling.
+2. Focus aid rebases onto the plane just captured during a Z-stack, so
+   the just-captured plane reads as peak and the aid must be reset
+   manually to find the next plane. **Reproduced on `main` —
+   pre-existing.** Related idea from the same session: auto-enable focus
+   assist when a Z-stack starts, if not already on. Both are really the
+   same question — the aid does not know a stack is in progress.
+3. Under raised `Xft.dpi` the UI scales correctly but the GL preview
+   viewport does not follow the widget: the frame renders at its old
+   size anchored bottom-left, with an uncleared framebuffer around it,
+   and window resize or fullscreen toggle does not correct it. **Not
+   A/B'd against `main` — unclassified, not confirmed pre-existing.**
+   Possibly the same defect as the old quarter-screen fullscreen bug at
+   compositor scale=2 (closed as an OS-level issue) by a different route.
+4. Possible field-scale gradient at 4x, roughly 1.8 um left to right
+   across the field (left 99.80, centre 100.25, right 101.64 from item 2
+   above). With n=2 per position and within-position scatter up to
+   1.9 um, this is suggestive rather than established. Monotonic rather
+   than radially symmetric, so it points at tilt rather than objective
+   distortion. **Not a port defect**: a truncation offset would be
+   constant across the field; this varies with position. Deliberately
+   deferred. Discriminating test on record for later: rotate the slide
+   180 and re-measure left and right — if the gradient follows the slide
+   it's the slide, if it stays with the field it's optics or sensor.
+
 ### Build: picamera2 Qt binding selection — self-check only, NOT yet on-rig
 
 Built to the intent recorded below it, with no correction — the fix was

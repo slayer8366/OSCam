@@ -26,10 +26,11 @@ actually has to prove before it counts as verification.
 
 If you are on `main`, this project is PyQt5 and everything below about
 verification state still holds. If you are on `port/pyqt6`, the UI layer
-is PyQt6 and **every on-rig confirmation in the UI layer has dropped to
-unconfirmed**, by design and not by accident. Both builds are kept
-available so the new one can be benched against the old one in a single
-deep verification session.
+is PyQt6, and as of 2026-08-01 all deep verification for the port has
+been confirmed on-rig (see below) — that confirmation was, by design and
+not by accident, a fresh deep verification session rather than an
+inference from `main`'s. Both builds are kept available so future work
+on either can still be benched against the other.
 
 The port is mechanical. Nothing was restructured, renamed, or improved
 while converting. If you find something in the Qt6 files that looks
@@ -117,11 +118,20 @@ that is a real change to measured values, introduced by a port that was
 supposed to change nothing. `pos()` returns `QPoint`, so the numbers
 reaching the geometry functions are identical to what Qt5 delivered.
 
-**Open, cause known, decision not made:** `pos()` is deprecated in Qt6.
-It is alive in 6.11.0 and still returns `QPoint`, verified by probe, but
-it will go eventually. Moving to `position()` is the int-versus-float
-call above and wants the rig and a stage micrometer, not a code review.
-Left characterized rather than decided.
+**Cause known, decision deliberately deferred to the rig — now has
+evidence.** `pos()` is deprecated in Qt6. It is alive in 6.11.0 and still
+returns `QPoint`, verified by probe, but it will go eventually. Moving to
+`position()` is the int-versus-float call above, and it was deliberately
+left for the rig and a stage micrometer rather than a code review. The
+2026-08-01 on-rig session ran exactly that check: six single-division
+samples at 4x straddled the true 100 um in both directions with under
+0.2 px mean error, which is what a `QPoint` (int) read looks like and not
+what a constant, unidirectional truncation offset would look like. That
+vindicates staying on `pos()` for now — see `CHANGELOG.md`'s "Record
+on-rig confirmation" entry for the readings — but does not change that
+`pos()` is deprecated and will need to move to `position()` eventually;
+when it does, the int-versus-float shift characterized above still
+applies and still wants a rig re-check.
 
 ### The trap that does not fail loudly
 
@@ -150,7 +160,12 @@ entirely; it was never used here.
 
 ### Verification state of the port
 
-**Self-checked. NOT confirmed on-rig.** No rig was available to the
+**Confirmed on-rig, 2026-08-01.** All four deep-verification items below
+pass. No port defect was found. Full detail, including the specimen and
+stage-micrometer readings, is in `CHANGELOG.md`'s "Record on-rig
+confirmation: PyQt5 to PyQt6 port" entry.
+
+Before that, this was self-checked only. No rig was available to the
 porting agent, and neither was picamera2 or libcamera.
 
 What was actually proved here:
@@ -186,9 +201,8 @@ Enum mistakes surface here, immediately and noisily.
 
 ### Deep verification (needs the stage micrometer, one session)
 
-**All four drop to unconfirmed.** That is expected and is the known cost
-of the port: the UI layer that was verified no longer exists in the same
-form.
+**All four confirmed on-rig, 2026-08-01.** See `CHANGELOG.md`'s "Record
+on-rig confirmation: PyQt5 to PyQt6 port" entry for the actual readings.
 
 1. **Live Measure freeze and crop-aware coordinate conversion.** A click
    on the preview must land on the clicked feature in the frozen still.
@@ -212,7 +226,46 @@ remove here, since the tree never set `AA_EnableHighDpiScaling` or
 output scale on HDMI-A-1, the preview's size and the tablet display are
 worth a look on the first launch.
 
-### Fix: picamera2 Qt binding selection — BUILT, self-check only, NOT yet on-rig
+### Backlog found during the 2026-08-01 on-rig bench — not fixed
+
+Found while running the deep-verification checks above. Classification
+matters here: "found during the bench" and "caused by the port" are not
+the same thing, and conflating them would misdirect the next person who
+picks one of these up.
+
+1. ROI box jumps inward slightly on resize before moving in the dragged
+   direction, making enlarging feel like it fights you. **Reproduced on
+   `main` under PyQt5 — pre-existing, not a port regression.** Suspected
+   anchor/hit-test logic rather than coordinate handling.
+2. Focus aid rebases onto the plane just captured during a Z-stack, so
+   the just-captured plane reads as peak and the aid must be reset
+   manually to find the next plane. **Reproduced on `main` —
+   pre-existing.** Related design idea from the same session: auto-enable
+   focus assist when a Z-stack starts, if not already on. Both are really
+   the same question — the aid does not know a stack is in progress.
+3. Under raised `Xft.dpi` the UI scales correctly but the GL preview
+   viewport does not follow the widget: the frame renders at its old
+   size anchored bottom-left, with an uncleared framebuffer around it,
+   and window resize or fullscreen toggle does not correct it. **Not
+   A/B'd against `main` — unclassified, not confirmed pre-existing.**
+   Possibly the same defect as the old quarter-screen fullscreen bug at
+   compositor scale=2 (closed as an OS-level issue) by a different route.
+4. Possible field-scale gradient at 4x, roughly 1.8 um left to right
+   across the field (deep-verification item 2's single-division samples:
+   left 99.80, centre 100.25, right 101.64 um mean). With n=2 per
+   position and within-position scatter up to 1.9 um, this is suggestive
+   rather than established. Monotonic rather than radially symmetric, so
+   it points at tilt rather than objective distortion. **Not a port
+   defect**: a truncation offset would be constant across the field; this
+   varies with position. Deliberately deferred. Discriminating test on
+   record for later: rotate the slide 180 and re-measure left and right —
+   if the gradient follows the slide it's the slide, if it stays with the
+   field it's optics or sensor.
+
+Full readings behind items 2 and 4 are in `CHANGELOG.md`'s "Record
+on-rig confirmation" entry.
+
+### Fix: picamera2 Qt binding selection — CONFIRMED on-rig, 2026-08-01
 
 **Not part of the port.** Own intent/build/record-build commit series on
 top of `port/pyqt6`, deliberately separate from the port's three commits,
@@ -246,9 +299,12 @@ coupling, so a future import-tidying pass does not read the 6-suffix as a
 typo, revert it, and silently reproduce this exact abort.
 
 **Not self-checkable here.** `--render-check` runs against `FakeCamera`
-and never imports this path — all 16 modules passing, exit 0, proves
-nothing about this fix, only that nothing else broke. Real acceptance is
-on-rig: the app launches and the preview streams. Not yet run.
+and never imports this path — all 16 modules passing, exit 0, proved
+nothing about this fix by itself, only that nothing else broke. Real
+acceptance was on-rig: the app launched and the preview streamed,
+confirmed 2026-08-01 as part of the same bench session that confirmed the
+port's own deep-verification items above. This fix is now permanent
+rather than provisional.
 
 **`port/pyqt6` no longer differs from `main` by the port alone.** It now
 also carries this one-line-plus-comment fix. Anyone benching the two
