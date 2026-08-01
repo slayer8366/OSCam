@@ -212,6 +212,35 @@ remove here, since the tree never set `AA_EnableHighDpiScaling` or
 output scale on HDMI-A-1, the preview's size and the tablet display are
 worth a look on the first launch.
 
+### On-rig blocker: picamera2 Qt binding selection — INTENT, not yet built
+
+**Not part of the port.** Own intent/build/record-build commit series on
+top of `port/pyqt6`, deliberately separate from the port's three commits,
+so a bench failure can be attributed to the port or to this
+independently. The port itself is not at fault — nothing in the
+enum-scoping or `ev.pos()` diff touches this.
+
+On-rig, the app aborts during startup constructing the preview widget
+(`QWidget: Must construct a QApplication before a QWidget`, `Aborted`),
+after libcamera has already enumerated every sensor mode and returned
+from both `create_preview_configuration()` and `configure()`.
+
+**Root cause**: `picamera2.previews.qt` resolves widget class names
+lazily through a module `__getattr__`, and the class name *is* the Qt
+binding selector, with no auto-detection — `QGlPicamera2` always means
+PyQt5, `QGl6Picamera2` means PyQt6. `camera_backend.py:764` currently
+imports plain `QGlPicamera2`, so it builds a PyQt5 widget under this
+port's PyQt6 `QApplication`, which cannot see it (Qt5 and Qt6 are
+separately loaded C++ libraries) and aborts.
+
+**Planned fix**: alias the import to `QGl6Picamera2` at
+`camera_backend.py:764`, after confirming it exists on the rig's
+installed picamera2. Full detail in `CHANGELOG.md`'s matching entry.
+
+**Not self-checkable.** `--render-check` never imports this path; only
+an on-rig launch proves it. This does not add a fifth deep-verification
+item above — the four items there are still testing exactly what the
+port changed, `ev.pos()` and the enum scoping, and nothing about this.
 
 ## Current state (as of this handoff)
 

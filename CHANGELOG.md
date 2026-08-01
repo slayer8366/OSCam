@@ -5,6 +5,67 @@ dump — each entry names the commit(s) it corresponds to for traceability.
 See `HANDOFF.md` for what a fresh agent needs to know before working here;
 this file is the historical record of what happened and why.
 
+## 2026-08-01
+
+### Record intent: picamera2 Qt binding selection
+
+Branch `port/pyqt6`, not `main` — `main` is still PyQt5 and this change
+would break it. Own intent/build/record-build series, separate from the
+port's three commits, so a bench failure can be attributed to the port or
+to this independently.
+
+**The failure, on-rig, at startup:**
+
+```
+QWidget: Must construct a QApplication before a QWidget
+Aborted
+```
+
+libcamera is fine up to that point — every sensor mode enumerates,
+imx477 comes up, `create_preview_configuration()` and `configure()` both
+return. It dies constructing the preview widget.
+
+**Root cause.** `camera_backend.py:764` imports `QGlPicamera2` from
+`picamera2.previews.qt`. That module resolves widget class names lazily
+through a module-level `__getattr__`, and the class name *is* the Qt
+binding selector — there is no auto-detection and no environment
+variable:
+
+| Name | Binding |
+|---|---|
+| `QGlPicamera2` | PyQt5 |
+| `QGl6Picamera2` | PyQt6 |
+| `QPicamera2` | PyQt5 |
+| `Q6Picamera2` | PyQt6 |
+
+Plain `QGlPicamera2` always means PyQt5. Under a PyQt6 `QApplication`
+that builds a PyQt5 C++ widget, which asks Qt5 whether an application
+exists, gets null — Qt5 and Qt6 are separately loaded C++ libraries and
+cannot see each other's application object — and aborts. **Not a port
+defect.** Nothing in the enum-scoping or `ev.pos()` diff touches this;
+it's a picamera2 API detail that only surfaces once the app is actually
+PyQt6.
+
+**Not the fix:** uninstalling `python3-pyqt5`. `main` still needs it, and
+benching the new build against the old one on the same rig is why the
+port is on a branch at all. The binding has to be selected in code so
+both builds coexist.
+
+**Planned fix, one line:** alias the import,
+`from picamera2.previews.qt import QGl6Picamera2 as QGlPicamera2`, so the
+construction at line 882 and the comments at 754, 808, 881, 1267, 1281
+keep referring to `QGlPicamera2` unchanged. `QGl6Picamera2` will be
+verified present on the rig's installed picamera2 before the alias is
+written; if absent, the fallback is the underscore-private factory
+(`_get_qglpicamera2`/`_QT_BINDING`) since those are confirmed present but
+may move between releases, so the named alias is preferred when it
+exists.
+
+**What this cannot self-check.** `--render-check` runs against
+`FakeCamera` and never imports this path. A green sweep will prove
+nothing about this fix, only that nothing else broke. The real check is
+on-rig: the app launches and the preview streams.
+
 ## 2026-07-29
 
 ### Build: PyQt5 to PyQt6 port — self-check only, NOT yet on-rig
