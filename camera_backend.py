@@ -760,8 +760,13 @@ class Picamera2Camera(CameraBackend):
         if not _HAVE_PICAMERA2:
             raise RuntimeError("picamera2 not available; this backend runs on the Pi. "
                                "Use FakeCamera off-rig.")
-        # ON-RIG: confirm this import path on your Picamera2 version.
-        from picamera2.previews.qt import QGlPicamera2
+        # CAVEAT: the widget class name selects the Qt binding. picamera2's
+        # previews/qt.py maps QGlPicamera2 -> PyQt5 and QGl6Picamera2 -> PyQt6
+        # via module __getattr__; there is no auto-detection. Importing plain
+        # QGlPicamera2 here builds a PyQt5 widget under a PyQt6 QApplication,
+        # which aborts with "Must construct a QApplication before a QWidget".
+        # Do not "simplify" this alias.
+        from picamera2.previews.qt import QGl6Picamera2 as QGlPicamera2
 
         self._picam2 = Picamera2()
         self._preview_res = preview_res
