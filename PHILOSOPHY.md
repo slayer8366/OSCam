@@ -168,10 +168,11 @@ Both halves stay checkable, not just asserted in prose — that property is
 the reason this rule can be trusted rather than quietly outgrown again.
 `camera_backend.py`'s own self-check runs
 `assert_only_camera_backend_imports_picamera2` (no other file may import
-`picamera2`/`libcamera`) and `assert_only_camera_backend_imports_sensor_
-profiles` (no other file may import a sensor-profile module — discovered
-by shape, a module exposing `FULL_ARRAY_SIZE`/`crop_for_size`, not a
-maintained list, so a future `imx519.py` is covered the moment it exists).
+`picamera2`/`libcamera`) and
+`assert_only_camera_backend_imports_sensor_profiles` (no other file may
+import a sensor-profile module — discovered by shape, a module exposing
+`FULL_ARRAY_SIZE`/`crop_for_size`, not a maintained list, so a future
+`imx519.py` is covered the moment it exists).
 Add a second sensor by dropping in its own profile module next to
 `imx477.py` and teaching `camera_backend.py` to resolve it by name; if
 you ever find yourself importing a sensor-profile module from anywhere
