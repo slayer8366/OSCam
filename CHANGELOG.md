@@ -7,6 +7,53 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-01
 
+### Build: picamera2 Qt binding selection — self-check only, NOT yet on-rig
+
+Built to the intent recorded below it, with no correction — the fix was
+exactly the one line planned. `QGl6Picamera2` was confirmed present in
+the rig's installed picamera2
+(`/usr/lib/python3/dist-packages/picamera2/previews/qt.py`), resolved via
+the same `__getattr__` table that maps `QGlPicamera2` to PyQt5, so the
+underscore-private fallback (`_get_qglpicamera2`/`_QT_BINDING`) was not
+needed.
+
+`camera_backend.py:764` (now `:769`) is now `from picamera2.previews.qt
+import QGl6Picamera2 as QGlPicamera2`. Aliased so the construction at
+line 882 and the comments at 754, 808, 881, 1267, 1281 all keep referring
+to `QGlPicamera2` unchanged. The stale `# ON-RIG: confirm this import
+path` comment above it is replaced with a `# CAVEAT:` explaining the
+binding coupling, so a future import-tidying pass does not read the
+6-suffix as a typo, revert it, and reproduce the abort. `# CAVEAT:` is a
+new marker convention — the first seed for the function-index generator
+to harvest later.
+
+**`grep -c "QGl6Picamera2" camera_backend.py` returns 2, not the 1 the
+plan's acceptance criterion named.** The caveat comment itself, which the
+plan explicitly said not to skip or simplify away, spells out `"QGl6Picamera2
+-> PyQt6"` in prose — that line matches too. Not a defect in the fix; the
+plan's own acceptance check didn't account for its own caveat text
+containing the string. The import line is the only place the name is
+actually used as code.
+
+**All 16 modules with `--render-check` still pass, exit 0** — `pixel_hash
+annotations export publish calibrate measure ca_measure wizard_pages
+qt_shell stacks focus gallery process_wizard provenance camera_backend
+plane_cache`. As expected and as the plan itself said: these run against
+`FakeCamera` and never import this path, so this proves nothing about the
+fix, only that nothing else broke.
+
+**Real acceptance is on-rig** — app launches, preview streams — and is
+not something this task could self-check. Not yet run.
+
+**Recording note, per the plan.** Until this, `port/pyqt6` differed from
+`main` by the port's three commits and nothing else, which is what made
+bench comparisons attributable. That property is now weakened by exactly
+this one line + comment; whoever compares builds next needs to know this
+diff is here and is not part of the port. The port itself was never at
+fault — the deep-verification list in `HANDOFF.md` is unchanged and still
+only tests `ev.pos()` and the enum scoping, the two non-formulaic things
+the port actually changed.
+
 ### Record intent: picamera2 Qt binding selection
 
 Branch `port/pyqt6`, not `main` — `main` is still PyQt5 and this change
