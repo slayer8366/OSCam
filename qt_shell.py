@@ -5860,6 +5860,15 @@ def render_check():
         from . import function_index as _function_index
     except ImportError:
         import function_index as _function_index
+    # CAVEAT: keep this call unconditional and this early. It does not
+    # touch Qt, a camera, or anything else render_check() sets up below --
+    # do not gate it behind _HAVE_QT, move it after a step that can
+    # legitimately SKIP, or wrap it in a try/except that swallows the
+    # AssertionError. Any of those would make the guard technically still
+    # exist while quietly stopping it from ever failing a real run, which
+    # is the exact failure mode this project has hit three times before
+    # (PHILOSOPHY.md, "a self-check must reach the code the way the
+    # application reaches it").
     _function_index.assert_function_index_current()
     print("assert_function_index_current check PASS: FUNCTION_INDEX.md "
           "matches a fresh regeneration of the tree")

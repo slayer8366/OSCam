@@ -164,10 +164,13 @@ up by concern (which file), not by a name you'd already have to know.
 ## function_index.py
 
 - `def _signature_line(node: ast.AST) -> str:`
+  - CAVEAT (`_signature_line`): this builds a real, empty-bodied AST node and unparses IT, rather than hand-formatting node.args -- deliberately. Positional defaults, *args, keyword-only args, **kwargs, per-arg annotations, and a return annotation each have their own comma/placement rule, and Python's own unparser already gets all of them right. Reimplementing that by hand is exactly the kind of code that looks done after the first three cases and is subtly wrong on the fourth.
 - `def _iter_defs(tree: ast.Module):`
 - `def _harvest_caveats(src_lines: list[str]):`
+  - CAVEAT (`_harvest_caveats`): this is a text scan, not an AST walk, on purpose -- comments are discarded before ast.parse ever sees them, so there is no node to visit. That also means a "# CAVEAT:" string inside a docstring or a regular string literal would be picked up as if it were a real comment; this project's own convention (CAVEAT as its own comment line, never inline in a string) is what keeps that from mattering in practice, not anything this function checks for.
 - `def _module_entry(path: Path) -> str:`
 - `def build_index(root: Path=PROJECT_ROOT) -> str:`
+  - CAVEAT (`build_index`): Path.glob() order is not specified to be alphabetical or stable -- it follows the underlying filesystem's directory-entry order, which can differ between an ext4 rig and this sandbox's overlay filesystem, or between two runs after an intervening create/delete. Do not remove this sorted() as "redundant" -- without it, two runs on the SAME unchanged tree can legitimately produce different byte output, which is exactly the spurious-failure mode that gets a freshness guard disabled.
 - `def assert_function_index_current(root: Path=PROJECT_ROOT, index_path: Path=INDEX_PATH):`
 - `def render_check():`
 
@@ -365,6 +368,7 @@ up by concern (which file), not by a name you'd already have to know.
 - `class FocusPreviewWindow(QMainWindow):`
 - `def main(argv=None):`
 - `def render_check():`
+  - CAVEAT (`render_check`): keep this call unconditional and this early. It does not touch Qt, a camera, or anything else render_check() sets up below -- do not gate it behind _HAVE_QT, move it after a step that can legitimately SKIP, or wrap it in a try/except that swallows the AssertionError. Any of those would make the guard technically still exist while quietly stopping it from ever failing a real run, which is the exact failure mode this project has hit three times before (PHILOSOPHY.md, "a self-check must reach the code the way the application reaches it").
 
 ## stacks.py
 

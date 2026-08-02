@@ -55,6 +55,13 @@ def _signature_line(node: ast.AST) -> str:
     ClassDef, built by unparsing a body-stripped copy of the node -- this
     reuses Python's own unparser for correct formatting of defaults,
     annotations, */**, and keyword-only args, rather than reimplementing it."""
+    # CAVEAT: this builds a real, empty-bodied AST node and unparses IT,
+    # rather than hand-formatting node.args -- deliberately. Positional
+    # defaults, *args, keyword-only args, **kwargs, per-arg annotations,
+    # and a return annotation each have their own comma/placement rule,
+    # and Python's own unparser already gets all of them right. Reimplementing
+    # that by hand is exactly the kind of code that looks done after the
+    # first three cases and is subtly wrong on the fourth.
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
         cls = ast.FunctionDef if isinstance(node, ast.FunctionDef) else ast.AsyncFunctionDef
         fake = cls(name=node.name, args=node.args, body=[ast.Pass()],
@@ -95,6 +102,13 @@ def _harvest_caveats(src_lines: list[str]):
     continuation comment line joined into one string, so a multi-line
     caveat block reads as one durable fact rather than being truncated at
     its first line."""
+    # CAVEAT: this is a text scan, not an AST walk, on purpose -- comments
+    # are discarded before ast.parse ever sees them, so there is no node
+    # to visit. That also means a "# CAVEAT:" string inside a docstring or
+    # a regular string literal would be picked up as if it were a real
+    # comment; this project's own convention (CAVEAT as its own comment
+    # line, never inline in a string) is what keeps that from mattering in
+    # practice, not anything this function checks for.
     caveats = []
     i = 0
     n = len(src_lines)
@@ -171,6 +185,14 @@ def build_index(root: Path = PROJECT_ROOT) -> str:
     and within each module the AST body's own source order (a fresh parse
     of unchanged text always yields the same order, so nothing further
     to sort there)."""
+    # CAVEAT: Path.glob() order is not specified to be alphabetical or
+    # stable -- it follows the underlying filesystem's directory-entry
+    # order, which can differ between an ext4 rig and this sandbox's
+    # overlay filesystem, or between two runs after an intervening
+    # create/delete. Do not remove this sorted() as "redundant" -- without
+    # it, two runs on the SAME unchanged tree can legitimately produce
+    # different byte output, which is exactly the spurious-failure mode
+    # that gets a freshness guard disabled.
     modules = sorted(root.glob("*.py"), key=lambda p: p.name)
     parts = [HEADER]
     for path in modules:
