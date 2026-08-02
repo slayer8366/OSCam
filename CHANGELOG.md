@@ -7,6 +7,48 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-02
 
+### Record build: three-phase convention in PHILOSOPHY.md
+
+Built exactly to the intent recorded below, no correction needed.
+
+**Against the stated scope:** `CHANGELOG.md` touched first (this
+series), then `PHILOSOPHY.md`, then `CHANGELOG.md` again, in that order
+— nothing else. The two-phase paragraph at (then-)356-360 is gone, not
+duplicated alongside a new version: `grep -n "edited" PHILOSOPHY.md`
+now returns exactly one line, "correction or an outcome is superseded by
+a later entry, never edited into the old one," which is the new rule
+denying the thing the old paragraph licensed, not a second copy of the
+old wording. The convention landed split across the two sections named
+in the intent — the enforceable half under "Strict rules" (new rule
+after the `calib/` directory rule), the pointer plus the HANDOFF-specific
+carve-out under "Documentation as a first-class artifact." Every other
+section is byte-for-byte unchanged, and no executable file was touched.
+
+**Against the measured baseline: 382 lines before, 433 after — 56
+insertions, 5 deletions, +51 net.** That is what stating the convention
+in full, in this file's own voice, actually costs: the file was short
+enough to read start to finish at 382 lines, and it still is at 433, but
+that margin is smaller now and is worth watching on the next addition.
+
+**Every clause in the source wording made it in.** Cross-checked line by
+line against the plan: never-modified, intent-supersedes-intent with
+reason and visible old entry, redo's `supersedes` pointer, the
+applies-to-divergent-outcomes scope with the single-entry carve-out for
+outcome-only work, per-phase commits with the intent-commit-first
+ordering and why that's what makes it checkable, the measured-baseline
+requirement with its count-or-scope split, build-then-record-then-fix-
+the-code-not-the-record, `DISCOVERED:`/`# CAVEAT:` marking, and no-
+retroactive-recording. Nothing was dropped, so there is nothing to flag
+here.
+
+**Acceptance, checked after the build:** `python3 camera_backend.py
+--render-check` exits 0 — full self-check sweep unchanged, which is what
+"documentation only" means in practice here, not just in the commit
+message. Both halves are independently reachable: the "Strict rules"
+addition never refers out to the documentation section to complete
+itself, so an agent reading only that section gets the whole enforceable
+convention.
+
 ### Record intent: three-phase convention in PHILOSOPHY.md
 
 Documentation only. Branches off `philosophy/sensor-driver-boundary`
