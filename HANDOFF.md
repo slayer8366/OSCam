@@ -22,28 +22,46 @@ for durable rules about *how* things get verified here (as opposed to what
 currently is or was built) — in particular, its rule on what a self-check
 actually has to prove before it counts as verification.
 
-## READ FIRST: the Qt6 port is on a branch (`port/pyqt6`)
+## PyQt6 (the UI layer runs on PyQt6, not PyQt5)
 
-If you are on `main`, this project is PyQt5 and everything below about
-verification state still holds. If you are on `port/pyqt6`, the UI layer
-is PyQt6, and as of 2026-08-01 all deep verification for the port has
-been confirmed on-rig (see below) — that confirmation was, by design and
-not by accident, a fresh deep verification session rather than an
-inference from `main`'s. Both builds are kept available so future work
-on either can still be benched against the other.
+The port from PyQt5 to PyQt6 is complete, merged into `main` directly (not
+a standing separate branch — `port/pyqt6` no longer exists), and confirmed
+on-rig on 2026-08-01, including the `camera_backend.py` binding-selection
+fix that had to land alongside it (`QGl6Picamera2`, now also a `# CAVEAT:`
+comment at `camera_backend.py:769` and a `FUNCTION_INDEX.md` entry — see
+`CHANGELOG.md`'s "generated per-module function index" entries for that
+mechanism). Full history — the five things the port actually changed, the
+structural Qt-attribute verification, the on-rig deep-verification
+readings, and the binding-fix root cause — is in `CHANGELOG.md`'s "PyQt5
+to PyQt6 port" (2026-07-29) and "picamera2 Qt binding selection"
+(2026-08-01) entries. Two things from that work stay live enough to
+repeat here rather than leave buried in a changelog entry:
 
-The port is mechanical. Nothing was restructured, renamed, or improved
-while converting. If you find something in the Qt6 files that looks
-better or worse than its Qt5 counterpart beyond enum spelling, `exec()`,
-and one moved import, that is a bug in the port and should be treated as
-one.
+**Qt6 flag types don't compare equal to raw ints, inconsistently.**
+`Qt.MouseButton.LeftButton == 1` is False and
+`Qt.KeyboardModifier.NoModifier == 0` is False — both are flag types now,
+not int enums. `Qt.Key.Key_Escape == 16777216` is still True, and
+`QEvent.Type`/`QDialog.DialogCode`/`QMessageBox.StandardButton` all still
+compare equal to their old ints, so the inconsistency itself is the trap.
+Every comparison site in the tree was checked at port time and compares
+enum to enum; write `if ev.modifiers() == 0:` in new code and you'll get
+a silently false branch and no error.
 
-### Out of scope for the port, and still out of scope
+**`QMouseEvent.pos()` is deprecated but deliberately not yet replaced.**
+Qt6's `position().x()` returns `float` where Qt5's `.x()` returned `int`,
+and `native_point_from_preview_click`/`widget_to_native` both do float
+arithmetic, so a float input wouldn't raise — it would silently shift
+every click by up to a pixel, a real change to measured values at the
+current 4x calibration (1.4084 um/px). `pos()` still returns `QPoint` in
+6.11.0 and was kept deliberately; a stage-micrometer check on-rig
+(2026-08-01) found sub-0.2px mean error consistent with an int read, not
+a truncation offset — evidence for staying on `pos()` for now. When
+`pos()` is eventually removed and this has to move to `position()`,
+budget a rig re-check, not just a code review.
 
-These are known problems, they are all visible from inside the files the
-port touches, and they are all scheduled work with their own sequencing.
-Folding any of them in makes the port unreviewable and makes a later
-regression ambiguous between "the port broke it" and "the fix broke it."
+**Known problems, not fixed by the port and not fixed since** (this is
+their canonical location — `CHANGELOG.md` points back here rather than
+repeating them):
 
 - `GREEN_PLANE_RES` and `FULL_RES` duplicated across `measure.py`,
   `qt_shell.py`, `gallery.py`, `calibrate.py`
@@ -57,259 +75,35 @@ regression ambiguous between "the port broke it" and "the fix broke it."
 - `FULL_MODE_LBL` hardcoded into every `session.json` provenance record
 - Open `G_IS_OBJECT` assertion at teardown
 - Extracting capture logic out of `qt_shell.py`
-- provenance.py phase 2
+- `provenance.py` phase 2 (store-mechanics migration) — see "Current
+  state" below for what's actually landed
 
-The line numbers above are as of the port. The port does not change line
-counts in a way that moves them, but check before trusting one.
+Line numbers above haven't been re-verified since the port — check before
+trusting one.
 
-### What the port actually changes
-
-Five things, and only these five. The first three are formulaic. The
-last two are not, and the fifth is the one to read.
-
-1. **Enum scoping**, 153 sites. `Qt.AlignCenter` becomes
-   `Qt.AlignmentFlag.AlignCenter` and so on throughout. Resolved by
-   introspecting real PyQt6 6.11.0 rather than from a written table, so
-   the target of every rewrite is a name the library confirmed it has.
-2. **`exec_()` becomes `exec()`**, 31 sites across 6 files. Two of those
-   are `QMenu.exec_(pos)` call sites rather than bare `exec_()`.
-   `preexec_fn` in the ffmpeg comment is not Qt and was left alone.
-3. **`QActionGroup` moves** from `QtWidgets` to `QtGui`, one import line
-   in `qt_shell.py`.
-4. **`_FakeWizard.exec_` becomes `exec`** in `render_check`'s z-stack
-   section. It is a test double standing in for `ProcessWizard`; when the
-   production caller renamed, the double had to rename with it or the
-   self-check would have died on an AttributeError.
-5. **`ev.x()` / `ev.y()` become `ev.pos().x()` / `ev.pos().y()`**, 10
-   sites over 5 lines, in `calibrate.py` and `qt_shell.py`.
-
-Plus `PyQt5` to `PyQt6` in the import lines. Nothing else.
-
-**The port introduces zero line drift.** All 13 files have exactly the
-same line count as they do on `main`, and the build commit is 205
-insertions against 205 deletions. Every line-number reference in this
-file, in `CHANGELOG.md`, and in the code comments therefore still points
-where it did before the port. The out-of-scope `GREEN_PLANE_RES` bug is
-still at `qt_shell.py:3452`. This was worth one deliberate re-edit: an
-explanatory comment that had grown to eleven lines was cut back to two
-so it would not shift everything below it by nine. Long-form reasoning
-belongs in this file and the changelog, which is where it went.
-
-### Item 5 is the one that matters
-
-Qt6 removes `QMouseEvent.x()` and `y()` outright. **Static analysis did
-not catch this and could not have.** Both the enum resolver and the
-attribute resolver work on `Class.MEMBER` lookups; this is an instance
-method call, so it is invisible to them. `qt_shell.py --render-check`
-caught it, inside `_live_measure_preview_event`, on the crop-aware
-click-mapping path that had only just been confirmed on-rig.
-
-`pos()` rather than `position()` is a behavioural decision, not a style
-one, and it should not be quietly reversed later:
-
-- Qt5's `ev.x()` returned **int**
-- Qt6's `position().x()` returns **float**
-- `native_point_from_preview_click` and `widget_to_native` both do float
-  math, so a float input would **not** raise
-
-So switching to `position()` would not fail loudly. It would shift every
-click by up to a pixel. At the current 4x calibration of 1.4084 um/px
-that is a real change to measured values, introduced by a port that was
-supposed to change nothing. `pos()` returns `QPoint`, so the numbers
-reaching the geometry functions are identical to what Qt5 delivered.
-
-**Cause known, decision deliberately deferred to the rig — now has
-evidence.** `pos()` is deprecated in Qt6. It is alive in 6.11.0 and still
-returns `QPoint`, verified by probe, but it will go eventually. Moving to
-`position()` is the int-versus-float call above, and it was deliberately
-left for the rig and a stage micrometer rather than a code review. The
-2026-08-01 on-rig session ran exactly that check: six single-division
-samples at 4x straddled the true 100 um in both directions with under
-0.2 px mean error, which is what a `QPoint` (int) read looks like and not
-what a constant, unidirectional truncation offset would look like. That
-vindicates staying on `pos()` for now — see `CHANGELOG.md`'s "Record
-on-rig confirmation" entry for the readings — but does not change that
-`pos()` is deprecated and will need to move to `position()` eventually;
-when it does, the int-versus-float shift characterized above still
-applies and still wants a rig re-check.
-
-### The trap that does not fail loudly
-
-Most of the Qt6 enum changes fail at import or first use, which is
-helpful. Two do not, and they are worth knowing before you write new
-event-handling code here:
-
-- `Qt.MouseButton.LeftButton == 1` is **False**
-- `Qt.KeyboardModifier.NoModifier == 0` is **False**
-
-Both are flag types in Qt6, not int enums, so they no longer compare equal
-to the raw integers they used to be. `Qt.Key.Key_Escape == 16777216` is
-still True, and `QEvent.Type`, `QDialog.DialogCode` and
-`QMessageBox.StandardButton` all still compare equal to their old ints, so
-the inconsistency is the dangerous part rather than the rule.
-
-Every existing comparison site in the tree was checked at port time and
-all compare enum to enum, so nothing is broken today. If you write
-`if ev.modifiers() == 0` in this codebase you will get a silently false
-branch and no error.
-
-`QMouseEvent.pos()` is deprecated but alive in 6.11.0 and still returns
-`QPoint`. It was left alone at all four sites, because changing it would
-be a behavioural edit and this was a port. `globalPos()` is gone from Qt6
-entirely; it was never used here.
-
-### Verification state of the port
-
-**Confirmed on-rig, 2026-08-01.** All four deep-verification items below
-pass. No port defect was found. Full detail, including the specimen and
-stage-micrometer readings, is in `CHANGELOG.md`'s "Record on-rig
-confirmation: PyQt5 to PyQt6 port" entry.
-
-Before that, this was self-checked only. No rig was available to the
-porting agent, and neither was picamera2 or libcamera.
-
-What was actually proved here:
-
-- No `PyQt5` import survives anywhere in the tree, and the token appears
-  in no comment or string either
-- All files compile
-- Every Qt attribute in the tree resolves against real PyQt6 6.11.0,
-  including every scoped enum path and every imported name against the
-  module it is imported from
-- No event-object method call in the tree is missing from the PyQt6
-  event classes
-- **All 12 modules carrying a `--render-check` pass headless under the
-  offscreen platform, exit 0.** `qt_shell.py` alone reports 48 PASS
-  lines, among them the live-measure panel, freeze-fix cases 1-5,
-  canvas-fit cases 1-5, and the Live Measuring click conversion
-
-That last one is a genuine check of behaviour rather than syntax, and it
-is what caught the `ev.x()` removal. It is still `FakeCamera` with no
-libcamera, no sensor, and an offscreen QPA, so per `PHILOSOPHY.md` it
-does not count as verification.
-
-### Light verification (fails loudly, two minutes each)
-
-Enum mistakes surface here, immediately and noisily.
-
-- App launches under labwc
-- Preview streams
-- Capture writes a file
-- Dialogs open
-- Menus and toolbars populate
-- Settings persist
-
-### Deep verification (needs the stage micrometer, one session)
-
-**All four confirmed on-rig, 2026-08-01.** See `CHANGELOG.md`'s "Record
-on-rig confirmation: PyQt5 to PyQt6 port" entry for the actual readings.
-
-1. **Live Measure freeze and crop-aware coordinate conversion.** A click
-   on the preview must land on the clicked feature in the frozen still.
-   Relevant ratio 1.5225, for a 1332x990 preview against the 4056x3040
-   array. **Check this one first.** It is the only place the port made a
-   non-formulaic change, item 5 above, and it is the exact code path
-   that change sits in.
-2. **Measure tool at 4x** against a 1 DIV = 0.1mm stage micrometer.
-   Current 4x calibration 1.4084 um/px, calibration history entry #4. A
-   systematic offset of about one preview pixel here would point back at
-   the `pos()` versus `position()` decision.
-3. **Z-stacking**, including per-plane ROI reset and focus-aid sharpening
-   across planes.
-4. **Focus aid scoring**, Laplacian variance based.
-
-One thing to watch that is not on either list, because it comes from Qt
-rather than from this diff and cannot be characterized without the rig:
-Qt6 turns high-DPI scaling on unconditionally. There was nothing to
-remove here, since the tree never set `AA_EnableHighDpiScaling` or
-`AA_UseHighDpiPixmaps`, but given this project's history with compositor
-output scale on HDMI-A-1, the preview's size and the tablet display are
-worth a look on the first launch.
-
-### Backlog found during the 2026-08-01 on-rig bench — not fixed
-
-Found while running the deep-verification checks above. Classification
-matters here: "found during the bench" and "caused by the port" are not
-the same thing, and conflating them would misdirect the next person who
-picks one of these up.
+**Also found during the 2026-08-01 on-rig bench, still open, not caused
+by the port** (full readings: `CHANGELOG.md`'s "Record on-rig
+confirmation: PyQt5 to PyQt6 port" entry):
 
 1. ROI box jumps inward slightly on resize before moving in the dragged
-   direction, making enlarging feel like it fights you. **Reproduced on
-   `main` under PyQt5 — pre-existing, not a port regression.** Suspected
-   anchor/hit-test logic rather than coordinate handling.
-2. Focus aid rebases onto the plane just captured during a Z-stack, so
-   the just-captured plane reads as peak and the aid must be reset
-   manually to find the next plane. **Reproduced on `main` —
-   pre-existing.** Related design idea from the same session: auto-enable
-   focus assist when a Z-stack starts, if not already on. Both are really
-   the same question — the aid does not know a stack is in progress.
-3. Under raised `Xft.dpi` the UI scales correctly but the GL preview
-   viewport does not follow the widget: the frame renders at its old
-   size anchored bottom-left, with an uncleared framebuffer around it,
-   and window resize or fullscreen toggle does not correct it. **Not
-   A/B'd against `main` — unclassified, not confirmed pre-existing.**
-   Possibly the same defect as the old quarter-screen fullscreen bug at
-   compositor scale=2 (closed as an OS-level issue) by a different route.
-4. Possible field-scale gradient at 4x, roughly 1.8 um left to right
-   across the field (deep-verification item 2's single-division samples:
-   left 99.80, centre 100.25, right 101.64 um mean). With n=2 per
-   position and within-position scatter up to 1.9 um, this is suggestive
-   rather than established. Monotonic rather than radially symmetric, so
-   it points at tilt rather than objective distortion. **Not a port
-   defect**: a truncation offset would be constant across the field; this
-   varies with position. Deliberately deferred. Discriminating test on
-   record for later: rotate the slide 180 and re-measure left and right —
-   if the gradient follows the slide it's the slide, if it stays with the
+   direction. Reproduced on pre-port PyQt5 too — pre-existing.
+2. Focus aid rebases onto the plane just captured during a Z-stack, so it
+   must be reset manually to find the next plane. Pre-existing.
+3. Under raised `Xft.dpi` the GL preview viewport doesn't follow a widget
+   resize — old size, uncleared framebuffer around it. Not A/B'd against
+   pre-port PyQt5, not confirmed pre-existing either way.
+4. Possible field-scale gradient at 4x (~1.8 um left to right across the
+   field). Suggestive (n=2 per position), not established. Discriminating
+   test on record: rotate the slide 180° and re-measure left/right — if
+   the gradient follows the slide it's the slide, if it stays with the
    field it's optics or sensor.
 
-Full readings behind items 2 and 4 are in `CHANGELOG.md`'s "Record
-on-rig confirmation" entry.
-
-### Fix: picamera2 Qt binding selection — CONFIRMED on-rig, 2026-08-01
-
-**Not part of the port.** Own intent/build/record-build commit series on
-top of `port/pyqt6`, deliberately separate from the port's three commits,
-so a bench failure can be attributed to the port or to this
-independently. The port itself is not at fault — nothing in the
-enum-scoping or `ev.pos()` diff touches this, and the deep-verification
-list below is unchanged: it still tests exactly those two things and
-nothing about this fix.
-
-**The failure this fixes, on-rig at startup:** `QWidget: Must construct a
-QApplication before a QWidget`, `Aborted`, after libcamera had already
-enumerated every sensor mode, brought up imx477, and returned from both
-`create_preview_configuration()` and `configure()`. It died constructing
-the preview widget.
-
-**Root cause**: `picamera2.previews.qt` resolves widget class names
-lazily through a module `__getattr__`, and the class name *is* the Qt
-binding selector, with no auto-detection — `QGlPicamera2` always means
-PyQt5, `QGl6Picamera2` means PyQt6. `camera_backend.py` imported plain
-`QGlPicamera2`, building a PyQt5 widget under this port's PyQt6
-`QApplication`; Qt5 and Qt6 are separately loaded C++ libraries that
-cannot see each other's application object, so the widget aborted.
-
-**The fix, `camera_backend.py:769`:** `from picamera2.previews.qt import
-QGl6Picamera2 as QGlPicamera2`. `QGl6Picamera2` was confirmed present on
-the rig's installed picamera2 first. Aliased so the construction at line
-882 and the comments at 754, 808, 881, 1267, 1281 keep referring to
-`QGlPicamera2` unchanged — a one-line diff. The `# ON-RIG: confirm this
-import path` comment above it is now a `# CAVEAT:` explaining the binding
-coupling, so a future import-tidying pass does not read the 6-suffix as a
-typo, revert it, and silently reproduce this exact abort.
-
-**Not self-checkable here.** `--render-check` runs against `FakeCamera`
-and never imports this path — all 16 modules passing, exit 0, proved
-nothing about this fix by itself, only that nothing else broke. Real
-acceptance was on-rig: the app launched and the preview streamed,
-confirmed 2026-08-01 as part of the same bench session that confirmed the
-port's own deep-verification items above. This fix is now permanent
-rather than provisional.
-
-**`port/pyqt6` no longer differs from `main` by the port alone.** It now
-also carries this one-line-plus-comment fix. Anyone benching the two
-builds against each other needs to know this diff is here and is not part
-of the port.
+One more thing to watch, not on either list, since it comes from Qt
+itself and hasn't been characterized on the rig: Qt6 turns high-DPI
+scaling on unconditionally (the tree never set `AA_EnableHighDpiScaling`/
+`AA_UseHighDpiPixmaps`, so there was nothing to remove). Given this
+project's history with compositor output scale on HDMI-A-1, worth a look
+if display sizing looks off.
 
 ## Current state (as of this handoff)
 
@@ -2844,7 +2638,7 @@ review, and post-capture QC. If you make an architecturally-visible change
 (new tool, new menu, a file removed or renamed), update `README.md` in the
 same commit rather than letting it drift again.
 
-### PRIORITY: preview-to-green-plane click mapping is wrong — BUILT
+### PRIORITY: preview-to-green-plane click mapping is wrong — BUILT, CONFIRMED on-rig 2026-08-01
 
 Full brief in a user-provided
 `PRIORITY_click_mapping_fix.md` (not checked into the repo), plus a
@@ -2883,14 +2677,14 @@ Pre-existing, not introduced by the freeze-on-first-click fix — but that
 fix made the inaccurate path mandatory (before it, a click with no tool
 armed was discarded, so the bad conversion was avoidable).
 
-**Interim workaround, for the user, until this is confirmed on-rig**:
-freeze with the click, press **Escape** to cancel the in-progress shape,
-then place both points on the frozen canvas — avoids the cross-view
-conversion entirely. The fix below is now built and self-check-verified,
-but per this file's standing rule, a self-check proves internal
-consistency, not that it works on the rig — keep using the workaround
-until someone runs the stage-micrometer test in the Verification section
-below and confirms it.
+**Interim workaround — no longer needed, kept here for context only.**
+Until this was confirmed on-rig, the standing advice was: freeze with the
+click, press **Escape** to cancel the in-progress shape, then place both
+points on the frozen canvas, avoiding the cross-view conversion entirely.
+The fix below was confirmed on-rig 2026-08-01 (see the Verification note
+at the end of this section) — the workaround is obsolete and should not
+be followed; point 1 of a fresh measurement is correct as the tool
+normally works.
 
 **Also worth recording**: any measurement already committed whose first
 point came from a freeze click placed off-centre carries this error.
@@ -3033,16 +2827,21 @@ model rather than silently falling back to IMX477 geometry. Full project
 `publish.py`, `stacks.py`, `wizard_pages.py` — `test_burst_backend.py`
 skipped, hardware-only by design).
 
-**On-rig verification is explicitly NOT done by this session** (no
-hardware access, same standing limitation as the rest of this file's
-Qt-facing work) — a self-check proves internal consistency, not that this
-works on the rig. The real test, per the brief: with a stage micrometer in
-view, click exactly on a clearly identifiable division near the left edge
-of the preview, the right edge, and the centre; point 1 must land on that
-same division in the frozen plane each time. Worth re-running at a second
-preview resolution once item 2 (the user-settable `preview_res`) is itself
-on-rig. Until that confirmation happens, keep using the interim workaround
-above.
+**Confirmed on-rig, 2026-08-01.** The self-check above proves internal
+consistency; the real test — captured as part of the same bench session
+that confirmed the PyQt6 port — is in `CHANGELOG.md`'s "Record on-rig
+confirmation: PyQt5 to PyQt6 port" entry, item 1: freeze-and-click tested
+at capture 4056x3040 against preview 1332x990 (the pairing that actually
+exercises this fix's crop-aware conversion), with a 40x specimen
+measurement landing within 1% of an independently calibrated 4x
+measurement scaled by ten. Still worth re-running at a second preview
+resolution once item 2 (the user-settable `preview_res`) is itself
+on-rig, and worth cross-checking the static crop table above against a
+real `crop_limits` read specifically (the on-rig result confirms the
+*conversion formula* works; it doesn't by itself confirm every entry in
+the off-rig fallback table matches a directly-read `crop_limits`, since
+real hardware runs through `Picamera2Camera`, not the static table). The
+interim workaround above no longer applies.
 
 ## Design conventions worth knowing before you add anything
 
@@ -3058,7 +2857,7 @@ above.
   field) rather than flagging it — same principle as above, applied to
   missing data specifically.
 - **Pure logic is Qt-free and camera-free**, always in a form
-  `--render-check` can exercise with no hardware and (mostly) no PyQt5.
+  `--render-check` can exercise with no hardware and (mostly) no PyQt6.
   GUI code is a thin wrapper that calls into it. If you're writing
   something that isn't obviously GUI wiring, it almost certainly belongs
   in the Qt-free section of whichever file, not inline in a widget method.
