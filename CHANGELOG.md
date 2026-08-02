@@ -7,6 +7,79 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-02
 
+### Record build: generated per-module function index, with a freshness guard
+
+Built to the intent recorded in `6402a4b`, from the clean tree the note
+below it confirmed. No deviation from the plan: `function_index.py`, one
+new file, walks the AST and harvests `# CAVEAT:` comments exactly as
+described; `FUNCTION_INDEX.md` is its output; `README.md`'s sweep loop
+gained `function_index`.
+
+**Against the counted baseline (23 modules / 274 top-level defs / 1
+`# CAVEAT:`):** 24 modules now (`function_index.py` counts itself, as
+expected — it walks the tree it's part of), 284 top-level functions/classes
+(`grep -c '^- `' FUNCTION_INDEX.md`; +10, all functions, all in
+`function_index.py` itself — `_discover_modules`, `_top_level_nodes`,
+`_signature_lines`, `_harvest_caveats`, `_owner_for_line`, `_render_module`,
+`generate_index_text`, `assert_function_index_current`, `main`,
+`render_check`), 5 `# CAVEAT:` comments (1 pre-existing in
+`camera_backend.py`, 4 newly seeded in `function_index.py` — within the
+plan's three-to-five range, all at the one code file this work touches, as
+scoped).
+
+**The two deliberate decisions, confirmed by actually running them, not
+asserted:**
+
+1. **Guard placement.** `python3 function_index.py --render-check` fails
+   with a real, readable diff when `FUNCTION_INDEX.md` doesn't exist yet
+   (run before the file was generated) and passes once it does. Reachability
+   beyond the standalone tool was confirmed by running the actual documented
+   sweep from the now-updated `README.md` — all 17 modules, `function_index`
+   included, exit 0, `assert_function_index_current PASS` printed as part
+   of that run, not a separate invocation.
+2. **Determinism.** Confirmed two ways: `render_check()`'s own within-process
+   double-generation-and-diff, and the stronger cross-process test — two
+   separate `python3 function_index.py` processes, the second forced to
+   `PYTHONHASHSEED=random`, output files byte-identical
+   (`e1d3db1f0428ef939a31181c206eae87` both times).
+
+**The guard-fails-on-drift acceptance criterion, demonstrated and
+reverted, not asserted:** appended `def _demo_undocumented_function(x):
+return x` to `pixel_hash.py`, ran `python3 function_index.py
+--render-check` — failed with `AssertionError`, exit 1, diff showing
+exactly the one added line. `git checkout -- pixel_hash.py` reverted it;
+re-ran the same command — passed, exit 0. Never committed in the broken
+state.
+
+**DISCOVERED: this sandbox was missing `numpy`, `tifffile`, `PyQt6`, and
+`Pillow`, and the system libraries `qt_shell.py`'s Qt-gated checks need**
+(`libegl1`, `libegl-mesa0`, `libxcb-cursor0`, `libxkbcommon-x11-0`,
+`libxcb-icccm4`, `libxcb-keysyms1`, `libxcb-shape0`, plus `xvfb-run` — no
+real display here) — the same recurring, environment-only gap this
+project's own tempfile-sweep entries above already document, not a fact
+about this change. Installed all of it to run the real documented sweep
+rather than accept a degraded one; without it, 15 of the other 16 modules
+would have failed on import before ever reaching `function_index`'s own
+check, which would have proven nothing about reachability.
+
+**Acceptance, verified:**
+
+- Generator is deterministic: confirmed above, both within-process and
+  cross-process with a different hash seed.
+- Every module in the tree appears: `module coverage check PASS: all 24
+  modules appear as their own heading`, part of `render_check()` itself.
+- The guard fails when a function is added without regenerating:
+  demonstrated and reverted above.
+- All modules with `--render-check` pass, exit 0: all 17 in the updated
+  `README.md` sweep, run for real under `xvfb-run` where Qt-gated,
+  `qt_shell.py` and `measure.py` showing 48 and 13 real `PASS` lines with
+  zero `SKIPPED`, not a degraded run.
+
+Out of scope, confirmed untouched: no line of `HANDOFF.md`'s "things that
+will bite you" section was converted to a `# CAVEAT:` comment. Five exist
+now — the mechanism is built and seeded; the rest accumulates as code is
+worked on, per the intent's explicit scope.
+
 ### Record note: `6402a4b` itself was written after build activity, corrected per `PHILOSOPHY.md`'s own remedy
 
 Single entry, no intent phase — this records a correction to process, not
