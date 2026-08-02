@@ -3075,6 +3075,21 @@ above.
   `--render-check` assertions back it up. Don't consider new logic
   finished without a corresponding self-check; don't trust a GUI method
   without at least a scripted (if not pixel-verified) exercise of it.
+- **Self-check scratch paths are `tempfile`-based, not hardcoded.** Every
+  `--render-check`/self-check harness in this project (`qt_shell.py`,
+  `calibrate.py`, `provenance.py`, `measure.py`, `annotations.py`,
+  `camera_backend.py`, `ca_measure.py`, `plane_cache.py`) builds its
+  scratch directories with `tempfile.mkdtemp()` and its rare stable-named
+  paths (metadata strings that are never actually written to disk) with
+  `tempfile.gettempdir()` — never a hardcoded `/tmp/...` literal. If
+  you're adding a new harness path, follow that pattern rather than
+  writing `/tmp/whatever` directly: a fixed POSIX path doesn't resolve on
+  Windows/macOS and collides with another user's on a shared machine.
+  Match the surrounding block's cleanup discipline too — a `mkdtemp()`'d
+  directory is a fresh, uniquely-named one every run, so it has to be
+  `shutil.rmtree()`'d somewhere in the same function, or it just
+  accumulates on disk run after run instead of being overwritten in
+  place the way a fixed name used to be.
 
 ## Recommended first move
 
