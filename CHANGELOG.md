@@ -7,6 +7,68 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-02
 
+### Record confirmation, revised: other `QT_QPA_PLATFORM` sites in `qt_shell.py`
+
+**Supersedes `d68085e`** ("Record confirmation: other `QT_QPA_PLATFORM`
+sites in `qt_shell.py` don't assume line 83/98 ran"). That entry's
+verdict was right — nothing breaks — but it stated the conclusion
+without the per-site reasoning that makes it durable, didn't name the
+shape a future unsafe site would take, and blurred "verified" across
+two different things that shouldn't have been blurred. This is a
+correction to an outcome entry, not new work, so it's a new entry per
+the convention, not an edit to the old one — the old entry stays
+visible above/below wherever it lands in the file, showing what was
+recorded the first time.
+
+**Also worth flagging on its own: this is the confirmation carve-out's
+first actual use** — "where the work is the outcome, a single entry
+with no intent phase" — so getting its shape right here is worth the
+extra pass; it's the entry most likely to be pattern-matched against
+later.
+
+**Per-site reasoning, not just the verdict:**
+
+- `_onboarding_session_is_interactive` (~line 1135) is safe **by
+  construction, not by luck**. It reads
+  `os.environ.get("QT_QPA_PLATFORM", "")` — the `""` default stands for
+  "no signal," and the function's own design already treats "no signal"
+  as fall-through to erring interactive. That was true before this
+  change too; the platform-conditional setdefault didn't make this site
+  safe, it was already written to not need an ambient value.
+- The three self-check blocks (~5965, ~6067, ~6102) are safe because of
+  their `finally`, not merely because they currently work. Each saves
+  whatever `QT_QPA_PLATFORM` is right now, **directly assigns**
+  (`os.environ["QT_QPA_PLATFORM"] = "xcb"`, never `setdefault`) its own
+  test values, and restores the original — or pops the key entirely if
+  there wasn't one — in `finally`, unconditionally. The `finally` is
+  what makes this self-contained rather than order-dependent.
+- The docstring at ~3883 is prose describing
+  `_maybe_show_onboarding_gate`; it isn't a read site and has no
+  behavior to be safe or unsafe.
+
+**What would NOT be safe — the shape to check a new site against:** code
+that does `os.environ["QT_QPA_PLATFORM"]` (a bare read with no default,
+raising `KeyError` on absence) or that branches on `== "xcb"` as if the
+variable is always present. Either would have worked by accident while
+the setdefault ran unconditionally and would break the moment it
+doesn't — which is now, on non-Linux. That is the actual regression this
+platform-conditional change could have introduced elsewhere in the file,
+and it's what the search above was checking for.
+
+**The `--render-check` evidence is real but partial, and the two halves
+don't cover the same claim.** This sandbox is Linux, so
+`sys.platform.startswith("linux")` is true here and the block at line
+97-99 runs — the passing assertions (`_onboarding_session_is_interactive
+check PASS` ×2, `Onboarding gate ... check PASS` ×3) confirm these
+readers behave correctly **with the block having run**, which is the
+Linux case. They exercise nothing about the case where the block never
+runs, because nothing in this environment can produce that case — there
+is no non-Linux `sys.platform` to test against here. The per-site
+reasoning above is what covers the non-Linux case (each site's own live
+default or self-contained save/assign/restore, argued from the code,
+not from an execution); the test coverage does not extend there and
+isn't described as if it does.
+
 ### Record confirmation: other `QT_QPA_PLATFORM` sites in `qt_shell.py` don't assume line 83/98 ran
 
 Single entry, no intent phase — this confirms already-built code rather
