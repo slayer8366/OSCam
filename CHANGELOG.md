@@ -7,6 +7,130 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-02
 
+### Record build: tempfile sweep, self-check harnesses
+
+Built to the intent recorded below, no scope change — every site named
+in the intent's baseline table is converted, no production path touched,
+no check's assertion weakened.
+
+**Against the counted baseline: 68 sites before, 68 converted, 0
+remaining.**
+
+| File | Sites |
+|---|---|
+| `qt_shell.py` | 24 |
+| `calibrate.py` | 11 |
+| `provenance.py` | 10 |
+| `measure.py` | 10 |
+| `annotations.py` | 5 |
+| `camera_backend.py` | 4 |
+| `ca_measure.py` | 3 |
+| `plane_cache.py` | 1 |
+
+Split by which tool: `tempfile.mkdtemp()` for every directory that gets
+created and written into (the large majority); `tempfile.gettempdir()`
+for the handful of fake source-image paths that are only ever recorded
+as a string in a JSON entry and never touch disk (`calibrate.py`'s
+`fake_40x.dng`/`fake_100x.dng`/`fake_40x_redo.dng`, `ca_measure.py`'s
+`fake_ca_target.tif`, `measure.py`'s and `qt_shell.py`'s `fake.dng`
+sites) and one deliberately-missing path
+(`qt_shell.py`'s `archive_session_raws` no-such-dir case, which must
+keep genuinely not existing). Where a check compared a recorded
+`source_image` against a hardcoded literal string (`calibrate.py`'s
+40x/100x round-trip, the one case this came up), the assertion now
+compares against the same variable that built the path instead of a
+second hardcoded copy — the claim being checked (the path survives the
+round-trip unchanged) is identical either way.
+
+**DISCOVERED: a large fraction of these sites had no cleanup at all
+before this sweep, independent of the `/tmp` literal problem.** Not
+anticipated in the intent, which only named the portability problem.
+Found while deciding, per the build step's own instruction, whether each
+harness cleans up after itself:
+
+- `camera_backend.py`'s four sites (`capture_still`/`capture_still_async`
+  sharing one dir, plus `burst_dir`/`vid_dir`) never removed anything —
+  no `shutil` import, no cleanup of any kind. Now share one `mkdtemp`
+  root, `shutil.rmtree`'d in one call at the end of the `__main__` block
+  (a one-shot script -- if an earlier assertion fails the process ends
+  anyway, so this is placed at the end rather than in a `try`/`finally`,
+  matching the same reasoning `qt_shell.py`'s own `PROFILE_PATH` comment
+  already gives for the same tradeoff).
+- `qt_shell.py`'s function-wide `PROFILE_PATH`/`PROVENANCE_ROOT`/
+  `OUT_ROOT`/`FLAT_ROOT` swap (used for the entire ~2700-line
+  `render_check()`) was restored (the module-attribute pointer) but
+  never had its directory removed. Previously this was a fixed name,
+  pre-emptively `rmtree`'d at the *start* of the next run, so at most one
+  leftover directory existed on disk between runs. `mkdtemp` breaks that
+  bound — a fresh name every run means nothing later finds the old one —
+  so this sweep adds real cleanup at the same point the pointer already
+  gets restored, rather than trade a portability fix for an unbounded
+  leak.
+- `annotations.py`'s three temp-path blocks (the main store, the
+  `calibration_ref_for` block, its nested `stored_calibration_ref`
+  block) all restored their module-attribute pointer in `finally` but
+  never removed the directory either. Same fix: `shutil.rmtree` added
+  alongside each existing pointer restore.
+- Several `qt_shell.py` `PREFS_PATH` swaps (the plain Preferences dialog
+  check, its part-2 stream-capability check) had the same gap. Same fix.
+- `measure.py`'s calibration-gating block reused one `tmp_dir` across
+  ~250 lines (calibration store, two nested annotation-store swaps, two
+  standalone image files) and restored `CALIBRATION_PATH` in `finally`
+  but never removed `tmp_dir` itself. Same fix, one `shutil.rmtree` in
+  that same `finally`.
+
+Every site that already had its own cleanup (`plane_cache.py`,
+`calibrate.py`'s `resolve_raw_path`/calibration-store blocks,
+`provenance.py`'s nine-directory final sweep, `ca_measure.py`, most of
+`qt_shell.py`'s scoped blocks) keeps that cleanup, now `rmtree`ing a
+`mkdtemp`'d path instead of a fixed one — no change to *whether* it
+cleans up, only to *what* it's cleaning.
+
+**DISCOVERED: this sandbox needed several system libraries and a
+display server to run the Qt-gated halves of `qt_shell.py`'s and
+`measure.py`'s own `render_check()` to completion** — none a fact about
+this project's own code. Missing `libEGL.so.1` made `PyQt6.QtWidgets`
+itself fail to import (silently, via this project's own `except
+ImportError` guard around the top-of-file Qt import), which meant
+`_HAVE_QT` read `False` and an *unguarded* `QApplication.instance()`
+call at `qt_shell.py`'s line ~5963 raised `NameError` — reproduced
+identically on the pre-edit tree first, confirming this is an
+environment gap, not a regression (same discipline as the Qt
+environment-defaults build entry's own Pillow discovery). Installed
+`libegl1`, `libegl-mesa0`, `libxcb-cursor0`, `libxkbcommon-x11-0`,
+`libxcb-icccm4`, `libxcb-keysyms1`, `libxcb-shape0`, and ran under
+`xvfb-run` (no real display in this sandbox). Nothing about the tempfile
+sweep required any of this; it was required to *observe* the sweep's
+own Qt-gated checks running rather than being silently SKIPPED.
+
+**Acceptance, verified:**
+
+- Zero hardcoded `/tmp` literals remain anywhere in the tree (`grep -rl
+  "/tmp"` over every file, not just `.py`, matches nothing but this
+  changelog's own prose).
+- All eight modules' self-check passes, exit 0, from a clean `/tmp`:
+  `plane_cache.py`, `calibrate.py`, `annotations.py`, `provenance.py`,
+  `ca_measure.py`, `camera_backend.py` directly; `measure.py` and
+  `qt_shell.py` under `xvfb-run` (both construct a real `QApplication`).
+  Zero `SKIPPED` lines across all eight — confirmed by diffing
+  `qt_shell.py`'s 48 `... check PASS` lines against a run of the
+  pre-edit tree in the same environment: identical set, identical order,
+  byte-for-byte on every line prefix.
+- **Repeated runs leave no directories behind.** Cleared `/tmp` of every
+  `zynergy_*` entry, ran all eight modules back to back (six standalone,
+  `measure.py` and `qt_shell.py` under `xvfb-run`), and swept `/tmp`
+  again: zero `zynergy_*` entries remained. Contrast with the pre-edit
+  tree exercised earlier in this same session, which left both directory
+  and file leftovers with fixed names after a normal successful run —
+  the DISCOVERED gaps above, empirically confirmed, not just reasoned
+  about.
+- **Windows and macOS remain untested.** Nobody has run any of these
+  eight modules there. `tempfile.mkdtemp()`/`gettempdir()` are
+  documented cross-platform, and nothing in this sweep is
+  Linux-conditional the way the Qt environment-defaults work was, but
+  that is a claim about the API, not a claim this was actually run on
+  either platform — it wasn't, and isn't described as verified there.
+
 ### Record intent: tempfile sweep, self-check harnesses
 
 Own branch off `main`, after the Qt environment defaults work landed.
