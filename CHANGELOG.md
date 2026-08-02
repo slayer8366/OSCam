@@ -7,6 +7,42 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-02
 
+### Record on-rig confirmation: Qt environment defaults, platform-conditional
+
+**Confirmed on-rig.** Single record, not an intent/build series — the
+platform-conditional environment defaults are already committed (intent
+`73537fa`, build `6e12e39`/`8061187`, confirmation-carve-out entries
+`d68085e`/`e6636a2` on the file's other read sites); this is the outcome
+record for the acceptance criterion the intent entry named, now met on
+the actual hardware rather than in a sandbox.
+
+**Command run:** `env -u QT_QPA_PLATFORMTHEME python3 qt_shell.py`
+
+- The UI renders at correct size with `QT_QPA_PLATFORMTHEME` unset in the
+  ambient shell before launch. Nothing exported it, so the size Qt lays
+  out with comes from the Linux-gated
+  `os.environ.setdefault("QT_QPA_PLATFORMTHEME", "gtk3")` at
+  `qt_shell.py:99` actually taking effect on this machine — not from a
+  shell variable standing in for it, which is what every prior check
+  (self-check, sandbox import) had to rely on instead.
+- Theme selection still works afterward; `discover_themes()` is
+  unaffected by the environment-defaults change, as expected — it reads
+  `themes/` on disk and has no dependency on `QT_QPA_PLATFORM`/
+  `QT_QPA_PLATFORMTHEME`.
+- **Real camera path confirmed separately, same session, not
+  `FakeCamera`:** preview streams, focus aid is live and scores, ROI
+  draws, Reprobe returns sane exposure. This is hardware behavior, not
+  something the platform-conditional change itself touches, but it
+  confirms the rig is in its normal working state under the new
+  environment defaults, not merely that a window opened.
+
+**What remains unverified: the non-Linux branches.** The
+`sys.platform.startswith("linux")` gate around both setdefaults
+(`qt_shell.py:97-99`) has now run on this rig and in the sandbox — both
+Linux. Nobody has run this on macOS or Windows, and nothing above should
+be read as covering them; the code path that skips both setdefaults on
+those platforms is still unexercised.
+
 ### Record confirmation, revised: other `QT_QPA_PLATFORM` sites in `qt_shell.py`
 
 **Supersedes `d68085e`** ("Record confirmation: other `QT_QPA_PLATFORM`
