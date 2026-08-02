@@ -7,6 +7,76 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-02
 
+### Record intent: generated per-module function index, with a freshness guard
+
+Own branch off `main`.
+
+**Problem.** 22k lines across 23 modules with no navigational index. An
+agent knows the concern — "green-plane caching," "the onboarding gate" —
+not the identifier that names it, so it greps blind, guessing spellings
+until something matches. The upcoming overhaul is about to relocate a
+large amount of this code, which is exactly when a stale reference would
+do the most damage.
+
+**Why generated, not written.** A hand-maintained index drifts the
+moment someone adds a function and forgets to update it, and a drifted
+index is worse than none, because it gets trusted — the reader stops
+re-deriving and starts believing the document. This follows the same
+principle already in the codebase: `camera_backend.py`'s
+`assert_only_camera_backend_imports_sensor_profiles` discovers
+sensor-profile modules by shape (a module exposing
+`FULL_ARRAY_SIZE`/`crop_for_size`), not from a maintained list, so a
+future `imx519.py` is covered the moment it exists rather than the
+moment someone remembers to add it to a list. Derived beats maintained.
+
+**Why grouped by module, not alphabetical.** Lookup by name assumes the
+reader already knows the name — which is precisely the thing an index
+exists to supply when they don't. An alphabetical list across 22k lines
+interleaves `calibrate.py` and `qt_shell.py` with no context; grouping
+by module keeps a file's surface together, so "what does `calibrate.py`
+expose" is a contiguous read, not a filtered search.
+
+**Baseline, measured on this branch before any file was touched:**
+
+| Metric | Count |
+|---|---|
+| `.py` modules (`ls *.py`) | 23 |
+| Total lines (`wc -l *.py`) | 21,884 |
+| Top-level functions (AST, module-body depth only) | 259 |
+| Top-level classes (AST, module-body depth only) | 15 |
+| Total top-level definitions | 274 |
+| `# CAVEAT:` comments (`grep -rn "# CAVEAT:" *.py`) | 1 (`camera_backend.py`, attached to the `QGl6Picamera2` binding-selection import inside `Picamera2Camera.__init__`) |
+
+**Plan.** A new module, `function_index.py` (the 24th, once it exists),
+walks the AST of every `.py` file in the project root and emits
+`FUNCTION_INDEX.md`: one heading per module, one terse line per
+top-level function/class with its signature only — no docstrings, no
+bodies, this is for navigation, not documentation. `# CAVEAT:` comments
+(not part of the AST; harvested from source text directly) are attached
+to the nearest enclosing definition at any nesting depth, then rolled up
+to display under that definition's top-level owner, tagged with the
+qualified name (e.g. `Picamera2Camera.__init__`) so a relocated caveat
+travels with the code rather than staying pinned to wherever it used to
+live.
+
+A freshness guard, `assert_function_index_current` (named in the
+project's existing `assert_*` idiom), regenerates the index in memory
+and compares it byte-for-byte against the committed `FUNCTION_INDEX.md`,
+failing loudly on any drift. Two things decided deliberately in the
+build step rather than left implicit: where the guard is actually
+reachable from (a guard that exists but is never called has burned this
+project three times, per `PHILOSOPHY.md`'s "a self-check must reach the
+code the way the application reaches it"), and how determinism is
+guaranteed against filesystem/dict ordering rather than assumed.
+
+**Scope.** `function_index.py` (new), `FUNCTION_INDEX.md` (new,
+generated), and the minimum wiring into one existing module's
+`render_check()` to make the guard reachable. Explicitly out of scope:
+migrating `HANDOFF.md`'s ~345-line "Things that will bite you" section
+into `# CAVEAT:` comments — the mechanism gets built and seeded at
+three to five sites already being touched by this change; the rest
+accumulates as code is worked on, not converted in one unbounded pass.
+
 ### Record verification: tempfile sweep, self-check harnesses — PASS-line parity across all eight modules
 
 Single entry, no intent phase — this checks already-built, already-landed
