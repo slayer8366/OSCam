@@ -205,6 +205,48 @@ captures for multiple planes, that's the same bug recurring.
 **The `calib/` directory is real specimen data.** Not test fixtures.
 Never modify, move, or delete it.
 
+**A `CHANGELOG.md` entry, once written, is never modified.** A
+correction or an outcome is a new entry that supersedes it, not an edit
+to it. An intent entry can itself be superseded by a new intent entry,
+which states what it supersedes and why the original was abandoned —
+abandoning a plan is a recorded act, not a violation, and the old entry
+stays visible showing what was believed at the time. A redo carries a
+`supersedes` pointer of its own, so two similar-looking entries are
+never ambiguous about which one is current.
+
+This applies to any work whose outcome could differ from its plan. Code
+always qualifies. Where the work *is* the outcome — recording something
+already built, already measured, already confirmed on-rig — there is no
+plan to diverge from, and it is a single entry with no intent phase.
+
+Each phase is its own commit. The intent commit contains the CHANGELOG
+entry and nothing else, and is committed before any other file is
+touched. That commit boundary is what makes the ordering checkable
+rather than asserted — three entries landing in one commit prove nothing
+about which one actually came first. Record intent before the build
+begins; it gets a diff, so `git log -p CHANGELOG.md` shows exactly when
+it appeared.
+
+Intent carries a measured baseline. Without a number, deviation isn't
+assessable. Where the work can be counted, the baseline is a count.
+Where it can't, the baseline is the scope stated in a form the build
+record can be checked against: the files it will touch, the behaviours
+it will change, and what it will deliberately leave alone. A baseline
+that can't be checked against the finished work isn't a baseline.
+
+Build the code the changelog describes. Then record what was actually
+built: compare it against the intent, explain any deviation that was
+necessary, and fix the code if it wasn't. Fix the action to match the
+record, rather than the record to match the action. Discoveries made
+along the way are marked `DISCOVERED:` in the build entry, and if a
+discovery is a durable fact about a line of code, that line also gets a
+`# CAVEAT:` comment.
+
+No retroactive recording. If intent wasn't recorded before the build, or
+the code wasn't built before the build record, undo only the building
+that was done and start over — keep every record, including the one
+that shows the false start.
+
 ---
 
 ## Flexible — judgment applies
@@ -354,11 +396,20 @@ current as work happens rather than reconstructed afterward. They exist
 because this project is worked on by multiple agents and instances with
 no shared context, and the repo is the only thing all of them can see.
 
-Entries are written in two phases, not one. Before a change, an entry
-states the intent to make it. After the change lands, that entry is
-edited or followed up to state what actually happened. A record written
-only after the fact loses the part worth having: what was expected, and
-whether it held.
+`CHANGELOG.md` entries follow the intent/build/record-build convention
+stated in full under "Strict rules" above — record intent before the
+build begins, build to it, then record what was actually built. A
+correction or an outcome is superseded by a later entry, never edited
+into the old one; a record written only after the fact loses the part
+worth having, which is what was expected and whether it held.
+
+`HANDOFF.md` doesn't carry that convention, and the reason is what it's
+for: it describes the project's present state, not a record of what
+happened, so it's updated in place as the present changes. There's
+nothing for it to supersede, only what's currently true to keep
+accurate — which is also why the intent record has to live in
+`CHANGELOG.md` instead. A file that's rewritten in place can't hold a
+record that has to stay exactly as it was written.
 
 Write them for someone who wasn't there. Record *why*, not just *what* —
 a decision without its reasoning becomes an arbitrary constraint that
