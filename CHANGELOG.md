@@ -7,6 +7,121 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-02
 
+### Record intent: generated per-module function index, with a freshness guard
+
+Own branch off `main`: `claude/function-index-generator-avl3i0`. (This
+branch already carries prior unrelated landed work — the tempfile sweep and
+Qt environment-defaults series recorded above — from earlier sessions; this
+entry starts a new, independent intent/build/record-build series on top of
+it, not a continuation of either.)
+
+**Problem.** The tree is 21,884 lines across 23 modules with no
+navigational index. An agent picking up a task knows the *concern* ("where
+is the click-to-native-pixel mapping done?"), not the *identifier*
+(`native_point_from_preview_click`), so it greps blind — repeatedly, per
+this project's own session history. The pending overhaul is about to
+relocate a large amount of this code (module boundaries shifting per the
+"Module organization" note in `PHILOSOPHY.md`), which is exactly when a
+navigational aid earns its cost and exactly when a hand-maintained one
+would rot fastest.
+
+**Why generated, not written by hand.** A hand-maintained index drifts the
+first time someone adds a function and forgets it, and a drifted index is
+worse than none — it gets trusted, and a wrong answer costs more than no
+answer. This is the same reasoning `camera_backend.py`'s
+`assert_only_camera_backend_imports_sensor_profiles` already applies to
+sensor-profile discovery: it finds profile modules by shape (exposing
+`FULL_ARRAY_SIZE`/`crop_for_size`), not from a maintained list, so a future
+`imx519.py` is covered the moment it exists. Same principle here: derived
+beats maintained. The index generator walks the AST; nobody edits the
+output by hand.
+
+**Why grouped by module, not alphabetical.** Lookup by name assumes you
+already know the name — the exact thing an agent grepping blind does not
+have. A single alphabetical list of all ~274 top-level functions/classes
+across 22k lines would interleave `calibrate.py` and `qt_shell.py` with no
+surrounding context, which is no better than the blind grep it's meant to
+replace. Grouping by module keeps a function next to its siblings, where
+the surrounding names themselves carry meaning.
+
+**Baseline, measured on this tree before any file was touched** (ad hoc
+`ast`-walk over `sorted(Path(".").glob("*.py"))`, not the generator itself,
+which does not exist yet):
+
+| Metric | Count |
+|---|---|
+| Modules (`*.py` in repo root) | 23 |
+| Top-level functions | 259 |
+| Top-level classes | 15 |
+| Top-level functions + classes | 274 |
+| `# CAVEAT:` comments (`grep -rn`, code only) | 1 |
+
+The single `# CAVEAT:` is `camera_backend.py`'s binding-fix comment from
+the picamera2 Qt-binding-selection work (currently at line 763, not the
+769 recalled from memory going in — line numbers drift, this baseline
+trusts the re-measurement, not the recollection). Three other files
+(`HANDOFF.md`, `PHILOSOPHY.md`, this file) match the same grep because they
+discuss the marker convention in prose; none of those are code comments and
+none are in scope for harvesting.
+
+**Plan.** A new module, `function_index.py`, alongside the other 23. It
+walks each module's AST, collects top-level `FunctionDef`/`AsyncFunctionDef`/
+`ClassDef` nodes (not nested defs — terse, one line per signature via
+`ast.unparse` on a body-stripped clone, not a hand-rolled formatter), and
+writes `FUNCTION_INDEX.md` grouped by module, modules sorted alphabetically
+by filename. Separately, it scans each module's raw source text for
+`# CAVEAT:` comments (AST discards comments, so this half is necessarily
+text-based, not structural — the one place this generator works the way
+the harvested convention itself, a plain source comment, requires) and
+attaches each one to whichever top-level node's line range contains it,
+falling back to a module-level bucket for anything outside every top-level
+node's range.
+
+**The two decisions this task asked to be made deliberately, made here:**
+
+1. **Where the guard runs.** `assert_function_index_current()` (named in
+   the existing `assert_*` idiom this project already uses for structural,
+   tree-wide checks) lives in `function_index.py`'s own `render_check()`,
+   reached the same way as every other module's: `python3 function_index.py
+   --render-check`. This is not a new testing mechanism — it's the
+   project's own established idiom, applied to a new module the same way
+   it's applied to the other 16 that carry it. What makes it actually
+   reachable rather than merely present: `function_index.py` is added to
+   `README.md`'s documented sweep loop (the `for m in ...
+   --render-check` block), so it joins the checklist this project already
+   runs after every change, not a check that exists in isolation. The
+   build record below confirms this by actually running it, both alone and
+   as part of that sweep — not by asserting the function exists.
+2. **Determinism.** Two runs on an unchanged tree must produce identical
+   bytes, checked two ways: within `render_check()` (generate twice in the
+   same process, diff), and — the stronger test, since the same-process
+   check can't catch a bug that only shows up with a different
+   `PYTHONHASHSEED` — as two separate `python3 function_index.py`
+   invocations in the build record, each its own process, diffed on disk.
+   The concrete trap this guards against: CPython randomizes string hash
+   seeds per process by default, so a bare `set()` of strings iterated
+   directly into output would look deterministic in every same-process
+   test and then flap between unrelated process runs for a reason nobody
+   would think to check. The generator sorts explicitly everywhere order
+   is observable — modules by filename, caveats by line number — and never
+   iterates a `set()` into output. A guard that fails spuriously on an
+   unchanged tree gets disabled by the next agent who hits it, which is
+   worse than not having it.
+
+**Scope.** New file `function_index.py`; new generated file
+`FUNCTION_INDEX.md`; `README.md`'s self-check sweep loop gains
+`function_index` (17 modules, up from the list's current 11 — that list
+was already stale against the real 16-module sweep this project's own
+`CHANGELOG.md` entries describe elsewhere, and is corrected to 17 rather
+than left at a number that was already wrong before this change). Nothing
+else. Explicitly out of scope: migrating `HANDOFF.md`'s "things that will
+bite you" section (~345 lines) into `# CAVEAT:` comments — that is exactly
+the unbounded excursion this task's own instructions warn against. This
+build seeds three to five `# CAVEAT:` comments at sites already being
+touched (inside `function_index.py` itself — the only code file this work
+touches) and lets the rest accumulate as code is worked on, not converted
+in one pass.
+
 ### Record verification: tempfile sweep, self-check harnesses — PASS-line parity across all eight modules
 
 Single entry, no intent phase — this checks already-built, already-landed
