@@ -7,6 +7,113 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-02
 
+### Record build: generated per-module function index, with a freshness guard
+
+Built to the intent recorded below. One deliberate scope addition inside
+the plan's own bounds (seeding CAVEATs, explicitly called for in the
+intent's plan, not a new decision) and no other deviation.
+
+**Against the baseline:**
+
+| Metric | Before | After |
+|---|---|---|
+| `.py` modules | 23 | 24 (`function_index.py` itself) |
+| Total lines | 21,884 | 22,218 |
+| Top-level functions | 259 | 266 |
+| Top-level classes | 15 | 15 |
+| Total top-level definitions | 274 | 281 |
+| `# CAVEAT:` comments (verified via the harvester itself, not a naive `grep`) | 1 | 5 |
+
+The +7 functions are all of `function_index.py`'s own top-level defs
+(`_signature_line`, `_iter_defs`, `_harvest_caveats`, `_module_entry`,
+`build_index`, `assert_function_index_current`, `render_check`) — no
+other module's top-level surface changed. The naive `grep -c "# CAVEAT:"
+*.py` count is 11, not 5; the difference is prose inside
+`function_index.py` itself that mentions the literal string (this
+docstring, error messages, the test fixture's own embedded example) —
+the harvester's own line-start match correctly excludes all of them, and
+running `_harvest_caveats` directly against each file rather than
+grepping is what the "5" above is actually verified against, not
+assumed.
+
+**Two decisions made deliberately, as the intent called for:**
+
+1. **Where the guard runs.** `assert_function_index_current` is called
+   from `qt_shell.py`'s existing `render_check()`, as the very first
+   thing it does, unconditional and untouched by any `_HAVE_QT` gate —
+   not only from `function_index.py`'s own new `--render-check`.
+   `qt_shell.py --render-check` is the check an agent already reaches
+   for; a check that only lives in a script nobody's habitual workflow
+   runs yet is the exact "technically exists, never actually reached"
+   shape `PHILOSOPHY.md` names three prior real instances of. Confirmed
+   reachable by demonstration, not just by reading the code — see
+   Acceptance below.
+2. **Determinism.** Explicit `sorted(root.glob("*.py"), key=lambda p:
+   p.name)` — `Path.glob()`'s order is filesystem-dependent, not
+   alphabetical by contract, and this sandbox's overlay filesystem is not
+   guaranteed to agree with a real rig's ext4 run to run. Within a
+   module, top-level definition order is left as the AST's own source
+   order (a fresh parse of unchanged text is already stable; nothing to
+   sort there). Verified, not assumed: `build_index()` called twice
+   in-process in `function_index.py`'s own `render_check()`, output
+   compared byte-for-byte.
+
+**CAVEATs seeded, per the intent's explicit instruction — four, at sites
+this change already touches, not a migration of `HANDOFF.md`'s ~345-line
+backlog (still fully out of scope):** `_signature_line` (why it unparses
+a real, body-stripped AST node instead of hand-formatting `node.args`),
+`_harvest_caveats` (why this is a text scan and not an AST walk, plus its
+one known blind spot — a `"# CAVEAT:"` string inside a docstring or
+literal reads as real if it starts a line, which this project's own
+comment-only convention is what actually prevents), `build_index` (why
+the `sorted()` on the glob must not be "simplified" away), and
+`qt_shell.py`'s `render_check()` at the exact line the guard is called
+from (why that call must stay unconditional and early). All five now in
+the tree — the four new ones plus the pre-existing `camera_backend.py`
+one — attach and roll up correctly in the regenerated index, including
+the `qt_shell.py` one, nested roughly 2,700 lines into `render_check()`,
+tagged with its qualified name (`render_check`, since it isn't nested
+inside anything narrower).
+
+**DISCOVERED: only 18 of the 24 modules have any self-check mechanism to
+run at all**, which matters for reading "all modules with `--render-check`
+pass" correctly. `ca_lib.py`, `debayer.py`, `frame_average.py`,
+`hdr_from_session.py`, and `hdr_merge.py` are pure CLI/library tools with
+no `render_check()` and no `--render-check` flag — confirmed by grepping
+each for `render_check` and finding nothing, not assumed from the file's
+purpose. `test_burst_backend.py` is an on-rig hardware smoke test against
+real `Picamera2Camera`; its own docstring says to use the GUI's
+`--render-check` instead, and it cannot run in this sandbox regardless.
+Neither exclusion is new to this change — both were already true of the
+tree before this build — but the intent's baseline table counted all 23
+modules without drawing this distinction, so it's recorded here rather
+than left to be rediscovered.
+
+**Acceptance, verified:**
+
+- **Determinism**: `build_index()` run twice in-process, output
+  identical (`function_index.py`'s own `render_check()`, "determinism
+  check PASS").
+- **Every module appears**: all 24 real module headers confirmed present
+  in the generated `FUNCTION_INDEX.md` (`coverage check PASS`).
+- **The guard actually fails on drift — demonstrated, not asserted.**
+  Appended a real function to `pixel_hash.py`, ran both `python3
+  function_index.py --render-check` and `python3 qt_shell.py
+  --render-check`: both raised `AssertionError` naming the drift and the
+  fix, exit 1 in each case — `qt_shell.py` fails on this check before
+  reaching anything Qt-dependent, so the demonstration needed no display.
+  Reverted with `git checkout -- pixel_hash.py`, re-ran both: exit 0, the
+  committed `FUNCTION_INDEX.md` untouched throughout since nothing in
+  this demonstration ever called `--write`.
+- **All 18 modules with a real self-check pass, exit 0**, from a clean
+  `/tmp` (per the tempfile sweep's own established check): `annotations.py`,
+  `ca_measure.py`, `calibrate.py`, `camera_backend.py`, `export.py`,
+  `focus.py`, `function_index.py`, `gallery.py`, `imx477.py`, `measure.py`
+  and `qt_shell.py` (both under `xvfb-run`, same environment the tempfile
+  sweep's own record names), `pixel_hash.py`, `plane_cache.py`,
+  `process_wizard.py`, `provenance.py`, `publish.py`, `stacks.py`,
+  `wizard_pages.py`. Zero leaked `zynergy_*` entries in `/tmp` afterward.
+
 ### Record intent: generated per-module function index, with a freshness guard
 
 Own branch off `main`.
