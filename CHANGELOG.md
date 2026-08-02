@@ -7,6 +7,59 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-02
 
+### Record intent: Qt environment defaults, platform-conditional
+
+First change built under the intent/build/record-build convention with
+the convention itself already present in `PHILOSOPHY.md`. Own branch off
+`main`.
+
+**Problem.** `qt6-gtk-platformtheme` 6.4.2 is installed on the rig, but
+Qt never loads it: labwc does not advertise itself in a way Qt maps to
+`gtk3`, so `QT_QPA_PLATFORMTHEME` never gets a value and Qt falls back to
+its own built-in default font. Qt lays out every widget from font
+metrics, so the whole app renders smaller than the desktop's own UI on
+the same screen at the same resolution. The app sets no font anywhere —
+no `setFont`, no `QFont`, no `setPointSize` — and `themes/dark/style.qss`
+touches only borders, radius and padding, so the undersized rendering is
+entirely inherited from the platform default, and there is nothing in
+the layout itself to enlarge. Hardcoding sizes would be the wrong fix and
+would break Mac and Windows, where the native default is different again
+and correct on its own.
+
+**Baseline, measured before any file was touched (this sandbox, not the
+rig — no gtk3 desktop session or dbus here, so this demonstrates the
+mechanism, not the rig's exact numbers):**
+
+| Condition | Font | Point size |
+|---|---|---|
+| `QT_QPA_PLATFORM=xcb`, no theme set | Sans Serif | 9.0 |
+| same, plus `QT_QPA_PLATFORMTHEME=gtk3` | Sans | 10.0 |
+
+`sys.platform`: `linux`. `XDG_CURRENT_DESKTOP`: unset. `QT_QPA_PLATFORMTHEME`:
+unset in the ambient environment before either command above set it
+manually. The gap between 9.0 and 10.0 pt (about 11%) is what the missing
+theme costs, and it is what the build record below compares against.
+
+**Plan.** Two changes, both at the environment-defaults block currently
+at `qt_shell.py:83` (verify on open — line numbers drift, don't trust a
+number recorded ahead of the edit):
+
+1. The existing `os.environ.setdefault("QT_QPA_PLATFORM", "xcb")` becomes
+   Linux-only. The XWayland-over-Wayland reasoning in the comment above
+   it is Linux-specific and still correct there; it is meaningless on Mac
+   and Windows, where Qt should be left to pick its own platform.
+2. A new Linux-only
+   `os.environ.setdefault("QT_QPA_PLATFORMTHEME", "gtk3")`.
+
+Both stay `setdefault`, deliberately — an explicitly set variable still
+wins, which is what makes a blanket `gtk3` default safe: a desktop that
+cares, KDE for instance, already exports `QT_QPA_PLATFORMTHEME` itself,
+so this only fills the gap where nothing set it.
+
+**Scope.** `qt_shell.py` only in this step's build; this entry and a
+`HANDOFF.md` update land in the record-build step. No other file, and
+nothing on the out-of-scope list for this change.
+
 ### Record build: three-phase convention in PHILOSOPHY.md
 
 Built exactly to the intent recorded below, no correction needed.
