@@ -952,8 +952,12 @@ def render_check():
     assert _debayer is not None, (
         "debayer.py must import cleanly from calibrate.py's own directory "
         "(extract_green is reused from it, not reimplemented)")
+    import shutil
+    import tempfile
+
     mosaic = np.arange(64, dtype=np.uint16).reshape(8, 8)
-    tmp_mosaic = Path("/tmp/zynergy_calib_render_check_mosaic.tif")
+    mosaic_dir = Path(tempfile.mkdtemp(prefix="zynergy_calib_render_check_mosaic_"))
+    tmp_mosaic = mosaic_dir / "mosaic.tif"
     tifffile.imwrite(str(tmp_mosaic), mosaic)
     try:
         green = load_green_plane(tmp_mosaic)   # default BGGR, green-which=1
@@ -963,10 +967,11 @@ def render_check():
         print("load_green_plane check PASS: correct half-res green sub-plane "
               "extracted from a synthetic raw mosaic")
     finally:
-        tmp_mosaic.unlink(missing_ok=True)
+        shutil.rmtree(mosaic_dir, ignore_errors=True)
 
     # a non-2D (already-demosaiced) input must raise ValueError, not crash a GUI
-    tmp_bad = Path("/tmp/zynergy_calib_render_check_bad.tif")
+    bad_dir = Path(tempfile.mkdtemp(prefix="zynergy_calib_render_check_bad_"))
+    tmp_bad = bad_dir / "bad.tif"
     tifffile.imwrite(str(tmp_bad), np.zeros((4, 4, 3), dtype=np.uint8))
     try:
         try:
@@ -976,14 +981,10 @@ def render_check():
             pass
         print("load_mosaic_array check PASS: rejects a non single-channel input")
     finally:
-        tmp_bad.unlink(missing_ok=True)
+        shutil.rmtree(bad_dir, ignore_errors=True)
 
     # --- resolve_raw_path: sibling resolution, pass-through, missing sibling
-    rr_dir = Path("/tmp/zynergy_calib_render_check_paths")
-    if rr_dir.exists():
-        import shutil
-        shutil.rmtree(rr_dir)
-    rr_dir.mkdir(parents=True)
+    rr_dir = Path(tempfile.mkdtemp(prefix="zynergy_calib_render_check_paths_"))
     try:
         jpg = rr_dir / "snap_frame_0000.jpg"
         dng = rr_dir / "snap_frame_0000.dng"
@@ -1001,8 +1002,7 @@ def render_check():
         print("resolve_raw_path check PASS: sibling resolution, pass-through, "
               "and a missing sibling refuses rather than guessing")
     finally:
-        import shutil
-        shutil.rmtree(rr_dir)
+        shutil.rmtree(rr_dir, ignore_errors=True)
 
     # --- stretch_to_uint8: display-only, never the measurement -------------
     ramp = np.linspace(0.0, 1000.0, 100).reshape(10, 10)
@@ -1015,8 +1015,12 @@ def render_check():
     print("stretch_to_uint8 check PASS: spans the display range, degenerate input safe")
 
     # --- build_calibration_entry: full provenance now recorded -------------
+    # Never written to disk -- passed through as a recorded string only, so a
+    # stable name under the system temp dir is genuinely wanted here, not a
+    # fresh directory per call.
+    fake_dng = str(Path(tempfile.gettempdir()) / "zynergy_calib_render_check_fake.dng")
     entry = build_calibration_entry(
-        Path("/tmp/fake.dng"), (0.0, 0.0), (500.0, 0.0), 500.0,
+        Path(fake_dng), (0.0, 0.0), (500.0, 0.0), 500.0,
         objective="40x", target_type="stage micrometer", focus_score=300.0)
     assert entry["objective"] == "40x"
     assert entry["reduction_lens"] == REDUCTION_LENS
@@ -1025,7 +1029,7 @@ def render_check():
     assert entry["measurement_plane"] == {"cfa_pattern": DEFAULT_CFA_PATTERN,
                                           "green_which": DEFAULT_GREEN_WHICH}
     entry_no_focus = build_calibration_entry(
-        Path("/tmp/fake.dng"), (0.0, 0.0), (500.0, 0.0), 500.0,
+        Path(fake_dng), (0.0, 0.0), (500.0, 0.0), 500.0,
         objective="40x", target_type="stage micrometer", focus_score=None)
     assert entry_no_focus["focus_score"] is None, "an unavailable focus score stays None"
     print("build_calibration_entry check PASS: objective, reduction lens, target "
@@ -1034,17 +1038,18 @@ def render_check():
     # --- calibration store: append-only, supersedes chain -------------------
     global CALIBRATION_PATH
     orig_path = CALIBRATION_PATH
-    tmp_dir = Path("/tmp/zynergy_calib_render_check")
-    if tmp_dir.exists():
-        import shutil
-        shutil.rmtree(tmp_dir)
+    tmp_dir = Path(tempfile.mkdtemp(prefix="zynergy_calib_render_check_"))
     CALIBRATION_PATH = tmp_dir / "calibration.json"
+    fake_40x_dng = str(Path(tempfile.gettempdir()) / "zynergy_calib_render_check_fake_40x.dng")
+    fake_100x_dng = str(Path(tempfile.gettempdir()) / "zynergy_calib_render_check_fake_100x.dng")
+    fake_40x_redo_dng = str(
+        Path(tempfile.gettempdir()) / "zynergy_calib_render_check_fake_40x_redo.dng")
     try:
         assert load_calibrations() == {}, "a missing store should load as {}"
         assert current_calibration("40x") is None, "no history yet should read as None"
 
         entry_40x_v1 = build_calibration_entry(
-            Path("/tmp/fake_40x.dng"), (100.0, 100.0), (600.0, 100.0), 500.0,
+            Path(fake_40x_dng), (100.0, 100.0), (600.0, 100.0), 500.0,
             objective="40x", target_type="stage micrometer", focus_score=321.5)
         assert abs(entry_40x_v1["um_per_px"] - 1.0) < 1e-9, "40x entry arithmetic wrong"
         store = save_calibration("40x", entry_40x_v1)
@@ -1053,13 +1058,13 @@ def render_check():
         assert "entry_id" in saved_v1
 
         entry_100x = build_calibration_entry(
-            Path("/tmp/fake_100x.dng"), (50.0, 50.0), (450.0, 50.0), 200.0,
+            Path(fake_100x_dng), (50.0, 50.0), (450.0, 50.0), 200.0,
             objective="100x", target_type="stage micrometer", focus_score=410.0)
         save_calibration("100x", entry_100x)
 
         # Re-calibrating 40x must APPEND, not overwrite: v1 must survive unchanged.
         entry_40x_v2 = build_calibration_entry(
-            Path("/tmp/fake_40x_redo.dng"), (0.0, 0.0), (1000.0, 0.0), 800.0,
+            Path(fake_40x_redo_dng), (0.0, 0.0), (1000.0, 0.0), 800.0,
             objective="40x", target_type="stage micrometer", focus_score=455.2)
         save_calibration("40x", entry_40x_v2)
 
@@ -1068,10 +1073,10 @@ def render_check():
         assert store2["40x"][0] == saved_v1, "the original entry must survive byte-for-byte"
         assert store2["40x"][1]["supersedes"] == saved_v1["entry_id"], \
             "the new entry must chain 'supersedes' to the one it replaces as current"
-        assert store2["40x"][1]["source_image"] == "/tmp/fake_40x_redo.dng"
+        assert store2["40x"][1]["source_image"] == fake_40x_redo_dng
         assert abs(store2["40x"][1]["um_per_px"] - 0.8) < 1e-9
         assert len(store2["100x"]) == 1, "saving 40x must not disturb 100x's own history"
-        assert store2["100x"][0]["source_image"] == "/tmp/fake_100x.dng", \
+        assert store2["100x"][0]["source_image"] == fake_100x_dng, \
             "provenance (source image) not preserved"
 
         cur = current_calibration("40x", store2)
@@ -1083,6 +1088,7 @@ def render_check():
               "clean {}")
     finally:
         CALIBRATION_PATH = orig_path
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
     # --- config-drift invalidation (section 13) -----------------------------
     rig = current_rig_config()

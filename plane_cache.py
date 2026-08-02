@@ -226,6 +226,7 @@ def clean_cache(referenced=None, older_than_days=None, root=None, now=None):
 # ---------------------------------------------------------------------------
 def render_check():
     import shutil
+    import tempfile
 
     import numpy as np
 
@@ -233,9 +234,7 @@ def render_check():
 
     assert _pixel_hash is not None, "pixel_hash.py must be importable"
 
-    tmp_root = Path("/tmp/zynergy_plane_cache_render_check")
-    if tmp_root.exists():
-        shutil.rmtree(tmp_root)
+    tmp_root = Path(tempfile.mkdtemp(prefix="zynergy_plane_cache_render_check_"))
 
     rng = np.random.default_rng(0)
     plane = rng.integers(0, 65536, size=(1520, 2028), dtype=np.uint16)

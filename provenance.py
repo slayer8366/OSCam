@@ -369,6 +369,7 @@ def record_hdr(session, sci_levels, dark_levels, note=""):
 # ---------------------------------------------------------------------------
 def render_check():
     import shutil
+    import tempfile
     import threading
 
     try:
@@ -379,9 +380,7 @@ def render_check():
     global OUT_ROOT, PROFILE_PATH, PROVENANCE_ROOT, FLAT_ROOT
 
     # --- new_session_dir: basic creation + collision avoidance -------------
-    root = Path("/tmp/zynergy_provenance_render_check_sessions")
-    if root.exists():
-        shutil.rmtree(root)
+    root = Path(tempfile.mkdtemp(prefix="zynergy_provenance_render_check_sessions_"))
     ts1, d1 = new_session_dir(root)
     assert d1.is_dir() and d1.name == ts1, "new_session_dir must create and return the dir"
     # Force a real collision deterministically: pre-occupy the next two names
@@ -407,11 +406,8 @@ def render_check():
           "dir's own name -- the returned ts stays the raw timestamp)")
 
     # --- new_session_dirs: capture+provenance pair, collision in lockstep --
-    cap_root = Path("/tmp/zynergy_provenance_render_check_dual_cap")
-    prov_root = Path("/tmp/zynergy_provenance_render_check_dual_prov")
-    for r in (cap_root, prov_root):
-        if r.exists():
-            shutil.rmtree(r)
+    cap_root = Path(tempfile.mkdtemp(prefix="zynergy_provenance_render_check_dual_cap_"))
+    prov_root = Path(tempfile.mkdtemp(prefix="zynergy_provenance_render_check_dual_prov_"))
     ts3, cd1, pd1 = new_session_dirs(cap_root, prov_root)
     assert cd1.is_dir() and pd1.is_dir(), "new_session_dirs must create both dirs"
     assert cd1.name == pd1.name == ts3, "capture and provenance dirs must share the same name"
@@ -427,11 +423,8 @@ def render_check():
           "name, a collision on either root bumps both in lockstep")
 
     # --- new_zstack_root_dirs: zstack_ prefix, focal/ default, same pairing
-    zcap_parent = Path("/tmp/zynergy_provenance_render_check_zstack_cap")
-    zprov_parent = Path("/tmp/zynergy_provenance_render_check_zstack_prov")
-    for r in (zcap_parent, zprov_parent):
-        if r.exists():
-            shutil.rmtree(r)
+    zcap_parent = Path(tempfile.mkdtemp(prefix="zynergy_provenance_render_check_zstack_cap_"))
+    zprov_parent = Path(tempfile.mkdtemp(prefix="zynergy_provenance_render_check_zstack_prov_"))
     stack_id1, sroot1, sprov1 = new_zstack_root_dirs(zcap_parent, zprov_parent)
     assert sroot1.name == sprov1.name == "zstack_{}".format(stack_id1), \
         "the stack_id returned must be exactly what both folder names carry"
@@ -446,10 +439,9 @@ def render_check():
 
     # --- load_profile / save_profile: atomic write, round-trip -------------
     _orig_profile_path = PROFILE_PATH
-    PROFILE_PATH = Path("/tmp/zynergy_provenance_render_check_profile.json")
+    _profile_dir = Path(tempfile.mkdtemp(prefix="zynergy_provenance_render_check_profile_"))
+    PROFILE_PATH = _profile_dir / "profile.json"
     try:
-        if PROFILE_PATH.exists():
-            PROFILE_PATH.unlink()
         assert load_profile() is None, "load_profile on a missing file must return None"
         fake_locked = {"shutter_us": 12345, "analogue_gain": 2.0,
                        "awb_red_gain": 1.5, "awb_blue_gain": 1.8}
@@ -460,15 +452,13 @@ def render_check():
         assert load_profile() == fake_locked, "load_profile must round-trip exactly what was saved"
     finally:
         PROFILE_PATH = _orig_profile_path
+        shutil.rmtree(_profile_dir, ignore_errors=True)
     print("load_profile / save_profile check PASS: missing file reads as None, "
           "atomic write leaves no .tmp behind, round-trips exactly")
 
     # --- Session: session_dir=/provenance_dir= override (z-stack plane_N) --
-    explicit_cap_root = Path("/tmp/zynergy_provenance_render_check_explicit_cap")
-    explicit_prov_root = Path("/tmp/zynergy_provenance_render_check_explicit_prov")
-    for r in (explicit_cap_root, explicit_prov_root):
-        if r.exists():
-            shutil.rmtree(r)
+    explicit_cap_root = Path(tempfile.mkdtemp(prefix="zynergy_provenance_render_check_explicit_cap_"))
+    explicit_prov_root = Path(tempfile.mkdtemp(prefix="zynergy_provenance_render_check_explicit_prov_"))
     explicit_dir = explicit_cap_root / "plane_0"
     explicit_prov_dir = explicit_prov_root / "plane_0"
     try:
@@ -495,11 +485,8 @@ def render_check():
           "provenance_dir raises rather than guessing")
 
     # --- record_capture: sidecar written to prov_dir, session record appended
-    tmp_root = Path("/tmp/zynergy_provenance_render_check_captures")
-    tmp_prov_root = Path("/tmp/zynergy_provenance_render_check_captures_prov")
-    for r in (tmp_root, tmp_prov_root):
-        if r.exists():
-            shutil.rmtree(r)
+    tmp_root = Path(tempfile.mkdtemp(prefix="zynergy_provenance_render_check_captures_"))
+    tmp_prov_root = Path(tempfile.mkdtemp(prefix="zynergy_provenance_render_check_captures_prov_"))
     _orig_prov_root = PROVENANCE_ROOT
     PROVENANCE_ROOT = tmp_prov_root
     try:

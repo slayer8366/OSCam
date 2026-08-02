@@ -863,11 +863,15 @@ def render_check():
     import shutil
     tmp_dir = Path(tempfile.mkdtemp()) / "ca_calib_check"
     CA_CALIBRATION_PATH = tmp_dir / "ca_calibration.json"
+    # Never written to disk -- passed through as a recorded string only, so a
+    # stable name under the system temp dir is what's wanted, not a fresh
+    # directory per call.
+    fake_ca_target = Path(tempfile.gettempdir()) / "zynergy_ca_measure_render_check_fake_ca_target.tif"
     try:
         assert load_ca_calibrations() == {}, "a missing store should load as {}"
         assert current_ca_calibration("40x") is None, "no history yet should read as None"
 
-        entry_v1 = build_ca_calibration_entry(result, "40x", Path("/tmp/fake_ca_target.tif"))
+        entry_v1 = build_ca_calibration_entry(result, "40x", fake_ca_target)
         assert entry_v1["objective"] == "40x"
         assert entry_v1["model"] == "constant_radial_scale"
         assert "poly2_flagged" in entry_v1 and "poly2_detail" in entry_v1
@@ -893,7 +897,7 @@ def render_check():
         assert saved_v1["supersedes"] is None, "the first entry supersedes nothing"
         assert "entry_id" in saved_v1
 
-        entry_v2 = build_ca_calibration_entry(result, "40x", Path("/tmp/fake_ca_target.tif"))
+        entry_v2 = build_ca_calibration_entry(result, "40x", fake_ca_target)
         save_ca_calibration("40x", entry_v2)
         store2 = load_ca_calibrations()
         assert len(store2["40x"]) == 2, "a redo should APPEND, not replace"
@@ -901,7 +905,7 @@ def render_check():
         assert store2["40x"][1]["supersedes"] == saved_v1["entry_id"], \
             "the new entry must chain 'supersedes' to the one it replaces as current"
 
-        entry_100x = build_ca_calibration_entry(result, "100x", Path("/tmp/fake_ca_target.tif"))
+        entry_100x = build_ca_calibration_entry(result, "100x", fake_ca_target)
         save_ca_calibration("100x", entry_100x)
         store3 = load_ca_calibrations()
         assert len(store3["100x"]) == 1, "saving 40x must not disturb 100x's own history"

@@ -396,12 +396,12 @@ def render_check():
 
     # the store: create, append, orphan-check, all against a temp path so
     # this never touches a real ~/.zynergy/annotations.json
+    import shutil
+    import tempfile
+
     global ANNOTATION_PATH
     orig_path = ANNOTATION_PATH
-    tmp_dir = Path("/tmp/zynergy_annotations_render_check")
-    if tmp_dir.exists():
-        import shutil
-        shutil.rmtree(tmp_dir)
+    tmp_dir = Path(tempfile.mkdtemp(prefix="zynergy_annotations_render_check_"))
     ANNOTATION_PATH = tmp_dir / "annotations.json"
     try:
         assert load_annotations() == {}, "a missing store should load as {}"
@@ -443,21 +443,22 @@ def render_check():
               "without record_defaults refuses, orphan detection correct")
     finally:
         ANNOTATION_PATH = orig_path
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
     # calibration_ref_for: exercised against calibrate.py's real store logic
     # (its own temp-path swap), skipped gracefully if calibrate.py is absent
     if _calibrate is not None:
         orig_calib_path = _calibrate.CALIBRATION_PATH
-        tmp_calib_dir = Path("/tmp/zynergy_annotations_render_check_calib")
-        if tmp_calib_dir.exists():
-            import shutil
-            shutil.rmtree(tmp_calib_dir)
+        tmp_calib_dir = Path(tempfile.mkdtemp(prefix="zynergy_annotations_render_check_calib_"))
         _calibrate.CALIBRATION_PATH = tmp_calib_dir / "calibration.json"
+        # Never written to disk -- passed through as a recorded string only,
+        # so a stable name under the system temp dir is what's wanted.
+        fake_dng = str(Path(tempfile.gettempdir()) / "zynergy_annotations_render_check_fake.dng")
         try:
             assert calibration_ref_for("40x") is None, \
                 "an uncalibrated objective should give no ref, not raise"
             entry = _calibrate.build_calibration_entry(
-                Path("/tmp/fake.dng"), (0.0, 0.0), (500.0, 0.0), 500.0,
+                Path(fake_dng), (0.0, 0.0), (500.0, 0.0), 500.0,
                 objective="40x", target_type="stage micrometer", focus_score=300.0)
             _calibrate.save_calibration("40x", entry)
             saved = _calibrate.current_calibration("40x")   # entry_id is assigned on save
@@ -477,10 +478,7 @@ def render_check():
             green2 = np.arange(64, dtype=np.uint16).reshape(8, 8) + 1000
             h2 = _pixel_hash.pixel_sha256(green2)
             orig_annotation_path2 = ANNOTATION_PATH
-            tmp_dir2 = Path("/tmp/zynergy_annotations_render_check_stored_ref")
-            if tmp_dir2.exists():
-                import shutil
-                shutil.rmtree(tmp_dir2)
+            tmp_dir2 = Path(tempfile.mkdtemp(prefix="zynergy_annotations_render_check_stored_ref_"))
             ANNOTATION_PATH = tmp_dir2 / "annotations.json"
             try:
                 save_mark(h2, d, record_defaults={
@@ -493,8 +491,10 @@ def render_check():
 
                 # Recalibrate "40x" to a new entry -- calibration_ref_for
                 # must now reflect it; stored_calibration_ref must NOT.
+                fake2_dng = str(
+                    Path(tempfile.gettempdir()) / "zynergy_annotations_render_check_fake2.dng")
                 new_entry = _calibrate.build_calibration_entry(
-                    Path("/tmp/fake2.dng"), (0.0, 0.0), (1000.0, 0.0), 1000.0,
+                    Path(fake2_dng), (0.0, 0.0), (1000.0, 0.0), 1000.0,
                     objective="40x", target_type="stage micrometer", focus_score=300.0)
                 _calibrate.save_calibration("40x", new_entry)
                 ref2 = calibration_ref_for("40x")
@@ -514,8 +514,10 @@ def render_check():
                       "None for a hash with no record")
             finally:
                 ANNOTATION_PATH = orig_annotation_path2
+                shutil.rmtree(tmp_dir2, ignore_errors=True)
         finally:
             _calibrate.CALIBRATION_PATH = orig_calib_path
+            shutil.rmtree(tmp_calib_dir, ignore_errors=True)
     else:
         print("calibration_ref_for check SKIPPED: calibrate.py not importable "
               "from this directory")

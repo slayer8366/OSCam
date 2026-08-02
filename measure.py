@@ -1662,10 +1662,14 @@ if _HAVE_QT:
 
 
 def render_check():
+    import shutil
+    import tempfile
+
     import tifffile
 
     # --- provenance guard --------------------------------------------------
-    tmp = Path("/tmp/zynergy_measure_render_check_display.tif")
+    tmp_dir0 = Path(tempfile.mkdtemp(prefix="zynergy_measure_render_check_display_"))
+    tmp = tmp_dir0 / "display.tif"
     tifffile.imwrite(str(tmp), np.zeros((4, 4), dtype=np.uint16),
                      description=json.dumps({"kind": "display-referred derivative (NOT a measurement)"}))
     try:
@@ -1675,17 +1679,19 @@ def render_check():
         except ValueError:
             pass
     finally:
-        tmp.unlink(missing_ok=True)
+        shutil.rmtree(tmp_dir0, ignore_errors=True)
 
-    tmp2 = Path("/tmp/zynergy_measure_render_check_clean.tif")
+    tmp_dir1 = Path(tempfile.mkdtemp(prefix="zynergy_measure_render_check_clean_"))
+    tmp2 = tmp_dir1 / "clean.tif"
     tifffile.imwrite(str(tmp2), np.zeros((4, 4), dtype=np.uint16),
                      description=json.dumps({"kind": "green", "transform": "single_green_extraction"}))
     check_measurement_provenance(tmp2)   # must NOT raise
-    tmp2.unlink(missing_ok=True)
-    tmp3 = Path("/tmp/zynergy_measure_render_check_none.tif")
+    shutil.rmtree(tmp_dir1, ignore_errors=True)
+    tmp_dir2 = Path(tempfile.mkdtemp(prefix="zynergy_measure_render_check_none_"))
+    tmp3 = tmp_dir2 / "none.tif"
     tifffile.imwrite(str(tmp3), np.zeros((4, 4), dtype=np.uint16))   # no description at all
     check_measurement_provenance(tmp3)   # must NOT raise: no tag is not a flag
-    tmp3.unlink(missing_ok=True)
+    shutil.rmtree(tmp_dir2, ignore_errors=True)
     print("check_measurement_provenance check PASS: flagged derivative refused, "
           "an unflagged green/no-description file passes through")
 
@@ -1694,7 +1700,8 @@ def render_check():
         "debayer.py and calibrate.py must both be importable from this directory"
     full_h, full_w = FULL_RES[1], FULL_RES[0]
     mosaic = (np.arange(full_h * full_w, dtype=np.uint32) % 4096).astype(np.uint16).reshape(full_h, full_w)
-    mosaic_path = Path("/tmp/zynergy_measure_render_check_mosaic.tif")
+    mosaic_dir = Path(tempfile.mkdtemp(prefix="zynergy_measure_render_check_mosaic_"))
+    mosaic_path = mosaic_dir / "mosaic.tif"
     tifffile.imwrite(str(mosaic_path), mosaic)
     try:
         plane_from_mosaic = load_measurement_plane(mosaic_path)
@@ -1704,20 +1711,22 @@ def render_check():
         assert np.array_equal(plane_from_mosaic, expected_plane), \
             "green extraction from a full mosaic must match debayer.py's own extract_green exactly"
     finally:
-        mosaic_path.unlink(missing_ok=True)
+        shutil.rmtree(mosaic_dir, ignore_errors=True)
 
     green_h, green_w = GREEN_PLANE_RES[1], GREEN_PLANE_RES[0]
     already_green = (np.arange(green_h * green_w, dtype=np.uint32) % 4096).astype(np.uint16).reshape(green_h, green_w)
-    green_path = Path("/tmp/zynergy_measure_render_check_green.tif")
+    green_dir = Path(tempfile.mkdtemp(prefix="zynergy_measure_render_check_green_"))
+    green_path = green_dir / "green.tif"
     tifffile.imwrite(str(green_path), already_green)
     try:
         plane_from_green = load_measurement_plane(green_path)
         assert np.array_equal(plane_from_green, already_green), \
             "an already-extracted green plane must be used AS-IS, not re-extracted"
     finally:
-        green_path.unlink(missing_ok=True)
+        shutil.rmtree(green_dir, ignore_errors=True)
 
-    bad_path = Path("/tmp/zynergy_measure_render_check_bad.tif")
+    bad_dir = Path(tempfile.mkdtemp(prefix="zynergy_measure_render_check_bad_"))
+    bad_path = bad_dir / "bad.tif"
     tifffile.imwrite(str(bad_path), np.zeros((10, 10), dtype=np.uint16))   # neither shape
     try:
         try:
@@ -1726,7 +1735,7 @@ def render_check():
         except ValueError:
             pass
     finally:
-        bad_path.unlink(missing_ok=True)
+        shutil.rmtree(bad_dir, ignore_errors=True)
     print("load_measurement_plane check PASS: full-mosaic extraction matches "
           "debayer.py exactly, an already-green plane passes through unchanged, "
           "an unrecognized shape refuses")
@@ -1815,15 +1824,15 @@ def render_check():
     # --- calibration gating --------------------------------------------------
     if _calibrate is not None:
         orig_path = _calibrate.CALIBRATION_PATH
-        tmp_dir = Path("/tmp/zynergy_measure_render_check_calib")
-        if tmp_dir.exists():
-            import shutil
-            shutil.rmtree(tmp_dir)
+        tmp_dir = Path(tempfile.mkdtemp(prefix="zynergy_measure_render_check_calib_"))
         _calibrate.CALIBRATION_PATH = tmp_dir / "calibration.json"
+        # Never written to disk -- passed through as a recorded string only,
+        # so a stable name under the system temp dir is what's wanted.
+        fake_dng = str(Path(tempfile.gettempdir()) / "zynergy_measure_render_check_fake.dng")
         try:
             assert current_um_per_px("40x") is None, "an uncalibrated objective should gate closed"
             entry = _calibrate.build_calibration_entry(
-                Path("/tmp/fake.dng"), (0.0, 0.0), (500.0, 0.0), 500.0,
+                Path(fake_dng), (0.0, 0.0), (500.0, 0.0), 500.0,
                 objective="40x", target_type="stage micrometer", focus_score=300.0)
             _calibrate.save_calibration("40x", entry)
             assert abs(current_um_per_px("40x") - 1.0) < 1e-9, "a calibrated objective should gate open"
@@ -1985,7 +1994,7 @@ def render_check():
                 # named directly as something never to do, so those
                 # existing entries are a separate decision, not resolved
                 # here.
-                status_green_path = Path("/tmp/zynergy_measure_render_check_status.tif")
+                status_green_path = tmp_dir / "status.tif"
                 tifffile.imwrite(str(status_green_path), already_green)
                 orig_annot_path_status = _annotations.ANNOTATION_PATH
                 _annotations.ANNOTATION_PATH = tmp_dir / "status_line_annotations.json"
@@ -2029,7 +2038,7 @@ def render_check():
                 # commit_measurement block above -- never the real store.
                 orig_annot_path_rw = _annotations.ANNOTATION_PATH
                 _annotations.ANNOTATION_PATH = tmp_dir / "review_annotations.json"
-                rw_green_path = Path("/tmp/zynergy_measure_render_check_review.tif")
+                rw_green_path = tmp_dir / "review.tif"
                 tifffile.imwrite(str(rw_green_path), already_green)
                 try:
                     rwin = ReviewWindow(objective="40x")
@@ -2071,6 +2080,7 @@ def render_check():
                       "image recalls that mark purely by hash")
         finally:
             _calibrate.CALIBRATION_PATH = orig_path
+            shutil.rmtree(tmp_dir, ignore_errors=True)
     else:
         print("calibration gating check SKIPPED: calibrate.py not importable")
 

@@ -5835,7 +5835,8 @@ def render_check():
     # local, never reach the real provenance.PROFILE_PATH every consumer
     # (this file, gallery.py, wizard_pages.py) actually reads.
     _orig_profile_path_for_render_check = provenance.PROFILE_PATH
-    provenance.PROFILE_PATH = Path("/tmp/zynergy_render_check_profile.json")
+    _rc_profile_dir = Path(tempfile.mkdtemp(prefix="zynergy_render_check_profile_"))
+    provenance.PROFILE_PATH = _rc_profile_dir / "profile.json"
 
     # Same one-shot reasoning as PROFILE_PATH just above, extended to the
     # three Part 03 folder-layout globals: every provenance.Session(...)
@@ -5843,12 +5844,10 @@ def render_check():
     # capture_correction_status call, via _provenance_dir_for) reads these
     # as its defaults, so they must point at disposable temp dirs for the
     # whole function, never the real ~/provenance, ~/captures, or ~/flat.
-    provenance.PROVENANCE_ROOT = Path("/tmp/zynergy_render_check_provenance_root")
-    provenance.OUT_ROOT = Path("/tmp/zynergy_render_check_capture_root")
-    provenance.FLAT_ROOT = Path("/tmp/zynergy_render_check_flat_root")
-    for _r in (provenance.PROVENANCE_ROOT, provenance.OUT_ROOT, provenance.FLAT_ROOT):
-        if _r.exists():
-            shutil.rmtree(_r)
+    _rc_state_root = Path(tempfile.mkdtemp(prefix="zynergy_render_check_state_"))
+    provenance.PROVENANCE_ROOT = _rc_state_root / "provenance_root"
+    provenance.OUT_ROOT = _rc_state_root / "capture_root"
+    provenance.FLAT_ROOT = _rc_state_root / "flat_root"
 
     box = FocusBox.centered(0.5, 0.4)
     bar = BarState(fill=0.5, current=0.02, hi=0.03, lo=0.0, at_peak=False, settled=True)
@@ -6011,10 +6010,10 @@ def render_check():
         # the same module attribute regardless of which block declares it).
         global PREFS_PATH
         _orig_prefs_path_og = PREFS_PATH
-        PREFS_PATH = Path("/tmp/zynergy_render_check_onboarding_prefs.json")
+        _rc_onboarding_dir = Path(tempfile.mkdtemp(prefix="zynergy_render_check_onboarding_"))
+        PREFS_PATH = _rc_onboarding_dir / "prefs.json"
         _orig_calib_path_og = _calibrate.CALIBRATION_PATH
-        _calibrate.CALIBRATION_PATH = Path(
-            "/tmp/zynergy_render_check_onboarding_calibration.json")
+        _calibrate.CALIBRATION_PATH = _rc_onboarding_dir / "calibration.json"
         try:
             # Case: suppression (via --no-onboarding here, the same code path
             # a genuinely non-interactive platform takes) must construct no
@@ -6129,6 +6128,7 @@ def render_check():
         finally:
             PREFS_PATH = _orig_prefs_path_og
             _calibrate.CALIBRATION_PATH = _orig_calib_path_og
+            shutil.rmtree(_rc_onboarding_dir, ignore_errors=True)
     # --- end onboarding gate (calibration integration) -----------------------
 
     # Shutter stop table: standard photographic full stops within the sensor's
@@ -6268,9 +6268,7 @@ def render_check():
     # substitutes {{ASSETS}} for the theme's own absolute assets/ path, and
     # resolve_theme_qss_path degrades a stale/deleted preference to None
     # (stock look) instead of crashing main().
-    themes_tmp = Path("/tmp/zynergy_render_check_themes")
-    if themes_tmp.exists():
-        shutil.rmtree(themes_tmp)
+    themes_tmp = Path(tempfile.mkdtemp(prefix="zynergy_render_check_themes_"))
     (themes_tmp / "dark" / "assets").mkdir(parents=True)
     (themes_tmp / "dark" / "style.qss").write_text(
         "#side_panel { background-image: url({{ASSETS}}/bg.png); }")
@@ -6415,7 +6413,8 @@ def render_check():
     # never archived alongside any one session -- it isn't this session's
     # own raw), verified against the exact same tar safety order
     # hdr_from_session.py's own archive_raws uses.
-    empty_result = archive_session_raws(Path("/tmp/zynergy_render_check_no_such_dir"))
+    empty_result = archive_session_raws(
+        Path(tempfile.gettempdir()) / "zynergy_render_check_no_such_dir")
     assert empty_result == {"archived": 0, "tar_path": None, "mb": 0.0}, \
         "archiving an empty/missing dir should be a clean no-op"
 
@@ -6442,9 +6441,7 @@ def render_check():
         print("_on_tag_stack check SKIPPED: PyQt6 not available here")
     else:
         qtapp = QApplication.instance() or QApplication([])
-        tag_root = Path("/tmp/zynergy_render_check_tag")
-        if tag_root.exists():
-            shutil.rmtree(tag_root)
+        tag_root = Path(tempfile.mkdtemp(prefix="zynergy_render_check_tag_"))
         tcam = FakeCamera(async_delay_s=0.0)
         win = FocusPreviewWindow(tcam, FocusMeter())
         win._session = provenance.Session(tag_root, {}, [])
@@ -6621,10 +6618,7 @@ def render_check():
                 time.sleep(0.005)
             assert not zwin._capturing, "z-stack plane capture never completed"
 
-        zroot = Path("/tmp/zynergy_render_check_zstack")
-        if zroot.exists():
-            shutil.rmtree(zroot)
-        zroot.mkdir(parents=True)
+        zroot = Path(tempfile.mkdtemp(prefix="zynergy_render_check_zstack_"))
         zcam = FakeCamera(async_delay_s=0.0)
         zwin = FocusPreviewWindow(zcam, FocusMeter())
         # SPEC_focus_aid_fps_and_stack_reset.md part 2, carried over to the
@@ -6921,8 +6915,8 @@ def render_check():
         # second `global X` statement anywhere later in a function once X
         # has been used, so this section relies on that earlier one.)
         orig_prefs_path = PREFS_PATH
-        PREFS_PATH = Path("/tmp/zynergy_render_check_prefs_dialog.json")
-        PREFS_PATH.unlink(missing_ok=True)
+        _rc_prefs_dialog_dir = Path(tempfile.mkdtemp(prefix="zynergy_render_check_prefs_dialog_"))
+        PREFS_PATH = _rc_prefs_dialog_dir / "prefs.json"
         try:
             # A capability the driver doesn't report produces no control at
             # all, not an empty/disabled one -- the default FakeCamera
@@ -7052,6 +7046,7 @@ def render_check():
             pcam.stop()
         finally:
             PREFS_PATH = orig_prefs_path
+            shutil.rmtree(_rc_prefs_dialog_dir, ignore_errors=True)
         print("Preferences dialog check PASS: capture/video controls built "
               "entirely from get_capabilities() (an omitted capability "
               "produces no control), Preview resolution is a real enabled "
@@ -7070,8 +7065,8 @@ def render_check():
         # "casual_mode" key left over from a superseded build both degrade
         # gracefully rather than raising.
         orig_prefs_path2 = PREFS_PATH
-        PREFS_PATH = Path("/tmp/zynergy_render_check_prefs_dialog2.json")
-        PREFS_PATH.unlink(missing_ok=True)   # confirms a missing file doesn't raise
+        _rc_prefs_dialog2_dir = Path(tempfile.mkdtemp(prefix="zynergy_render_check_prefs_dialog2_"))
+        PREFS_PATH = _rc_prefs_dialog2_dir / "prefs.json"   # freshly created, confirms a missing file doesn't raise
         try:
             scam = FakeCamera(async_delay_s=0.0, stream_caps=True)
             sdlg = PreferencesDialog(scam)
@@ -7088,6 +7083,7 @@ def render_check():
             stale_cam.stop()
         finally:
             PREFS_PATH = orig_prefs_path2
+            shutil.rmtree(_rc_prefs_dialog2_dir, ignore_errors=True)
         print("Preferences dialog check PASS (part 2): a reported stream "
               "capability produces a real control, a missing gui_prefs.json "
               "and a stale casual_mode key both degrade gracefully")
@@ -7107,12 +7103,11 @@ def render_check():
         # ~/.zynergy/annotations.json.
         if _plane_cache is not None and _plane_cache._annotations is not None:
             orig_prefs_path3 = PREFS_PATH
-            PREFS_PATH = Path("/tmp/zynergy_render_check_prefs_dialog3.json")
-            PREFS_PATH.unlink(missing_ok=True)
+            _rc_prefs_dialog3_dir = Path(
+                tempfile.mkdtemp(prefix="zynergy_render_check_prefs_dialog3_"))
+            PREFS_PATH = _rc_prefs_dialog3_dir / "prefs.json"
             orig_annotation_path = _plane_cache._annotations.ANNOTATION_PATH
-            _plane_cache._annotations.ANNOTATION_PATH = Path(
-                "/tmp/zynergy_render_check_prefs_dialog3_annotations.json")
-            _plane_cache._annotations.ANNOTATION_PATH.unlink(missing_ok=True)
+            _plane_cache._annotations.ANNOTATION_PATH = _rc_prefs_dialog3_dir / "annotations.json"
             try:
                 ccam = FakeCamera(async_delay_s=0.0)
                 cache_dlg = PreferencesDialog(ccam)
@@ -7140,6 +7135,7 @@ def render_check():
             finally:
                 PREFS_PATH = orig_prefs_path3
                 _plane_cache._annotations.ANNOTATION_PATH = orig_annotation_path
+                shutil.rmtree(_rc_prefs_dialog3_dir, ignore_errors=True)
             print("Clean cache now check PASS: the real button handler "
                   "removes an unmarked cached plane and retains one with a "
                   "real committed mark, driven through the actual live "
@@ -7158,10 +7154,7 @@ def render_check():
             Path("/a/b/science_frame_0000_green.tif"), \
             "must match debayer.py's own default CLI naming exactly"
 
-        gx_root = Path("/tmp/zynergy_render_check_green_extract")
-        if gx_root.exists():
-            shutil.rmtree(gx_root)
-        gx_root.mkdir(parents=True)
+        gx_root = Path(tempfile.mkdtemp(prefix="zynergy_render_check_green_extract_"))
         gxcam = FakeCamera(async_delay_s=0.0)
         gxwin = FocusPreviewWindow(gxcam, FocusMeter())
         try:
@@ -7208,9 +7201,7 @@ def render_check():
         # calls its worker directly), processEvents() pumped until
         # _capturing clears since both done signals are genuinely queued
         # cross-thread connections too.
-        ex_root = Path("/tmp/zynergy_render_check_export_publish")
-        if ex_root.exists():
-            shutil.rmtree(ex_root)
+        ex_root = Path(tempfile.mkdtemp(prefix="zynergy_render_check_export_publish_"))
         ex_cap_root = ex_root / "captures"
         ex_prov_root = ex_root / "provenance"
         ex_cap_root.mkdir(parents=True)
@@ -7386,9 +7377,7 @@ def render_check():
         # FakeCamera burst, scored against its OWN written frame via
         # calibrate.load_green_plane + focus.score_capture_sharpness --
         # both called for real, nothing mocked here.
-        qc_root = Path("/tmp/zynergy_render_check_qc")
-        if qc_root.exists():
-            shutil.rmtree(qc_root)
+        qc_root = Path(tempfile.mkdtemp(prefix="zynergy_render_check_qc_"))
         qcam = FakeCamera(async_delay_s=0.0)
         qc_session = provenance.Session(qc_root, {}, [])
         qc_result = qcam.capture_burst(qc_session.dir, "science_", 2)
@@ -7703,15 +7692,16 @@ def render_check():
 
             orig_calib_path_lm = _calibrate.CALIBRATION_PATH
             orig_annot_path_lm = _annotations.ANNOTATION_PATH
-            _calibrate.CALIBRATION_PATH = Path(
-                "/tmp/zynergy_render_check_live_measure_calibration.json")
-            _annotations.ANNOTATION_PATH = Path(
-                "/tmp/zynergy_render_check_live_measure_annotations.json")
-            _calibrate.CALIBRATION_PATH.unlink(missing_ok=True)
-            _annotations.ANNOTATION_PATH.unlink(missing_ok=True)
+            _rc_lm_dir = Path(tempfile.mkdtemp(prefix="zynergy_render_check_live_measure_"))
+            _calibrate.CALIBRATION_PATH = _rc_lm_dir / "calibration.json"
+            _annotations.ANNOTATION_PATH = _rc_lm_dir / "annotations.json"
             try:
+                # Never written to disk -- passed through as a recorded string
+                # only, so a stable name under the system temp dir is what's
+                # wanted.
+                fake_dng_lm = str(Path(tempfile.gettempdir()) / "zynergy_render_check_fake.dng")
                 calib_entry = _calibrate.build_calibration_entry(
-                    Path("/tmp/fake.dng"), (0.0, 0.0), (500.0, 0.0), 500.0,
+                    Path(fake_dng_lm), (0.0, 0.0), (500.0, 0.0), 500.0,
                     objective="40x", target_type="stage micrometer", focus_score=300.0)
                 _calibrate.save_calibration("40x", calib_entry)
 
@@ -7856,8 +7846,7 @@ def render_check():
                     else:
                         committed_mark = stored[first_hash]["marks"][0]
                         import tifffile as _rc_tifffile
-                        rc_tif = Path(
-                            "/tmp/zynergy_render_check_commit_roundtrip_plane.tif")
+                        rc_tif = _rc_lm_dir / "commit_roundtrip_plane.tif"
                         _rc_tifffile.imwrite(str(rc_tif), lmwin._live_measure_plane)
                         try:
                             review_win = _measure.ReviewWindow()
@@ -7906,6 +7895,7 @@ def render_check():
             finally:
                 _calibrate.CALIBRATION_PATH = orig_calib_path_lm
                 _annotations.ANNOTATION_PATH = orig_annot_path_lm
+                shutil.rmtree(_rc_lm_dir, ignore_errors=True)
             print("Live measure panel check PASS: native_point_from_preview_click "
                   "scales the real preview-to-sensor fraction into the green "
                   "plane's actual resolution; the freeze-triggering click routes "
@@ -7951,15 +7941,18 @@ def render_check():
 
             orig_calib_path_ff = _calibrate.CALIBRATION_PATH
             orig_annot_path_ff = _annotations.ANNOTATION_PATH
-            _calibrate.CALIBRATION_PATH = Path(
-                "/tmp/zynergy_render_check_live_measure_freeze_fix_calibration.json")
-            _annotations.ANNOTATION_PATH = Path(
-                "/tmp/zynergy_render_check_live_measure_freeze_fix_annotations.json")
-            _calibrate.CALIBRATION_PATH.unlink(missing_ok=True)
-            _annotations.ANNOTATION_PATH.unlink(missing_ok=True)
+            _rc_ff_dir = Path(
+                tempfile.mkdtemp(prefix="zynergy_render_check_live_measure_freeze_fix_"))
+            _calibrate.CALIBRATION_PATH = _rc_ff_dir / "calibration.json"
+            _annotations.ANNOTATION_PATH = _rc_ff_dir / "annotations.json"
             try:
+                # Never written to disk -- passed through as a recorded string
+                # only, so a stable name under the system temp dir is what's
+                # wanted.
+                fake_dng_ff = str(
+                    Path(tempfile.gettempdir()) / "zynergy_render_check_fake_freeze_fix.dng")
                 calib_entry_ff = _calibrate.build_calibration_entry(
-                    Path("/tmp/fake_freeze_fix.dng"), (0.0, 0.0), (500.0, 0.0), 500.0,
+                    Path(fake_dng_ff), (0.0, 0.0), (500.0, 0.0), 500.0,
                     objective="40x", target_type="stage micrometer", focus_score=300.0)
                 _calibrate.save_calibration("40x", calib_entry_ff)
 
@@ -8143,6 +8136,7 @@ def render_check():
             finally:
                 _calibrate.CALIBRATION_PATH = orig_calib_path_ff
                 _annotations.ANNOTATION_PATH = orig_annot_path_ff
+                shutil.rmtree(_rc_ff_dir, ignore_errors=True)
 
             # --- Frozen-canvas fit coverage (PLAN_live_measure_canvas_fit) ---
             # Direct _LiveMeasureCanvas unit tests, not routed through a full
@@ -8522,6 +8516,8 @@ def render_check():
         # --- end Live Measuring check -----------------------------------------
 
     provenance.PROFILE_PATH = _orig_profile_path_for_render_check
+    shutil.rmtree(_rc_profile_dir, ignore_errors=True)
+    shutil.rmtree(_rc_state_root, ignore_errors=True)
 
 
 if __name__ == "__main__":

@@ -1602,6 +1602,9 @@ def assert_only_camera_backend_imports_sensor_profiles():
 if __name__ == "__main__":
     # Self-check with no hardware: sweep the fake through focus, exercise the
     # exposure surface, the async capture path, and the two burst primitives.
+    import shutil
+    import tempfile
+
     def _lap_var(a: np.ndarray) -> float:
         k = np.array([[0, 1, 0], [1, -4, 1], [0, 1, 0]], dtype=np.float32)
         p = np.pad(a, 1, mode="reflect")
@@ -1613,6 +1616,7 @@ if __name__ == "__main__":
         return float(out.var())
 
     cam = FakeCamera()
+    rc_root = Path(tempfile.mkdtemp(prefix="zynergy_camera_backend_render_check_"))
     with cam:
         print("focus_position -> laplacian variance (fake, peaks at best_focus=0):")
         for z in [-3, -2, -1, 0, 1, 2, 3]:
@@ -1622,7 +1626,7 @@ if __name__ == "__main__":
         cam.set_overlay(np.zeros((10, 10, 4), dtype=np.uint8))
         print("overlay set:", cam.last_overlay is not None)
 
-        p = cam.capture_still(Path("/tmp/zynergy_fake"), "selfcheck")
+        p = cam.capture_still(rc_root / "fake", "selfcheck")
         print("still written:", p)
 
         # Non-blocking capture (fake): fire it, wait for the callback (which lands
@@ -1635,7 +1639,7 @@ if __name__ == "__main__":
             delivered["result"] = result
             done.set()
 
-        cam.capture_still_async(Path("/tmp/zynergy_fake"), "selfcheck_async", _on_capture)
+        cam.capture_still_async(rc_root / "fake", "selfcheck_async", _on_capture)
         fired = done.wait(timeout=2.0)
         assert fired and isinstance(delivered["result"], CaptureResult), \
             "async capture did not deliver a CaptureResult"
@@ -1664,7 +1668,7 @@ if __name__ == "__main__":
 
         # Burst: flat/science/dark-style single-exposure burst. One call, n frames,
         # all reporting the same actual_us.
-        burst_dir = Path("/tmp/zynergy_fake_burst")
+        burst_dir = rc_root / "fake_burst"
         b = cam.capture_burst(burst_dir, "flat_", 3, shutter_us=5000)
         assert b["actual_us"] == 5000, "capture_burst did not honor the explicit shutter_us"
         assert len(b["frames"]) == 3, "capture_burst frame count off"
@@ -1696,7 +1700,7 @@ if __name__ == "__main__":
         # is_recording() tracking correctly. Not a measurement path, so just
         # the file lifecycle matters here, not its content.
         assert cam.is_recording() is False, "a fresh camera should not be recording"
-        vid_dir = Path("/tmp/zynergy_fake_video")
+        vid_dir = rc_root / "fake_video"
         vpath = cam.start_recording(vid_dir, "clip_0001")
         assert vpath.exists() and vpath.suffix == ".mp4", "start_recording did not write an .mp4"
         assert cam.is_recording() is True
@@ -2006,4 +2010,5 @@ if __name__ == "__main__":
               "wrongly-cased, or unsafe model string fails loudly rather "
               "than silently falling back to IMX477 geometry")
 
+        shutil.rmtree(rc_root, ignore_errors=True)
         print("camera_backend self-check PASS")
