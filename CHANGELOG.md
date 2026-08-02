@@ -7,6 +7,79 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-02
 
+### Record intent: tempfile sweep, self-check harnesses
+
+Own branch off `main`, after the Qt environment defaults work landed.
+
+**Problem.** Production paths are already portable — they use
+`Path.home()`. The self-check harnesses are not: every one of them
+hardcodes a POSIX `/tmp` path. Net effect is that the application is
+more portable than its own test suite. On Windows the app would likely
+launch fine while every `--render-check` failed outright (no `/tmp` to
+resolve), which reads as catastrophe and is not one — it says nothing
+about whether the app itself works there.
+
+**Baseline, re-measured, not trusted from any prior clone** (`grep -rn
+"/tmp" --include="*.py" .`, then per-file counts via `grep -c`):
+
+| File | Sites |
+|---|---|
+| `qt_shell.py` | 24 |
+| `calibrate.py` | 11 |
+| `provenance.py` | 10 |
+| `measure.py` | 10 |
+| `annotations.py` | 5 |
+| `camera_backend.py` | 4 |
+| `ca_measure.py` | 3 |
+| `plane_cache.py` | 1 |
+| **Total** | **68** |
+
+No other file in the tree (any extension, not just `.py`) contains the
+literal `/tmp` — confirmed with an unrestricted `grep -rl`, not just the
+`.py` glob above.
+
+**Load-bearing claim confirmed before building on it: every site is
+harness-only, none are in a production path.** For the seven modules
+with a `render_check()` function (`plane_cache.py`, `calibrate.py`,
+`annotations.py`, `provenance.py`, `ca_measure.py`, `qt_shell.py`,
+`measure.py`), every `/tmp` site was traced to a line number strictly
+between that function's `def render_check():` and the next top-level
+`def` in the file (verified with `awk '/^def /{print NR}'` bracketing,
+not by eyeballing) — none sit outside it. `camera_backend.py` has no
+`render_check()`; its four sites are module-level statements inside `if
+__name__ == "__main__":`, guarded by that same self-check-only
+condition, just not wrapped in a named function — noted here so the
+build step doesn't apply `render_check()`-shaped reasoning to it by
+habit. This holds: nothing above is reachable from an import of any of
+these eight modules, only from running one directly (with
+`--render-check` where the module gates on it, unconditionally for
+`camera_backend.py`). No STOP condition triggered.
+
+**Plan.** Replace every hardcoded `/tmp` literal with
+`tempfile.mkdtemp()` for a directory that gets created and written into,
+and `tempfile.gettempdir()` for a path where a stable, predictable name
+is genuinely wanted — chiefly the handful of fake source-image paths
+(`/tmp/fake.dng` and siblings) that are never written to disk, only
+recorded as a string and compared against later; there is no directory
+to create there and no multi-user collision is possible against a path
+nothing ever touches. `mkdtemp` is the default everywhere else: a fixed
+name in a shared, world-writable `/tmp` is its own bug on a multi-user
+machine independent of the Windows/macOS portability problem this sweep
+is actually about, and `mkdtemp` costs nothing a fixed name doesn't
+already pay for in setup.
+
+**Scope.** The eight files named in the baseline table, harness code
+only — `render_check()` in seven of them, the `if __name__ ==
+"__main__":` self-check block in `camera_backend.py`. No production
+path. No behaviour change to what any check asserts: where a check
+currently compares against a literal `/tmp/...` string (`calibrate.py`'s
+`source_image` round-trip is the one place this happens), the assertion
+moves to comparing against the same variable that built the path, not a
+second hardcoded literal — same claim checked, portable either way.
+Cleanup behavior (whether a harness removes what it creates) and the
+`camera_backend.py` module-level shape are both decided explicitly in
+the build step, not left as defaults.
+
 ### Record correction: the intent entry's baseline was sandbox-measured, not the rig's — plus a discovered palette effect
 
 **Supersedes `73537fa`** ("Record intent: Qt environment defaults,
