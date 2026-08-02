@@ -5849,6 +5849,21 @@ def render_check():
     provenance.OUT_ROOT = _rc_state_root / "capture_root"
     provenance.FLAT_ROOT = _rc_state_root / "flat_root"
 
+    # Function-index freshness guard, wired into this module's own
+    # render_check() specifically because qt_shell.py --render-check is
+    # the check an agent already reaches for -- a guard that exists but is
+    # never called from anywhere real has burned this project three times
+    # (see PHILOSOPHY.md's "a self-check must reach the code the way the
+    # application reaches it"), and function_index.py's own --render-check
+    # is a new entry point nobody's habitual workflow runs yet.
+    try:
+        from . import function_index as _function_index
+    except ImportError:
+        import function_index as _function_index
+    _function_index.assert_function_index_current()
+    print("assert_function_index_current check PASS: FUNCTION_INDEX.md "
+          "matches a fresh regeneration of the tree")
+
     box = FocusBox.centered(0.5, 0.4)
     bar = BarState(fill=0.5, current=0.02, hi=0.03, lo=0.0, at_peak=False, settled=True)
     st = FocusState(valid=True, source="green", raw=0.02, smoothed=0.02, bar=bar)
