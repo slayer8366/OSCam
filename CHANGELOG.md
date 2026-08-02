@@ -7,6 +7,70 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-02
 
+### Record build: Qt environment defaults, platform-conditional
+
+Built exactly to the intent recorded below, no correction needed.
+
+**Against the plan:** `qt_shell.py`'s environment-defaults block, still
+at line 83 as recorded (verified on open, unchanged). The existing
+`QT_QPA_PLATFORM=xcb` setdefault and a new `QT_QPA_PLATFORMTHEME=gtk3`
+setdefault both now sit under `if sys.platform.startswith("linux"):`.
+`sys` was already imported at line 62 — no new import needed, matching
+the intent's expectation that it might be. The comment above the block
+was rewritten in the same commit: a new lead sentence states both lines
+are Linux-only and why, the original XWayland/nested-native-window
+paragraph is unchanged prose, and a new paragraph carries the gtk3
+rationale — line 71's "still wins" claim stays true of both setdefaults
+now, not just the one it originally described. Scope held: `qt_shell.py`
+only in the build commit, nothing else touched.
+
+**DISCOVERED: no matching HANDOFF.md backlog line existed to remove.**
+The intent's record-build step said to "remove the QPA platform default
+from the backlog, since it is now done," but grepping `HANDOFF.md` for
+`gtk3`, `platformtheme`, `font`, and the general backlog/known-limitation
+sections found no prior entry describing this issue under any wording —
+it was never logged as a tracked backlog item in this repo. There is
+nothing to delete, so nothing was deleted. What HANDOFF gets instead is
+the thing it's actually for: a new note under "Things that will bite you
+if you don't know them" recording the fix, the root cause, and that it
+is self-check-verified only, not yet confirmed on-rig. This is a fact
+about the repo's documentation state, not about a line of code, so it
+gets no `# CAVEAT:` — the discovery is recorded here and in HANDOFF
+itself, which is where a future agent would actually look.
+
+**DISCOVERED: this sandbox was missing `numpy`, `tifffile`, `PyQt6`, and
+`Pillow`**, none of which are a fact about any line of this project's own
+code — a from-scratch container without the project's runtime installed.
+Installed all four to run the self-checks and the baseline/acceptance
+measurements; nothing about the fix required them. `Pillow`'s absence is
+already self-documented in `hdr_from_session.py`'s own error message
+("Pillow missing for PNG/JPG"), so no new `# CAVEAT:` was warranted
+there either — the existing message already says exactly this.
+
+**Acceptance:**
+
+- `python3 camera_backend.py --render-check` and all 16 modules'
+  `--render-check`, including `qt_shell.py`'s, pass, exit 0 (`qt_shell.py`
+  needed `Pillow` installed first, per the discovery above; confirmed the
+  same assertion fails identically on the pre-edit tree, so it isn't a
+  regression from this change).
+- **The actual test, run and passing:** with `QT_QPA_PLATFORM` and
+  `QT_QPA_PLATFORMTHEME` both unset in the ambient environment, importing
+  `qt_shell` (which runs the new module-level block) and then
+  constructing a `QApplication` reports platform `xcb`,
+  `QT_QPA_PLATFORMTHEME` now `gtk3` in `os.environ`, and font `Sans 10.0`
+  — matching the "variable set manually" baseline exactly (`Sans 10.0`),
+  not the no-theme baseline (`Sans Serif 9.0`). A sanity check the other
+  direction confirms `setdefault` doesn't override an explicit value:
+  forcing `QT_QPA_PLATFORMTHEME=""` before import leaves it empty after
+  import and reproduces the no-theme font exactly.
+- **This exercises the mechanism, not the rig.** It's an import +
+  `QApplication` construction in this sandbox (no dbus, no gtk3 session,
+  no labwc), not a full interactive launch and not the actual hardware —
+  nobody has run this on Mac, Windows, or the rig itself. The Linux
+  branch's logic is verified; the two platform branches are not, and
+  are not described as verified anywhere above.
+
 ### Record intent: Qt environment defaults, platform-conditional
 
 First change built under the intent/build/record-build convention with

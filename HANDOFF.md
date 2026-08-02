@@ -2664,6 +2664,27 @@ trustworthy**:
 
 ## Things that will bite you if you don't know them
 
+**Qt environment defaults are now platform-conditional (2026-08-02) —
+the labwc font-scaling gap is fixed.** `qt_shell.py`'s module-level
+environment-defaults block used to run unconditionally; it's now gated
+on `sys.platform.startswith("linux")`. The existing `QT_QPA_PLATFORM=xcb`
+setdefault moved inside that gate, and a new
+`QT_QPA_PLATFORMTHEME=gtk3` setdefault joined it. Root cause:
+`qt6-gtk-platformtheme` is installed on the rig, but labwc doesn't
+advertise itself in a way Qt maps to `gtk3` on its own, so
+`QT_QPA_PLATFORMTHEME` never got a value and Qt fell back to its own
+built-in default font — and since this app's layout is entirely
+font-metric-driven (no `setFont`/`QFont`/`setPointSize` anywhere), the
+whole UI rendered smaller than the rest of the desktop. Both stay
+`setdefault`, so a desktop that already exports `QT_QPA_PLATFORMTHEME`
+(KDE, for instance) is unaffected, and Mac/Windows never enter the
+Linux-only branch at all. See `CHANGELOG.md`'s "Qt environment defaults"
+series for the measured before/after and the full intent/build/
+record-build record. **Not yet confirmed on-rig** — self-check only so
+far; the acceptance test (launch with no `QT_QPA_PLATFORMTHEME` set, UI
+should render at the same size as with it set manually) still needs a
+real labwc session.
+
 **`qt_shell.py`'s `render_check()` now monkeypatches `PROFILE_PATH` for
 its ENTIRE duration, and that's load-bearing — don't remove it.**
 `save_profile()` writes the SHARED, single `~/imx/profile.json` (real
