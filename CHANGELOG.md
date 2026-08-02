@@ -7,6 +7,33 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-02
 
+### Record note: build-order concern raised against `efb4215`, checked
+
+Single entry, no intent phase — this records a check against already-landed
+work, not new work of its own, per the convention's outcome-only carve-out.
+Per the project's own append-only rule, `efb4215` (the intent entry below)
+is not edited; this entry stands beside it instead.
+
+A review raised a concern that the intent commit below had been preceded
+by build work — the three-phase convention requires the CHANGELOG intent
+entry to be committed "before any other file is touched," and building
+first would invert that.
+
+**Checked against the actual git history, not assumed either way:**
+`git log` and `git status` at the time of the check showed exactly one new
+commit on this branch, `efb4215` (CHANGELOG.md only, the intent entry
+below), and a single untracked, uncommitted file, `function_index.py` —
+no prior commit touching that file, and nothing else modified. `efb4215`'s
+own diff (`git show --stat`) confirms it touches `CHANGELOG.md` alone. By
+the repository's history, the intent commit landed before the build file
+existed on disk, and no build file was ever committed ahead of it.
+
+**Action taken regardless, per direct instruction:** the uncommitted
+`function_index.py` draft that predated this note is discarded outright,
+not reused. The build phase starts fresh from this point, on top of
+`efb4215` and this note, so there is no ambiguity left about what was
+written before what was recorded.
+
 ### Record intent: generated per-module function index, with a freshness guard
 
 Own branch off `main`: `claude/function-index-generator-avl3i0`. (This
