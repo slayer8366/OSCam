@@ -7,6 +7,44 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-02
 
+### Record confirmation: other `QT_QPA_PLATFORM` sites in `qt_shell.py` don't assume line 83/98 ran
+
+Single entry, no intent phase — this confirms already-built code rather
+than building anything, per the convention's own carve-out for outcome-
+only work. Prompted by a review question after the platform-conditional
+change landed (previous entry, below): does anything else in the file
+read `QT_QPA_PLATFORM` expecting the module-level `setdefault` to have
+already set it, now that the setdefault is Linux-only?
+
+Checked every site (`grep -n "QT_QPA_PLATFORM" qt_shell.py`):
+
+- `_onboarding_session_is_interactive` (~line 1135) reads
+  `os.environ.get("QT_QPA_PLATFORM", "")` live, defaulting to `""`.
+  Absent (non-Linux, or Linux with the var genuinely unset) resolves to
+  `""`, which isn't `"offscreen"`/`"minimal"`, so it falls through to
+  the function's own documented "errs toward interactive" behavior. No
+  dependency on line 83/98 having run.
+- The docstring at ~line 3883 (`_maybe_show_onboarding_gate`) is prose
+  describing that function, not a read site itself.
+- The three self-check blocks (~5965, ~6067, ~6102) each save whatever
+  `QT_QPA_PLATFORM` currently is, **directly assign** their own test
+  values (`os.environ["QT_QPA_PLATFORM"] = "xcb"`, `"offscreen"`, etc.
+  — not `setdefault`), and restore the original in `finally`. Fully
+  self-contained regardless of what ran at import time.
+
+Nothing reads `QT_QPA_PLATFORMTHEME` anywhere in the file except the two
+lines that set it (line 89-99 comment block and the setdefault itself,
+same grep).
+
+**Verified, not just reasoned through:** `python3 qt_shell.py
+--render-check`'s log shows the exact assertions at all of the above
+sites executing and passing against the edited tree —
+`_onboarding_session_is_interactive check PASS` (both variants) and the
+three `Onboarding gate ... check PASS` lines. No code change was needed;
+nothing here is a defect, so nothing was fixed and no `# CAVEAT:` was
+added — none of these sites is fragile or non-obvious in a way a future
+reader would trip over, they were simply confirmed unaffected.
+
 ### Record build: Qt environment defaults, platform-conditional
 
 Built exactly to the intent recorded below, no correction needed.
