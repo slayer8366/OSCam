@@ -98,16 +98,25 @@ aberration calibration currently runs standalone only — see *Known
 limitations* below.)
 
 Every module with real logic has a headless self-check. Run the whole
-set before trusting anything:
+set before trusting anything (this list was stale for a while — verify it
+against `grep -l 'def render_check' *.py` if a new module's check isn't
+running):
 ```bash
 for m in pixel_hash annotations export publish calibrate measure ca_measure \
-        wizard_pages qt_shell stacks focus; do
+        wizard_pages qt_shell stacks focus gallery process_wizard \
+        provenance camera_backend plane_cache function_index; do
   DISPLAY=:0 python3 $m.py --render-check || echo "FAILED: $m"
 done
 ```
 `qt_shell.py` and `measure.py` have PyQt6-gated checks that print
 `SKIPPED` rather than `FAILED` when PyQt6 isn't importable — that's
-expected, not a bug to chase.
+expected, not a bug to chase. `camera_backend.py` self-checks
+unconditionally on any invocation (it ignores `--render-check` rather than
+requiring it), so it's harmless to include in this loop with everyone
+else. `function_index.py --render-check` regenerates `FUNCTION_INDEX.md`
+in memory and fails if it disagrees with the committed copy — see
+`FUNCTION_INDEX.md` for a generated, per-module map of top-level
+functions/classes and their `# CAVEAT:` comments.
 
 ## Architecture
 
