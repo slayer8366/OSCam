@@ -7,6 +7,198 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-02
 
+### Record build: HANDOFF.md restructure, part 1 — fix the confirmed-stale sections
+
+Built to the intent recorded below, no deviation.
+
+**Against the counted baseline (3100 lines / section 1 289 lines / section
+2 200 lines):** `HANDOFF.md` is now 2899 lines (-201). Section 1 (the
+former "READ FIRST: the Qt6 port is on a branch" heading) is now 83 lines
+under a new heading, "PyQt6 (the UI layer runs on PyQt6, not PyQt5)"
+(-206 lines). Section 2 (the click-mapping fix's status) stayed 200 lines
+— three surgical edits (title, the interim-workaround paragraph, the
+closing on-rig-status paragraph), not a rewrite, so the length didn't
+move. Line 3061's stray `PyQt5` is now `PyQt6`, confirmed the only
+in-scope occurrence (`grep -n "PyQt5" HANDOFF.md` before editing showed
+the other five at lines 1523-1525/2132/2769, all inside the untouched
+"Part N" narrative, exactly as the intent's baseline said).
+
+**What was preserved versus compressed, checked against the plan:**
+
+- The 9-item out-of-scope/known-problems list: preserved verbatim, "for
+  the port" framing dropped, still the section CHANGELOG's own 2026-07-29
+  entry points back to.
+- The 4-item on-rig-bench backlog: compressed from full paragraphs (each
+  with a **Reproduced on `main`**/**Not A/B'd** qualifier and, for item 4,
+  the full numeric table) to one-line-each, since the full readings are
+  verbatim in `CHANGELOG.md`'s on-rig confirmation entry already. The
+  qualifiers themselves were kept (pre-existing / not confirmed either
+  way / not established) since those are the load-bearing classification,
+  not just color.
+- The flag-comparison gotcha and `pos()`-vs-`position()` decision: kept
+  prominent, condensed from ~85 combined lines to ~30, folded directly
+  into the new short section rather than kept as their own headings.
+- Everything else in the original 289 lines (the port's own mechanical
+  changes — enum-scoping counts, `exec_()` counts — the verification-state
+  bookkeeping, the full binding-fix narrative): dropped to pointers.
+  Checked against `CHANGELOG.md` before dropping, not assumed: the enum/
+  `exec_()`/`ev.pos()` breakdown is in the 2026-07-29 "Build: PyQt5 to
+  PyQt6 port" entry in more detail than `HANDOFF.md` carried; the
+  verification-state and light/deep-verification lists are in the
+  2026-08-01 "Record on-rig confirmation" entry with the actual readings
+  `HANDOFF.md` only pointed at; the binding-fix root cause and fix are in
+  the 2026-08-01 "picamera2 Qt binding selection" entries and now also
+  live as a `# CAVEAT:` comment in `camera_backend.py:769` itself
+  (harvested into `FUNCTION_INDEX.md`) — triply covered, safe to compress
+  to a pointer.
+
+**DISCOVERED, while re-checking the click-mapping section's on-rig
+status**: the section's own "Static crop table" paragraph makes a claim
+narrower than "the fix works" — that the table's per-mode crop rectangles
+were derived by arithmetic, "not independently confirmed against a real
+`crop_limits` read." The 2026-08-01 on-rig entry confirms the *conversion
+formula* end to end (a real specimen measurement agreeing across two
+independently calibrated objectives), which necessarily ran through
+`Picamera2Camera`'s real `crop_limits`, not the static fallback table —
+but nothing in that entry explicitly logs the raw `crop_limits` value
+against the table's derived numbers for a side-by-side check. The
+correction written into `HANDOFF.md` says what's actually confirmed (the
+fix works on-rig) without overclaiming the narrower, unconfirmed point
+(the fallback table's exact numbers were never explicitly cross-printed).
+Not a new problem — a precision fix to what the record now claims.
+
+**Acceptance, verified:**
+
+- Full `--render-check` sweep, all 17 modules (the 16 pre-existing plus
+  `function_index`), exit 0 — proves "documentation only" rather than
+  just asserting it, same discipline `PHILOSOPHY.md`'s own three-phase
+  entries hold themselves to.
+- No stale `port/pyqt6`-as-a-live-branch claim remains: `grep -n
+  "port/pyqt6" HANDOFF.md` returns exactly one line, the new section's
+  own "no longer exists" sentence.
+- No present-tense "this project is PyQt5" claim remains (`grep -n "is
+  PyQt5" HANDOFF.md` returns nothing).
+- The two still-open click-mapping caveats (second preview resolution
+  untested, static table not cross-printed against a real `crop_limits`
+  read) are stated as open, not glossed over by the correction.
+
+**Out of scope, confirmed untouched:** the ~2250-line "Part N — BUILT"
+narrative (lines 240-2494 in the current file) — zero lines changed
+there, verified by the commit diff itself (`+90/-291`, all of it inside
+the two sections named above; `git diff --stat` on the build commit shows
+one file, `HANDOFF.md`, nothing else). That compression is its own piece,
+gated on a section-by-section `CHANGELOG.md` coverage check, not started
+here.
+
+### Record intent: HANDOFF.md restructure, part 1 — fix the confirmed-stale sections
+
+Own branch off `main`: `claude/handoff-restructure-part1`. Prompted by a
+status audit of `HANDOFF.md` (3100 lines) run against current code state,
+`git log`, and `CHANGELOG.md` — not a scheduled task, a review finding.
+
+**Problem, three confirmed-stale items, verified against current state
+rather than assumed:**
+
+1. **Lines 25-313 (289 lines), "READ FIRST: the Qt6 port is on a branch
+   (`port/pyqt6`)".** Says "If you are on `main`, this project is PyQt5."
+   False today: `qt_shell.py` imports PyQt6 on `main` (`grep -n "from
+   PyQt" qt_shell.py`), `camera_backend.py:769` already carries the
+   `QGl6Picamera2` binding fix, and `git log --oneline main` shows the
+   port's build/record-build/on-rig-confirmation commits and the binding
+   fix's own series already in `main`'s linear history — not a merge
+   commit from a separate branch, direct history. `port/pyqt6` does not
+   exist in `git branch -a`. The whole section describes a bifurcated
+   state that stopped being true a while ago.
+2. **Lines 2847-3046 (200 lines), "PRIORITY: preview-to-green-plane click
+   mapping is wrong — BUILT".** Says "On-rig verification is explicitly
+   NOT done by this session... keep using the interim workaround" (press
+   Escape, place both measurement points manually on the frozen canvas).
+   `CHANGELOG.md`'s 2026-08-01 "Record on-rig confirmation: PyQt5 to PyQt6
+   port" entry confirms this exact fix on-rig with real stage-micrometer
+   and specimen readings (40x measurement within 1% of the 4x
+   calibration). Telling a reader to keep using a workaround for an
+   already-fixed bug is actively misleading, not merely outdated.
+3. **Line 3061**, "Design conventions worth knowing": "(mostly) no
+   PyQt5" — the codebase is PyQt6 throughout now (see item 1).
+
+**Coverage check, since compressing without one is exactly the "trust the
+history is elsewhere" gap this task's own review flagged:** cross-checked
+what's actually duplicated in `CHANGELOG.md` before deciding what's safe
+to compress versus what must be preserved.
+
+- The flag-comparison gotcha (`Qt.MouseButton.LeftButton == 1` is False,
+  etc.) — present verbatim in `CHANGELOG.md:1400-1401` ("Build: PyQt5 to
+  PyQt6 port"). Safe to compress in `HANDOFF.md`, though it stays
+  prominent (it's exactly the kind of thing a future agent writing new
+  event-handling code needs to see before, not after, hitting it).
+- The `pos()`-vs-`position()` deferred decision — present in the same
+  entry. Same treatment: compress, keep visible, since it's a live,
+  unresolved future decision, not closed history.
+- The on-rig-bench backlog (ROI box jump, focus-aid Z-stack rebase, GL
+  viewport DPI-resize gap, field-scale gradient) — present **verbatim**,
+  word for word, in `CHANGELOG.md`'s "Record on-rig confirmation" entry.
+  Safe to compress to a short list; these are still-open bugs, so they
+  stay listed, just not re-narrated in full.
+- **The 9-item out-of-scope/known-problems list (`GREEN_PLANE_RES`
+  duplication, the `qt_shell.py:3452` bug, hardcoded green-plane shapes,
+  missing mono/no-CFA path, BGGR assumption, `FULL_MODE_LBL`, the open
+  `G_IS_OBJECT` assertion, capture-logic extraction, `provenance.py`
+  phase 2) is NOT duplicated in `CHANGELOG.md`.** `CHANGELOG.md:1353`
+  ("Record intent: PyQt5 to PyQt6 port") says outright: "the out-of-scope
+  list is the one handed over in the port brief and it is reproduced in
+  `HANDOFF.md` under the port section" — `HANDOFF.md` is the canonical
+  copy CHANGELOG itself points to. This list is preserved, not deleted,
+  just reframed without the now-meaningless "for the port" framing (the
+  port is done; these are just still-open problems).
+- **A correction to this session's own earlier read of a fourth item:**
+  the audit initially flagged `wizard_pages.py`/`test_burst_backend.py`
+  importing `picamera2` directly as an unresolved boundary violation.
+  Checked against `camera_backend.py:1524-1547`
+  (`assert_only_camera_backend_imports_picamera2`) directly: both are a
+  documented, hardcoded exception set (`exceptions = {"wizard_pages.py",
+  "test_burst_backend.py"}`), reasoned in the function's own docstring.
+  The guard is honest, not holed — not a live bug, so it is dropped from
+  this piece's scope entirely, not carried forward as a finding. Worth
+  noting for whoever looks at this later: that exception set is
+  maintained by hand, unlike its sibling
+  `_sensor_profile_module_names` (same file), which discovers
+  sensor-profile modules by shape specifically so nothing has to be
+  remembered. Whether the two `picamera2` exceptions can be brought
+  inside the boundary the same way — `wizard_pages.py`'s probe in
+  particular, since `get_capabilities()` may now be able to answer it —
+  is worth a look eventually. Not decided or scoped here.
+
+**Plan.** Rewrite lines 25-313 into a short current-state section: port
+status in a few sentences (merged, on-rig confirmed, pointer to
+`CHANGELOG.md`), the two still-relevant Qt6 gotchas condensed but kept
+visible, the 9-item known-problems list preserved with the "for the port"
+framing dropped, the 4-item bench backlog compressed to a short list.
+Surgically fix the two stale status paragraphs in lines 2847-3046 (the
+"BUILT" title and the two "not yet on-rig" paragraphs) without touching
+the rest of that section's technical detail, which is accurate. Fix line
+3061's PyQt5 mention.
+
+**Scope, deliberately split from the larger restructure question, per
+direct instruction:** this piece is items 1-3 above (the confirmed-stale
+material) plus surfacing item 4's genuinely-open content correctly (minus
+the picamera2-boundary claim, corrected above). Explicitly NOT in scope:
+the ~2250-line "Part N — BUILT" narrative in lines 446-2700 (~15
+sections) — compressing those needs its own coverage check, section by
+section, against `CHANGELOG.md`, which is real judgment work for its own
+piece, not something to fold into this one. That is exactly the same
+shape of unbounded excursion the function-index work's own instructions
+warned against for `HANDOFF.md`'s "things that will bite you" section —
+the parallel holds here too, and the fix is the same: split the work,
+don't rush the part that needs a count.
+
+**Baseline, measured before any file was touched:** `HANDOFF.md` is 3100
+lines. Section 1 (lines 25-313) is 289 lines. Section 2 (lines 2847-3046)
+is 200 lines. One `PyQt5` mention at line 3061 in scope; five other
+`PyQt5` mentions elsewhere in the file (lines 1523-1525, 2132, 2769) are
+inside the out-of-scope "Part N" narrative, describing historically
+accurate PyQt5-era state at the time they were written, and are left
+alone.
+
 ### Record build: generated per-module function index, with a freshness guard
 
 Built to the intent recorded in `6402a4b`, from the clean tree the note
