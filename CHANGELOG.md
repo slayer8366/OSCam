@@ -7,6 +7,71 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-02
 
+### Record verification: tempfile sweep, self-check harnesses — PASS-line parity across all eight modules
+
+Single entry, no intent phase — this checks already-built, already-landed
+code (the intent/build/record-build series below), not new work, per the
+convention's own carve-out for outcome-only work.
+
+**What was compared.** The record-build entry below ran a byte-for-byte
+PASS-line diff against the pre-edit tree for `qt_shell.py` only. Exit 0
+and zero `SKIPPED` across all eight modules proved the checks still
+pass; it did not prove they still assert the same things — a converted
+temp path or an added cleanup call could in principle sit next to a
+quietly loosened assertion and still exit clean. That gap is closed here
+for the remaining seven: `calibrate.py`, `provenance.py`, `measure.py`,
+`annotations.py`, `camera_backend.py`, `ca_measure.py`, `plane_cache.py`.
+
+**Method.** Each module's `--render-check` (`camera_backend.py`: plain
+run, it takes no flag) captured on the pre-edit tree (`184ae2e`, checked
+out into its own worktree) and on this branch, same session, same
+environment: **`xvfb-run` plus this sandbox's installed `libegl1`,
+`libegl-mesa0`, `libxcb-cursor0`, `libxkbcommon-x11-0`, `libxcb-icccm4`,
+`libxcb-keysyms1`, `libxcb-shape0`** — the same set the record-build
+entry below names, not a bare rig. `measure.py` specifically needs this
+set to construct a real `QApplication` rather than silently skip its
+Qt-gated checks; the other six modules don't touch Qt in their self-check
+and ran without `xvfb-run`. `... PASS` lines extracted from both logs and
+diffed; `SKIPPED` lines diffed the same way.
+
+**Result: identical on all seven, both PASS lines and SKIPPED lines
+(empty on both, every module).** `calibrate.py` 9, `provenance.py` 9,
+`annotations.py` 7, `camera_backend.py` 16, `ca_measure.py` 7,
+`plane_cache.py` 8, `measure.py` 13 — line-for-line matches, not just
+matching counts. `measure.py` mattered most going in: cleanup was added
+inside its ~250-line calibration-gating block (one `tmp_dir` shared
+across the calibration store, two nested annotation-store swaps, and two
+standalone image files) — exactly the size of block where a changed
+assertion hides behind a green result. It didn't happen here. Combined
+with `qt_shell.py`'s own diff in the record-build entry below, all eight
+modules now carry this same confirmation.
+
+**What this establishes, and what it doesn't.** The sweep is justified
+by a claim about Windows: that the application would likely launch there
+while every self-check failed outright, since none of these eight
+modules could resolve a hardcoded POSIX `/tmp` path. What landed removes
+that specific, known blocker — `tempfile.mkdtemp()`/`tempfile.
+gettempdir()` are documented cross-platform, and nothing in this sweep
+is Linux-conditional. **It does not establish that these harnesses
+actually pass on Windows or macOS.** Nobody has run either. Worth
+stating here, not only as a caveat attached to this entry, since
+"removes a known blocker" and "confirmed portable" read as the same
+claim once a changelog entry is skimmed rather than read in full, and
+only the first one is true of this work.
+
+**Cleanup deviation, already on record below, re-confirmed here.** The
+record-build entry already states plainly that converting to
+`mkdtemp()` without adding cleanup would have turned several sites'
+previously-bounded leak (one fixed name, overwritten each run) into an
+unbounded one (a fresh unique name every run, nothing to find the old
+one), so cleanup was added alongside the conversion at every site that
+lacked it — a necessary deviation from a literal reading of "just swap
+the path," not scope creep. Re-confirmed independently in this session:
+cleared `/tmp` of every `zynergy_*` entry, ran all eight modules back to
+back from a clean slate, swept again — zero entries left, the same
+result the record-build entry reports, reproduced rather than assumed
+still true.
+
 ### Record build: tempfile sweep, self-check harnesses
 
 Built to the intent recorded below, no scope change — every site named
