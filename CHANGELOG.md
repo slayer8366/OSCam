@@ -7,6 +7,39 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-02
 
+### Record note: `6402a4b` itself was written after build activity, corrected per `PHILOSOPHY.md`'s own remedy
+
+Single entry, no intent phase — this records a correction to process, not
+new feature work. `6402a4b` (below) is not edited, per the append-only
+rule; this entry stands beside it.
+
+**The defect.** `6402a4b`'s own commit diff touches only `CHANGELOG.md`,
+so it looked correctly ordered by commit boundaries alone. It wasn't. By
+the time it was written, `function_index.py` had already been rebuilt from
+scratch, run repeatedly, used to generate `FUNCTION_INDEX.md`, exercised
+to demonstrate the freshness guard both failing and passing, and
+`README.md`'s sweep loop had already been edited — all of it sitting
+uncommitted on disk. `6402a4b` describes a plan for work already done, not
+work about to start. `PHILOSOPHY.md` requires intent recorded "before the
+build begins," which is a stronger claim than "before the build is
+committed," and this failed the stronger one.
+
+**Remedy applied, verbatim from `PHILOSOPHY.md`:** *"If intent wasn't
+recorded before the build... undo only the building that was done and
+start over — keep every record, including the one that shows the false
+start."* `function_index.py` and `FUNCTION_INDEX.md` were deleted and
+`README.md`'s edit reverted (`git checkout`), leaving a clean working tree
+with only the three CHANGELOG commits (`efb4215`, `0d41d65`, `6402a4b`) on
+top of this branch's prior history — verified with `git status --short`
+returning nothing. `6402a4b` is kept, unedited, as the record of what was
+believed and planned; this entry is the correction, not a replacement.
+
+**What actually changes going forward:** nothing about `6402a4b`'s
+content is disputed — problem, baseline, plan, scope, and the two
+deliberate decisions all still stand as the current intent. The build
+starts now, for real, from the clean tree this entry confirms, with
+nothing pre-built to describe in hindsight.
+
 ### Record intent, redone: generated per-module function index, with a freshness guard
 
 **Supersedes `efb4215`** ("Record intent: generated per-module function
