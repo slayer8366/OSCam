@@ -5,6 +5,56 @@ dump — each entry names the commit(s) it corresponds to for traceability.
 See `HANDOFF.md` for what a fresh agent needs to know before working here;
 this file is the historical record of what happened and why.
 
+## 2026-08-02
+
+### Record intent: three-phase convention in PHILOSOPHY.md
+
+Documentation only. Branches off `philosophy/sensor-driver-boundary`
+(`1d1eda2`/`492c5bd`/`d51d1f8`, plus `49db921`), not `main` — that branch
+is unmerged and touches the same file, and there is no reason for two
+independent edits to `PHILOSOPHY.md` to conflict with each other.
+
+This project has been running an intent/build/record-build convention in
+practice for a while — every entry above this one is evidence of it — but
+`PHILOSOPHY.md` still only states the two-phase version, and states it in
+a way that is now actively wrong: "that entry is edited or followed up"
+licenses editing a landed entry, which the append-only stores rule two
+sections up already forbids for JSON and which practice has never
+actually done to a CHANGELOG entry either. The gap is between what the
+file says and what has been true the whole time. This entry closes it by
+writing down the convention this series is itself following, split across
+two sections: the enforceable half under "Strict rules," and a pointer to
+it under "Documentation as a first-class artifact" replacing the
+paragraph that contradicts it.
+
+**Scope, stated the way a documentation change has to be, since there is
+no line-count-style number to give it:**
+
+- Files touched, in this order: `CHANGELOG.md` (this entry), then
+  `PHILOSOPHY.md` (the build), then `CHANGELOG.md` again (the build
+  record). No other file.
+- Replaced: the two-phase paragraph at `PHILOSOPHY.md` lines 356-360
+  ("Entries are written in two phases... edited or followed up...").
+  Exactly that paragraph, not the section around it.
+- Added: the convention itself, split across the two sections named
+  above.
+- Left alone, deliberately: every other section of `PHILOSOPHY.md`, and
+  every executable file in the tree.
+
+**Measured baseline: `PHILOSOPHY.md` is 382 lines before this build.**
+The build record below states the line count after, so the cost of
+spelling the convention out in full is visible as a number, not just
+asserted.
+
+**Acceptance for the build:** no executable file modified —
+`python3 camera_backend.py --render-check` exits 0 before and after,
+which is how "documentation only" gets proven rather than claimed. The
+file states the never-modified rule once, not twice — `grep -n "edited"
+PHILOSOPHY.md` should find nothing once the build lands. Both halves
+must be independently reachable: an agent reading only "Strict rules"
+gets the complete enforceable convention without needing the
+documentation section.
+
 ## 2026-08-01
 
 ### Record on-rig confirmation: PyQt5 to PyQt6 port
