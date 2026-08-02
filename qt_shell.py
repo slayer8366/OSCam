@@ -66,21 +66,37 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
-# Force XWayland (xcb) over Qt's native "wayland" QPA platform, before PyQt6
-# resolves one at QApplication construction time -- setdefault so an explicit
-# QT_QPA_PLATFORM in the environment still wins. self.preview (the real
-# QGlPicamera2 on-rig, --camera) is a WA_NativeWindow child widget doing its
-# own direct EGL rendering, not a top-level window. Nested native child
-# windows are a documented, real limitation of Qt5's native Wayland platform
-# plugin: their underlying surface does not reliably follow the widget's own
-# Qt-side resize/reposition once the TOP-LEVEL window's own geometry changes
-# out from under them (confirmed on-rig: full screen entry correctly resizes
-# the top-level window and even fires the preview's own resizeEvent/glViewport
-# call, but the actual visible native surface stays stuck at its old small
-# size/position regardless). X11 child subwindows (available here via the
-# already-running XWayland, confirmed with QApplication().platformName()) do
-# not have this limitation -- decades-old, fully dynamic subwindow support.
-os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
+# Both of these are Linux-only -- setdefault so an explicit value in the
+# environment still wins either way, and both would be meaningless (or
+# wrong) on Mac and Windows, where Qt should be left to pick its own
+# platform and theme.
+#
+# Force XWayland (xcb) over Qt's native "wayland" QPA platform, before
+# PyQt6 resolves one at QApplication construction time. self.preview (the
+# real QGlPicamera2 on-rig, --camera) is a WA_NativeWindow child widget
+# doing its own direct EGL rendering, not a top-level window. Nested
+# native child windows are a documented, real limitation of Qt5's native
+# Wayland platform plugin: their underlying surface does not reliably
+# follow the widget's own Qt-side resize/reposition once the TOP-LEVEL
+# window's own geometry changes out from under them (confirmed on-rig:
+# full screen entry correctly resizes the top-level window and even fires
+# the preview's own resizeEvent/glViewport call, but the actual visible
+# native surface stays stuck at its old small size/position regardless).
+# X11 child subwindows (available here via the already-running XWayland,
+# confirmed with QApplication().platformName()) do not have this
+# limitation -- decades-old, fully dynamic subwindow support.
+#
+# Default QT_QPA_PLATFORMTHEME to gtk3. labwc doesn't advertise itself in
+# a way Qt maps to gtk3 on its own, so without this Qt falls back to its
+# own built-in default font rather than the desktop's -- and since Qt
+# lays out from font metrics, the whole app then renders smaller than the
+# rest of the desktop. A desktop that cares (KDE, for instance) already
+# exports QT_QPA_PLATFORMTHEME itself, so this only fills the gap where
+# nothing set it. See CHANGELOG.md's "Qt environment defaults" entry for
+# the measured before/after.
+if sys.platform.startswith("linux"):
+    os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
+    os.environ.setdefault("QT_QPA_PLATFORMTHEME", "gtk3")
 
 import numpy as np
 
