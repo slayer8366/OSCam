@@ -7,6 +7,44 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-02
 
+### Record correction: the intent entry's baseline was sandbox-measured, not the rig's — plus a discovered palette effect
+
+**Supersedes `73537fa`** ("Record intent: Qt environment defaults,
+platform-conditional") on one point only: its baseline table's
+provenance. Nothing else in that entry is disputed. `73537fa` already
+flagged this in its own text — "this sandbox, not the rig — no gtk3
+desktop session or dbus here, so this demonstrates the mechanism, not
+the rig's exact numbers" — but that caveat lives inside an entry that
+can never be edited, and a caveat is easy to lose once later entries
+pile up on top of it. This entry exists so the point has its own record
+rather than surviving only as a sentence inside someone else's context.
+
+To restate it plainly: the 9.0pt "Sans Serif" (no gtk3 theme) versus
+10.0pt "Sans" (with the gtk3 theme) baseline in `73537fa` was measured
+under Xvfb, in a sandbox with no labwc session, no dbus, and no real
+gtk3 install. It demonstrates that the `setdefault` mechanism has an
+effect; it is not a measurement of the rig. The real difference measured
+on the tablet was far larger than the sandbox's ~11% gap.
+
+**DISCOVERED: applying the gtk3 platform theme changes the
+application's palette, not only its font metrics.** With no platform
+theme selected, the app now renders in the system's light palette, where
+it previously showed a darker default. Selecting a theme in-app restores
+the intended appearance, so this is a consequence of the fix rather than
+a defect in it — the intent entry named font metrics as the problem, and
+the outcome also touched appearance, which is why it belongs in the
+record rather than going unmentioned because it wasn't what was asked
+for.
+
+Durable fact worth carrying into the three-platform work: the QSS themes
+(`themes/*/style.qss`) override only part of the palette. `gtk3` fills
+in the rest on Linux, which is why the appearance shifted the moment the
+platform theme started loading. On macOS and Windows, where this
+platform-conditional change never sets a platform theme at all, the
+app's appearance will be the QSS over whatever palette those platforms
+themselves supply underneath — not the same underlying default this fix
+now produces on Linux.
+
 ### Record on-rig confirmation: Qt environment defaults, platform-conditional
 
 **Confirmed on-rig.** Single record, not an intent/build series — the
