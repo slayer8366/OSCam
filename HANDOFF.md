@@ -2662,28 +2662,43 @@ trustworthy**:
       filter is actually warranted (for the FOV reason above, not the
       disproven pairing one).
 
-## Things that will bite you if you don't know them
+### Qt environment defaults, platform-conditional — BUILT, CONFIRMED on-rig, 2026-08-02
 
-**Qt environment defaults are now platform-conditional (2026-08-02) —
-the labwc font-scaling gap is fixed.** `qt_shell.py`'s module-level
-environment-defaults block used to run unconditionally; it's now gated
-on `sys.platform.startswith("linux")`. The existing `QT_QPA_PLATFORM=xcb`
-setdefault moved inside that gate, and a new
-`QT_QPA_PLATFORMTHEME=gtk3` setdefault joined it. Root cause:
-`qt6-gtk-platformtheme` is installed on the rig, but labwc doesn't
-advertise itself in a way Qt maps to `gtk3` on its own, so
-`QT_QPA_PLATFORMTHEME` never got a value and Qt fell back to its own
-built-in default font — and since this app's layout is entirely
+`qt_shell.py`'s module-level environment-defaults block used to run
+unconditionally; it's now gated on `sys.platform.startswith("linux")`
+(`qt_shell.py:97-99`). The existing `QT_QPA_PLATFORM=xcb` setdefault
+moved inside that gate, and a new `QT_QPA_PLATFORMTHEME=gtk3` setdefault
+joined it. Root cause: `qt6-gtk-platformtheme` is installed on the rig,
+but labwc doesn't advertise itself in a way Qt maps to `gtk3` on its
+own, so `QT_QPA_PLATFORMTHEME` never got a value and Qt fell back to its
+own built-in default font — and since this app's layout is entirely
 font-metric-driven (no `setFont`/`QFont`/`setPointSize` anywhere), the
 whole UI rendered smaller than the rest of the desktop. Both stay
 `setdefault`, so a desktop that already exports `QT_QPA_PLATFORMTHEME`
 (KDE, for instance) is unaffected, and Mac/Windows never enter the
-Linux-only branch at all. See `CHANGELOG.md`'s "Qt environment defaults"
-series for the measured before/after and the full intent/build/
-record-build record. **Not yet confirmed on-rig** — self-check only so
-far; the acceptance test (launch with no `QT_QPA_PLATFORMTHEME` set, UI
-should render at the same size as with it set manually) still needs a
-real labwc session.
+Linux-only branch at all.
+
+**Confirmed on-rig, 2026-08-02**: `env -u QT_QPA_PLATFORMTHEME python3
+qt_shell.py` renders the UI at correct size, with the Linux-gated
+setdefault doing the work rather than an exported shell variable. Theme
+selection still works; `discover_themes()` unaffected. Real camera path
+confirmed separately, not `FakeCamera`: preview streams, focus aid live
+and scoring, ROI draws, Reprobe returns sane exposure. **Not confirmed
+on macOS or Windows** — the non-Linux branches, where neither setdefault
+runs, remain untested.
+
+See `CHANGELOG.md`'s "Qt environment defaults" series for the full
+intent/build/record-build/confirmation record, including a correction to
+the intent entry's baseline (it was sandbox-measured under Xvfb, not the
+rig's — the real gap on the tablet was far larger) and a discovered
+palette effect: applying `gtk3` changes more than font metrics, it
+changes the app's palette too, because the QSS themes
+(`themes/*/style.qss`) only override part of the palette and `gtk3`
+fills in the rest on Linux — worth knowing before the macOS/Windows
+work, where no platform theme gets set at all and the app's appearance
+will be the QSS over whatever those platforms supply underneath.
+
+## Things that will bite you if you don't know them
 
 **`qt_shell.py`'s `render_check()` now monkeypatches `PROFILE_PATH` for
 its ENTIRE duration, and that's load-bearing — don't remove it.**
