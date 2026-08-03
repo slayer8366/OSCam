@@ -7,6 +7,55 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-03
 
+### Record build: Keep RAW Images narrowed to raws only
+
+Built to the intent recorded below. No deviation.
+
+**Against the counted baseline** (deletion loop `for f in raw_files +
+master_files`): `hdr_from_session.py:process()`'s deletion loop is now
+`for f in raw_files` — `master_files` stays defined (still used a few
+lines earlier for the DNG-merge export) but is structurally excluded
+from deletion, not just conditionally skipped. The surrounding doc-
+comment and `--delete-raw-on-success`'s CLI help text are corrected to
+state the real, narrowed scope, including the "if disk pressure is ever
+a real problem, that needs its own named setting" note the intent
+specified.
+
+`correction_status` keeps `raw_discarded`/`raw_discard_reason` (now
+finally accurate) with the reason text's false "and the linear master"
+clause removed, and gains two unconditional new keys —
+`derived_outputs_discarded` (always `False`) and `derived_outputs_note`
+(a fixed explanatory string) — matching `frame_average.py`'s/
+`hdr_merge.py`'s explicit-value-plus-note convention exactly, so a
+`session.json` reader never has to infer "were intermediates kept?" from
+`raw_discarded` alone.
+
+`qt_shell.py`'s `render_check()` Keep RAW Images block (~7476-7516) is
+corrected to match: the `single_master.tif`-must-be-deleted assertion is
+flipped to must-survive; new assertions cover the corrected reason text
+and both new `derived_outputs_*` fields; the block's own comment and
+final print statement restate the corrected behavior instead of the old
+bug.
+
+**Verification, as honestly as the intent asked for:** `python3 -m
+py_compile` passes for both files. `hdr_from_session.py` has no non-
+stdlib dependencies and was statically checked for real: confirmed the
+old `raw_files + master_files` deletion expression is gone, the new
+`for f in raw_files:` loop is present, both new provenance keys exist,
+and the false "and the linear master" string no longer appears anywhere
+in the file. A live functional exercise (creating placeholder files and
+running the real deletion loop against them) was deliberately not done,
+even with empty/non-image files — this task's own repeated "no synthetic
+data" instruction was read as covering any fabricated on-disk stand-in
+for what this code touches, not just realistic bracket pixel data, given
+the task is specifically about file-deletion safety. `qt_shell.py`'s
+`render_check()` edits were reviewed by inspection only, not run — this
+sandbox has no PyQt6/numpy for a live Qt self-check either way, same
+constraint every task on this repo has hit. No existing user data was
+touched, migrated, or deleted by this work — it is a code-only change.
+No re-run, no reported numbers — real verification is the user's, on the
+Pi.
+
 ### Record intent: Keep RAW Images narrowed to raws only
 
 Own branch off `main`: `claude/keep-raw-images-scope-fix`. Fourth sibling
