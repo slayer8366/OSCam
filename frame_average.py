@@ -52,6 +52,19 @@ Precision & provenance notes:
     - Every output carries a JSON provenance record in its TIFF ImageDescription
       tag: inputs (optionally hashed), geometry, rejection stats, gain, clip
       counts, domain, software version, and timestamp.
+    - --sidecar-dir carries analogue_gain/sensor_mode/capture_time_utc from the
+      science burst's own .meta.json capture sidecars (provenance.py's naming:
+      <sidecar_dir>/<raw_frame_stem>.meta.json) into this tool's own output
+      provenance, under the exact key names hdr_merge.py already reads back
+      out of a master (try_read_embedded_capture_meta()). This tool does not
+      import provenance.py -- it only replicates its known sidecar naming, to
+      stay usable with any camera that writes TIFF frames. sensor_mode reads
+      back null today: it is not a field libcamera's per-frame metadata ever
+      carries, on either the real or fake backend -- that's a camera_backend.py
+      gap, not something reading harder here can fix. capture_time_utc reads
+      back null too: the sidecar's SensorTimestamp is a monotonic hardware
+      clock with no recorded epoch, not wall-clock UTC, and mapping it to a
+      field named "_utc" would be a fabricated value, not a real one.
 
 Requires: numpy, tifffile.
 """
@@ -65,7 +78,7 @@ from pathlib import Path
 import numpy as np
 import tifffile
 
-__version__ = "2.1"
+__version__ = "2.2"
 IMG_EXT = {".tif", ".tiff"}
 
 
@@ -111,6 +124,74 @@ def sha256_file(path, _buf=1 << 20):
         for chunk in iter(lambda: fh.read(_buf), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def read_sidecar_meta(sidecar_dir, frame_path):
+    """Best-effort read of a frame's .meta.json capture sidecar, using
+    provenance.py's own naming (<sidecar_dir>/<raw_frame_stem>.meta.json) --
+    replicated here rather than imported, so this tool stays usable with any
+    camera that writes TIFF frames, not just this project's session model.
+    Returns the raw dict, or {} if there's no sidecar_dir, no matching file,
+    or it isn't readable JSON -- never raises, since not every input frame is
+    guaranteed to have one."""
+    if sidecar_dir is None:
+        return {}
+    sidecar = Path(sidecar_dir) / (Path(frame_path).stem + ".meta.json")
+    try:
+        return json.loads(sidecar.read_text())
+    except Exception:
+        return {}
+
+
+def aggregate_capture_field(sidecars, raw_key, caster=lambda v: v):
+    """Combine one metadata field across a burst's sidecars into a single
+    provenance-ready value.
+
+    Returns (value, note):
+      - no sidecar in the burst carries this key at all -> (None, a note
+        saying so)
+      - every sidecar that carries it agrees -> (that value, None)
+      - two or more distinct values -> (None, a note listing every value
+        seen, in frame order)
+
+    A frame with no sidecar (an empty dict) simply contributes nothing to
+    the vote -- "no sidecar" and "the frame's gain differed" are different
+    facts and must not be conflated into the same rejection."""
+    values = [caster(sc[raw_key]) for sc in sidecars if raw_key in sc]
+    if not values:
+        return None, "not present in any input frame's sidecar"
+    if len(set(values)) == 1:
+        return values[0], None
+    return None, "disagreement across frames: {}".format(values)
+
+
+def capture_meta_for_science(sci_files, sidecar_dir):
+    """analogue_gain/sensor_mode/capture_time_utc for the science burst that
+    becomes this tool's own output master, plus a note explaining every null
+    (never a silent omission). See this module's docstring for exactly why
+    sensor_mode and capture_time_utc are null today regardless of how many
+    sidecars are found."""
+    sidecars = [read_sidecar_meta(sidecar_dir, f) for f in sci_files]
+    n_found = sum(1 for sc in sidecars if sc)
+    gain, gain_note = aggregate_capture_field(sidecars, "AnalogueGain", float)
+    return {
+        "analogue_gain": gain,
+        "sensor_mode": None,
+        "capture_time_utc": None,
+        "note": {
+            "sidecar_dir": str(sidecar_dir) if sidecar_dir else None,
+            "sidecars_found": n_found,
+            "sidecars_expected": len(sci_files),
+            "analogue_gain": gain_note,
+            "sensor_mode": ("sensor mode is not part of the current per-frame "
+                            "sidecar format on either camera backend -- "
+                            "always null until camera_backend.py records it"),
+            "capture_time_utc": ("the sidecar's SensorTimestamp is a monotonic "
+                                 "hardware clock with no recorded epoch, not "
+                                 "wall-clock UTC -- not converted, to avoid a "
+                                 "fabricated value"),
+        },
+    }
 
 
 def _checked_load(path, want_shape, want_dtype):
@@ -293,6 +374,13 @@ def main():
                     help="record a sha256 of every input frame in the output provenance "
                          "block (slower, but makes the result independently verifiable).")
     ap.add_argument("--no-compress", action="store_true", help="write uncompressed instead of deflate")
+    ap.add_argument("--sidecar-dir", default=None, metavar="DIR",
+                    help="directory holding the science burst's .meta.json capture "
+                         "sidecars (provenance.py's naming: <raw_frame_stem>.meta.json), "
+                         "typically a session's own provenance directory. Carries "
+                         "analogue_gain/sensor_mode/capture_time_utc into this tool's "
+                         "own output provenance -- null per-field (never omitted) "
+                         "wherever a value isn't available or the burst disagrees.")
     args = ap.parse_args()
 
     if args.linear_out and args.gamma is None:
@@ -321,6 +409,11 @@ def main():
     prov["science"] = file_record(sci_files)
     prov["geometry"] = {"width": W, "height": H, "channels": C, "input_bits": in_bits}
     prov["domain_processed"] = sci_info["domain"]
+    capture_meta = capture_meta_for_science(sci_files, args.sidecar_dir)
+    prov["analogue_gain"] = capture_meta["analogue_gain"]
+    prov["sensor_mode"] = capture_meta["sensor_mode"]
+    prov["capture_time_utc"] = capture_meta["capture_time_utc"]
+    prov["capture_metadata_note"] = capture_meta["note"]
     if "sigma_clip" in sci_info:
         prov["sigma_clip"] = {"k": sci_info["sigma_clip"],
                               "rejected_samples": sci_info["rejected_samples"],
