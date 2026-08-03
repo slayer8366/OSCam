@@ -5,6 +5,114 @@ dump — each entry names the commit(s) it corresponds to for traceability.
 See `HANDOFF.md` for what a fresh agent needs to know before working here;
 this file is the historical record of what happened and why.
 
+## 2026-08-03
+
+### Record intent: Keep RAW Images narrowed to raws only
+
+Own branch off `main`: `claude/keep-raw-images-scope-fix`. Fourth sibling
+to `claude/hdr-merge-verification-w7sb22`, `claude/frame-average-sidecar-
+wiring`, and `claude/white-level-constant-consolidation` (all pushed and
+done) — not stacked on any of them. Repo-only: the Pi holding `~/captures`
+is unreachable, no verification runs, no synthetic data. No existing user
+data is touched or migrated — this is a code-only fix.
+
+**Background.** "Keep RAW Images" off, found during the frame-average
+investigation, deletes `master_N.tif` (and `hdr_linear.tif`/
+`single_master.tif`) — the averaged/merged intermediates — not only the
+raw frames the setting names. A user leaving it off is consenting to
+discard raws, not averaged masters built from a multi-frame bracket.
+
+**Investigation, reported before any code change, per direct
+instruction:**
+
+1. **Full deletion path.** One call site, `hdr_from_session.py:process()`
+   lines 297-303, gated on `getattr(a, "delete_raw_on_success", False)`.
+   Deletes `raw_files + master_files`: `raw_files` is every individual
+   raw capture (`<level>_frame_NNNN.<ext>`, HDR: all levels' science +
+   dark; science/snap: sci + dark); `master_files` is the averaged/merged
+   intermediates — HDR: `master_1.tif`..`master_N.tif` + `hdr_linear.tif`;
+   science/snap: `single_master.tif`. NOT touched: `.meta.json` sidecars,
+   `session.json`, the flat library, `final.tif`/`final_display.*`, DNG/
+   JPG exports. Also not touched (separate, minor, not this bug): per-
+   frame preview `.jpg`s, orphaned regardless of this setting since
+   `frames_for()` only globs the raw extension. **Adjacent, NOT fixed
+   here**: `archive_raws()` (`hdr_from_session.py:338-371`, a different
+   named feature, "Archive raws") globs `*.<raw-ext>` — off-rig
+   (`--raw-ext tif`) this would also match every processed `.tif` output
+   in the directory, since raws and outputs share an extension there.
+   Unreachable via the GUI today (`qt_shell.py:5105` always passes
+   `--keep-raws`); only via a direct CLI run with `--archive-raws`/`y`
+   plus `--raw-ext tif`. Different setting, out of scope, reported only.
+2. **When it fires.** Per capture, synchronously, the last step inside
+   `process()`, after every subprocess that capture's own run needed has
+   already finished (blocking calls) — safe within one run. Cross-
+   consumer risk is real but narrow: no guard found preventing Gallery or
+   an independently-launched `process_wizard.py` from reading the same
+   files concurrently with, or after, an auto-process worker thread's
+   deletion; the only guard (`self._capturing`) covers re-entrant
+   capture/process on the same window. A second `process()` attempt on a
+   capture whose raws are already gone fails loudly (`sys.exit`), never
+   silently — partial mitigation only.
+3. **Label/docs.** Checkbox text (`qt_shell.py:1870-1871`): "Keep RAW
+   Images (applies to captures from now on, not retroactively)". Pref
+   key `keep_raw_images`, default `True`, no tooltip on the checkbox
+   itself. The ONLY existing prose describing its scope is a neighboring
+   checkbox's tooltip (`qt_shell.py:1910-1913`, DNG export): "governs the
+   session's own working raw frames" — the app's own docs already
+   describe raws-only; the code disagreed with its own docs, not the
+   other way round. `hdr_from_session.py`'s own `--delete-raw-on-success`
+   CLI help (lines 395-398) is honest about the current bug ("+ linear
+   master").
+4. **Is deletion recorded?** Yes, but only via the GUI flow:
+   `correction_status["raw_discarded"]`/`["raw_discard_reason"]`
+   (`process()` 311-317) printed as `CORRECTION_STATUS_JSON:`, parsed and
+   merged onto the capture's `session.json` entry by `qt_shell.py:
+   _record_correction_status` (5517-5541, `cap.update(...)`). A direct
+   manual CLI run prints the same line but nothing persists it. Today's
+   reason text already honestly says "raw frames and the linear master
+   were deleted" — the record isn't silently wrong, the setting's NAME
+   is what disagrees with it. Nothing is ever recorded inside `final.tif`/
+   `final_display.*`'s own embedded provenance — `debayer.py` writes
+   them BEFORE the deletion step runs, so they structurally can't know.
+   **Found**: `qt_shell.py`'s own `render_check()` (~7494-7534) currently
+   asserts the buggy behavior as correct (`assert not (kr_session.dir /
+   "single_master.tif").exists(), "Keep RAW Images off must delete the
+   linear master too"`) — must flip as part of this fix or it fails (or
+   keeps enshrining the bug).
+
+**Plan for items 5-6 (the only code change in this task):**
+5. `process()`'s deletion loop changes from `for f in raw_files +
+   master_files` to `for f in raw_files` — `master_files` stays defined
+   (still used for the DNG-merge export a few lines earlier) but is
+   removed from the delete set entirely. `--delete-raw-on-success`'s help
+   text and the surrounding doc-comment are corrected to match. No new
+   setting for derived-output deletion is added — that decision is the
+   user's, not built here.
+6. `correction_status` keeps `raw_discarded`/`raw_discard_reason`
+   (finally accurate once scope narrows) but the reason text drops "and
+   the linear master"; two new keys, matching `frame_average.py`/
+   `hdr_merge.py`'s explicit-value-plus-note convention (e.g.
+   `white_level_source`, `black_note`): `derived_outputs_discarded`
+   (always `False` post-fix — explicit, never omitted) and
+   `derived_outputs_note` (a fixed explanatory string: Keep RAW Images
+   only ever discards this capture's own raw frames; averaged/merged
+   intermediates are retained regardless of this setting). `qt_shell.py`'s
+   `render_check()` assertions are corrected to match the new behavior
+   (single_master.tif must now SURVIVE Keep RAW off; new fields
+   asserted) — edited for correctness by inspection, not run, since this
+   sandbox has no PyQt6/numpy for a live Qt check.
+
+**Baseline:** `hdr_from_session.py` is 431 lines (pre-white_level-
+consolidation baseline; this branch is off `main`, not stacked on that
+work). Deletion set structurally shrinks by exactly `len(master_files)`
+per call: HDR = master_1..N.tif + hdr_linear.tif (N+1 fewer files
+deleted); science/snap = single_master.tif (1 fewer file deleted).
+
+**Verification, stated honestly:** no real bracket/session data exists in
+this checkout, none fabricated, no existing user data touched. No
+re-run, no reported numbers — real verification is the user's, on the
+Pi.
+
 ## 2026-08-02
 
 ### Record build: HANDOFF.md restructure, part 1 — fix the confirmed-stale sections
