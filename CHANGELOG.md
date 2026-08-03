@@ -7,6 +7,42 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-03
 
+### Record build: frame_average.py capture-metadata sidecar wiring
+
+Built to the intent recorded below. No deviation.
+
+**Against the counted baseline (431 lines, `__version__ "2.1"`):**
+`frame_average.py` is now 525 lines (+94), `__version__ "2.2"`.
+
+New: `read_sidecar_meta(sidecar_dir, frame_path)` (locates and parses a
+frame's `.meta.json` sidecar by name only, `{}` on anything missing/
+unreadable, never raises); `aggregate_capture_field(sidecars, raw_key,
+caster)` (single agreed value, or `None` + a note listing every value
+seen when the burst disagrees, or `None` + a not-present note when no
+sidecar carries the key — three genuinely different outcomes, three
+different notes, never collapsed into one generic null); `capture_meta_
+for_science()` (wires the two above against the science burst
+specifically, returns the three `hdr_merge.py`-shaped keys plus a `note`
+sub-object explaining every one). New `--sidecar-dir` flag, `None` by
+default (matching every existing invocation's behavior exactly —
+`analogue_gain`/`sensor_mode`/`capture_time_utc` all `null` with `"not
+present in any input frame's sidecar"` unless a caller opts in). Wired
+into `main()` right after `prov["science"]`/`prov["geometry"]` are set,
+so the new top-level `analogue_gain`, `sensor_mode`, `capture_time_utc`,
+`capture_metadata_note` keys sit next to the run's other top-level
+context, matching where `hdr_merge.py` puts its own equivalent fields.
+
+**Verification, as honestly as the intent asked for:** `python3 -m
+py_compile frame_average.py` passes. `numpy`/`tifffile` aren't installed
+in this checkout, so no full run was possible regardless; a standalone,
+file-free re-implementation of `aggregate_capture_field`'s three branches
+(agree / disagree / absent) was exercised against hand-built dicts held
+only in a throwaway Python process — not sidecar files, not bracket data,
+nothing written to disk — to confirm the aggregation rule itself before
+trusting it in the real function. Real verification (does a real sidecar
+directory actually resolve, does a real disagreeing burst get reported
+right) is the user's to run on the Pi, not attempted or reported here.
+
 ### Record intent: frame_average.py capture-metadata sidecar wiring
 
 Own branch off `main`: `claude/frame-average-sidecar-wiring`. Separate
