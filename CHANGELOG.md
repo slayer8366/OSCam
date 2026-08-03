@@ -5,6 +5,196 @@ dump — each entry names the commit(s) it corresponds to for traceability.
 See `HANDOFF.md` for what a fresh agent needs to know before working here;
 this file is the historical record of what happened and why.
 
+## 2026-08-03
+
+### Record survey: driver-boundary overhaul, Phase A
+
+Single entry, no intent phase — Phase A was a read-only survey of the
+existing tree, not new work; there was nothing to build and no plan to
+diverge from. No file outside this one and `HANDOFF.md`'s pointer update
+changed as part of this.
+
+**Scope.** Re-verified `PHILOSOPHY.md`'s driver-boundary rule (as
+currently amended, `PHILOSOPHY.md:108-185`) against an 8-item
+hand-maintained violation list, ran an independent sweep for
+sensor-shaped facts the list didn't name, enumerated and classified
+every method on the `CameraBackend` ABC, and read both self-check guard
+predicates that are supposed to enforce the rule.
+
+**Source-list correction, for the record.** The hand-maintained list
+was attributed to a commit `83a9424`, which does not exist anywhere in
+this repository's visible git history (`git log --all` / `git rev-list
+--all` both empty for it). Traced to its source: a local clone the list
+was drawn from, patched into this repo via `git am`, which mints fresh
+commit hashes — so that hash was never going to resolve here. Not a gap
+in this repo's own history; noted so it isn't mistaken for one later.
+
+**Violations, verified against the current tree** (file:line for
+everything still present; full reasoning per item, including the three
+corrections below, is in this session's conversation record, not
+reproduced here — the verdicts are the durable part):
+
+- `GREEN_PLANE_RES`/`FULL_RES` duplication — **partly present**
+  (`measure.py:141`, `qt_shell.py:252` both independently derive
+  `GREEN_PLANE_RES` from `FULL_RES`), **partly never accurate**
+  (`gallery.py:573` imports `measure.GREEN_PLANE_RES` rather than
+  duplicating it; `calibrate.py:312` only mentions both names in a
+  comment, defines neither). Corrects the original claim.
+- `qt_shell.py` passing the module `GREEN_PLANE_RES` constant instead of
+  a camera-derived size — **still present**, line shifted from ~3452 to
+  **3468**. The crop-rectangle click-mapping fix (`aa22cad`, confirmed
+  on `main`) fixed half of this call site; the final argument still
+  passes the bare module constant, contradicting
+  `native_point_from_preview_click`'s own docstring
+  (`qt_shell.py:625-627`).
+- Green-plane loader hardcoding `(3040,4056)`/`(1520,2028)` — **never
+  accurate**. `measure.py:265-266`'s `load_measurement_plane` derives
+  shape from `FULL_RES`/`GREEN_PLANE_RES` in every commit that touches
+  it (checked via `git log -S`); `calibrate.py`/`debayer.py`'s loaders
+  derive from `arr.shape`. Only bare literals found are inert
+  self-check fixtures (`plane_cache.py:240`, `pixel_hash.py:73`).
+  Corrects the original claim — drop this item going forward.
+- No mono/no-CFA path — **still present**, confirmed absent
+  (zero hits for mono/no-CFA handling anywhere in the tree).
+- BGGR assumed as the only CFA pattern — **still present** in
+  `calibrate.py:110` (`DEFAULT_CFA_PATTERN`). `ca_measure.py` has no
+  independent hardcode; it only references
+  `_calibrate.DEFAULT_CFA_PATTERN` — corrects the original claim that
+  it was a second independent instance.
+- `FULL_MODE_LBL` hardcoded into every `session.json` record — **still
+  present** (`provenance.py:85`, written at `provenance.py:227`); also
+  bakes in bit depth, not just resolution.
+- Open `G_IS_OBJECT` assertion at teardown — **still present/open**, no
+  source-code line (a native GObject/libcamera log line, not
+  reproducible off-rig); recorded as unresolved in `HANDOFF.md:2308-2313`
+  and `CHANGELOG.md:1930-1933` already.
+- White level from container width, not sensor bit depth — **still
+  present**, broader than originally framed: `frame_average.py:100-105`
+  (no override), `hdr_merge.py:92-99` (documented `--white-level`
+  override, lighter instance), `hdr_from_session.py:362` and
+  `process_wizard.py:57-61` (both hand-typed `65520`, duplicated not
+  derived).
+
+**Found by the sweep, not on the list:**
+
+- `debayer.py:355-357`'s `--pattern` CLI default is `"BGGR"` — same
+  class as the calibrate.py item above, on a file the original list
+  never named. Overridable and documented, unlike calibrate.py's silent
+  default.
+- **`camera_backend.py:58-60` itself** — `FULL_RES`/`PREVIEW_RES`/
+  `LORES_RES` are hand-typed inside the driver file, and worse:
+  `Picamera2Camera.__init__` resolves the correct sensor profile via
+  `_resolve_sensor_profile` (used for crop delegation) but
+  `self._full_res` is set from the `FULL_RES` default kwarg, never from
+  `self._sensor_profile.FULL_ARRAY_SIZE` — the resolution machinery
+  runs and its result is never consulted for the one fact that matters
+  most. The comment directly above the constants ("Rig defaults (match
+  `capture.py`). Tunable.") references a file that no longer exists
+  (folded into `qt_shell.py` per this file's own module-organization
+  notes) — corroborating evidence this block has sat unexamined a
+  while. This is the most structurally significant finding of the
+  survey (see guard coupling, below).
+- `provenance.py:85` spans two categories at once (resolution *and* bit
+  depth in one literal) — already listed above, cross-referenced here.
+- `hdr_from_session.py:362`/`process_wizard.py:57-61`'s duplicated
+  `65520` — already listed above under white level, new relative to the
+  original list.
+
+**The interface question.** `CameraBackend` (`camera_backend.py:114`)
+has **26** abstract methods, not the reported 27 — recounted directly
+from the class body. Only two concrete backends exist to check against
+(`FakeCamera`, `Picamera2Camera`); no third real driver.
+
+- SATISFIABLE (20): `start`, `stop`, `focus_frame`, `set_overlay`,
+  `exposure_limits`, `apply_exposure_lock`, `read_exposure`,
+  `set_long_exposure`, `enter_still_mode`, `exit_still_mode`,
+  `start_recording`, `stop_recording`, `is_recording`,
+  `set_video_resolution`, `video_resolution`, `preview_resolution`,
+  `capture_resolution`, `sensor_crop_for_size`, `get_capabilities`,
+  `lores_resolution` — each admits a truthful degenerate answer, several
+  with direct precedent in `FakeCamera` already.
+- CAPABILITY (5): `capture_still`, `capture_still_async`,
+  `capture_burst`, `capture_bracket_phase` (all depend on genuine
+  undemosaiced Bayer data — no honest answer without it), `probe`
+  (requires an onboard AE/AWB algorithm actually converging — no honest
+  degenerate on hardware without one).
+- UNCLEAR (1): `set_exposure` — bundles manual shutter/gain
+  (satisfiable) with an on-demand AE/AWB-enable request
+  (capability-only) under one required signature, no documented
+  fallback for hardware lacking AE.
+
+**The guard coupling.** `assert_only_camera_backend_imports_sensor_profiles`
+(`camera_backend.py:1550-1599`) discovers profile modules by requiring
+both `FULL_ARRAY_SIZE` and `crop_for_size` via text scan; if the profile
+contract grows to add CFA pattern and bit depth, this predicate keeps
+passing mechanically without protecting either — exactly the silent gap
+`PHILOSOPHY.md:180-185` already warns about by name. It would need two
+more shape checks (mirroring the existing pair) to actually cover an
+expanded contract.
+
+`assert_only_camera_backend_imports_picamera2`'s exception set
+(`camera_backend.py:1537`): `wizard_pages.py` still needs its exception
+(real `picamera2` import at `wizard_pages.py:33`, gating an availability
+probe). `test_burst_backend.py`'s exception appears **stale** — zero
+`picamera2`/`libcamera` references anywhere in that file today.
+`wizard_pages.py`'s probe cannot currently be answered by
+`get_capabilities()` instead: that's an instance method, but
+`Picamera2Camera.__init__` itself raises if `picamera2` is absent — you
+can't construct the object to ask it whether you can construct the
+object. `camera_backend.py` already computes the needed fact privately
+(`_HAVE_PICAMERA2`, `camera_backend.py:717-721`) but never exposes it;
+fixable with a small new pre-construction probe, which doesn't exist
+yet.
+
+**The structural finding, stated once for reuse.** Both self-check
+guards verify import surface, not usage. Neither would have caught
+`camera_backend.py` importing its own sensor profile correctly and then
+ignoring it for `self._full_res`. This is a class of blind spot in the
+enforcement model, true of the tree regardless of how the eventual
+overhaul is staged — recorded here so it doesn't need rediscovering
+from a conversation if the staging plan changes shape before it lands.
+A third guard was discussed (asserting `camera_backend.py` carries no
+literal values matching its own resolved profile's declared
+dimensions) but not built in this phase — read-only survey, no code
+changed.
+
+**Bench baseline, recorded for reuse.** The click-mapping fix this
+overhaul's piece 3+4 combination would touch was confirmed on-rig
+**2026-08-01** (not "recently" — dated precisely so a later comparison
+is against a fixed point): stage micrometer, 19 divisions counted
+across the live-preview frame vs. 27 across the frozen green plane,
+expected FOV ratio ~1.52 against an on-rig-measured ~1.42. Any future
+verification of a change to this path should report its own division
+count and ratio against these same numbers, not just "on-rig and looks
+correct."
+
+**Open, deliberately not decided here.** Three items need the project
+owner's call before a staging plan can be written: whether `set_exposure`
+splits its auto-toggle branch out from its manual-set half; whether
+pieces touching `qt_shell.py:3468` and `camera_backend.py:58-60` must
+land together (both reach the same click-mapping path, so this is a
+staging-risk question, not a code question); and what form 7a's
+provenance-record cutover marker takes (some recorded boundary is
+required — `PHILOSOPHY.md`'s own rule that absence-with-a-reason is
+provenance and absence-without-one looks like corruption applies
+directly to `FULL_MODE_LBL` records written before any fix lands).
+
+**Verified.** Read-only throughout the survey itself: `git status
+--short` was clean immediately before this entry. This session's
+sandbox has no `numpy`/`tifffile` installed, so the standard 17-module
+`--render-check` sweep couldn't run to completion — most modules fail
+on import before reaching their own checks, an environment gap, not a
+finding about this change. The two modules whose self-checks could run
+without those dependencies both passed, including
+`function_index.py --render-check`'s `assert_function_index_current`,
+which confirms `FUNCTION_INDEX.md` still matches a fresh regeneration —
+consistent with this being a docs-only diff, since nothing indexed
+changed. `git diff --stat` after both edits: exactly `CHANGELOG.md` and
+`HANDOFF.md`, +217/-11, no `.py` file touched. A full sweep on a rig
+with the real dependencies installed is still owed before this is
+treated as equivalent to prior entries' "exit 0, all N modules"
+confirmations.
+
 ## 2026-08-02
 
 ### Record build: HANDOFF.md restructure, part 1 — fix the confirmed-stale sections
