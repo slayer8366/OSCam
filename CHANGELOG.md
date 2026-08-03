@@ -5,6 +5,97 @@ dump — each entry names the commit(s) it corresponds to for traceability.
 See `HANDOFF.md` for what a fresh agent needs to know before working here;
 this file is the historical record of what happened and why.
 
+## 2026-08-03
+
+### Record intent: hdr_merge.py provenance-integrity fixes (six defects)
+
+Own branch off `main`: `claude/hdr-merge-verification-w7sb22`. Prompted by
+a hand audit of a real 5-frame exposure bracket run (`master_1..5.tif`,
+uint16, 12.49ms doubling to 199.85ms) merged on the Pi to
+`~/captures/final.tif`, cross-checked against the embedded provenance JSON
+and against a companion `camera_backend.py` audit running concurrently on
+a separate, deliberately read-only branch in this same repo. That audit
+raised two process points, both accepted: (1) no synthetic bracket is
+being fabricated to exercise this fix — the real masters exist only on
+the Pi, and a synthetic run would only prove the code agrees with the
+numbers used to derive the fix, which is not evidence; a passing synthetic
+merge dropped into a captures-shaped path would also be a provenance
+contamination risk in its own right. (2) this stays off the audit branch
+— same repo, different task — so the audit branch doesn't accumulate
+unrelated changes.
+
+**Six defects, in priority order, each against a measured baseline —**
+merge math (`E = sum_i w_i*(v_i/white - black)/t_i / sum_i w_i`) is
+explicitly unchanged by all six:
+
+1. **`white_level` wrong; saturation rejection never fires.** This run
+   used `white_level=65520.0`, `sat_frac=0.95` → cutoff 62244. Measured
+   directly off the bracket: the frame5/frame4 median ratio holds at 2.00
+   through a frame4 value of 30500, then breaks — 1.932 over
+   30500-32500, falling monotonically to 1.37 by 46500. The true ceiling
+   is ~61000 in frame5, below the 62244 cutoff, so no sample is ever
+   rejected and roughly 48% of the frame merges biased-low samples at
+   real weight. Fix is an invocation-time value (`--white-level 64200`,
+   landing the cutoff at 61000) — not a new hardcoded default, since it's
+   only valid for this bracket's analogue gain, which capture metadata
+   can't currently recover (see defect 6).
+2. **Two ImageDescription tags (TIFF code 270) written to one IFD.**
+   `tifffile.imwrite` writes both the explicit `description=` provenance
+   JSON and its own default `metadata={}` shape JSON into tag 270 —
+   two tags, undefined resolution order per reader, provenance silently
+   droppable.
+3. **`prov["output"]["path"]` isn't normalized.** It records whatever
+   string `-o` happened to be at write time (default `"hdr_linear.tif"`
+   if omitted) with no resolution to where the bytes actually landed —
+   this run's file sits at `~/captures/final.tif` but its own embedded
+   record still names `hdr_linear.tif`.
+4. **`geometry.channels: 1` doesn't say mosaic vs. mono.**
+   `PhotometricInterpretation` is MINISBLACK with no CFA tag, so nothing
+   in the file distinguishes a raw Bayer mosaic from a true mono/already-
+   extracted plane.
+5. **`black: 0.0` can't distinguish "verified no pedestal" from "pedestal
+   handling never implemented."** 0.0 is correct for this run (frame1 min
+   is 297, far below where a surviving 12-bit pedestal would leave a
+   floor) but the field reads identically either way.
+6. **Capture settings don't propagate.** Exposure records carry
+   `t_source` but never gain, sensor mode, or real per-frame capture
+   time — upstream masters (`frame_average.py` output) don't embed
+   capture metadata yet, so `hdr_merge.py` has structurally no way to
+   record what gain a bracket was shot at, even in principle. **Scope
+   check in progress**: whether the propagation fix belongs in this repo
+   (`frame_average.py`) or points at a Pi-only acquisition script outside
+   it is being confirmed before this defect's plan is finalized below.
+
+**Baseline:** `hdr_merge.py` is 382 lines, `__version__ = "1.0"`, zero
+code changes yet on this branch.
+
+**Plan:** bump `__version__` to `"1.1"` so a file produced by the patched
+script is structurally distinguishable from the `v1.0` master already on
+disk (worth confirming separately, outside this fix, whether the checked-
+in copy this session inherited is actually the same version that produced
+today's `final.tif` — flagged back to the camera_backend audit rather than
+assumed). Add `try_read_embedded_capture_meta()` alongside the existing
+`try_read_embedded_exposure()`; five new optional CLI flags
+(`--white-level-source`, `--analogue-gain`, `--black-note`,
+`--channel-layout {mosaic,mono}`, `--cfa-pattern`) that record
+operator-supplied context, explicit `null` when omitted, never a silent
+guess; `metadata=None` on the `imwrite` call plus a post-write assertion
+that exactly one tag 270 exists; resolve `-o` to an absolute path before
+recording it. Only `hdr_merge.py` is touched by this pass — defect 6's
+write side (wherever it turns out to live) is not built here regardless
+of where the scope check above lands; at most this pass documents exactly
+what fields/shape `hdr_merge.py` is ready to read.
+
+**Verification, stated honestly up front:** no real bracket exists in
+this checkout — the five masters live only on the Pi — so this pass can
+only be self-check/code-review verified here (`py_compile` plus a
+throwaway smoke test against synthetic arrays in the session scratchpad,
+never written under any captures-shaped path, offered only as evidence
+the code runs, not that the fix is numerically correct). Real numbers
+(above-norm-point count, saturation-rejected count, the real embedded
+JSON, tag-270 count) come from a real run on the Pi, done separately by
+the user — not attempted or reported from this session.
+
 ## 2026-08-02
 
 ### Record build: HANDOFF.md restructure, part 1 — fix the confirmed-stale sections
