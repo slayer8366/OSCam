@@ -67,6 +67,22 @@ Output & precision notes:
       is not the container's dtype max (e.g. 12-bit data in a 16-bit file), set
       --white-level or the saturation test will be meaningless.
 
+Provenance completeness note:
+    A handful of fields below are only as good as what the caller tells
+    this tool. white_level is only valid for the analogue gain a bracket
+    was actually shot at, and this tool has no way to know that gain
+    unless the caller supplies it. Capture settings (gain, sensor mode,
+    real per-frame capture time) can only be recorded if an upstream
+    master already carries them: the raw capture side (camera_backend.py,
+    provenance.py) already records AnalogueGain/ExposureTime per frame,
+    but frame_average.py — the tool that turns those raw frames into the
+    "master" files this tool consumes — does not yet read that and does
+    not yet stamp any of it into its own output's provenance block. Until
+    that upstream propagation exists, this tool records those fields as
+    an explicit `null` rather than omitting them or guessing — a reader
+    should never have to wonder whether a missing field means "not
+    applicable" or "nobody checked."
+
 Requires: numpy, tifffile.
 """
 import argparse
@@ -79,7 +95,7 @@ from pathlib import Path
 import numpy as np
 import tifffile
 
-__version__ = "1.0"
+__version__ = "1.1"
 
 
 def load_frame(path):
@@ -121,6 +137,26 @@ def try_read_embedded_exposure(path):
         return None
 
 
+def try_read_embedded_capture_meta(path):
+    """Best-effort read of per-frame capture settings (analogue gain, sensor
+    mode, real capture time) from a master's own provenance block. Returns a
+    dict with all three keys always present, None for any the upstream
+    writer didn't stamp — so a reader can tell "this sensor session didn't
+    record it" from "this tool never looked." No upstream writer stamps
+    these yet (frame_average.py's own provenance block has no such fields —
+    confirmed by reading it, not assumed), so today every one of these reads
+    back None; this is the read-side half of that fix, landing ahead of it
+    so nothing else has to change in this file once the write side exists."""
+    keys = ("analogue_gain", "sensor_mode", "capture_time_utc")
+    try:
+        with tifffile.TiffFile(str(path)) as tf:
+            desc = tf.pages[0].description
+        meta = json.loads(desc)
+    except Exception:
+        meta = {}
+    return {k: meta.get(k) for k in keys}
+
+
 def parse_exposures(raw_pairs):
     """raw_pairs: list of (path_str, seconds_str). Returns list of dicts sorted
     ascending by exposure time. Fails loudly on bad or non-positive times."""
@@ -150,7 +186,8 @@ def parse_exposures(raw_pairs):
     return items
 
 
-def merge(exposures, white_level, black, sat_frac, norm_percentile, hash_inputs):
+def merge(exposures, white_level, black, sat_frac, norm_percentile, hash_inputs,
+          channel_layout=None, cfa_pattern=None):
     """Stream the bracket set into a linear irradiance estimate.
 
     One pass over the files; memory is bounded to a few full frames regardless
@@ -214,7 +251,8 @@ def merge(exposures, white_level, black, sat_frac, norm_percentile, hash_inputs)
         sat_all &= clipped
         blk_all &= belowblk
 
-        rec = {"name": ex["path"].name, "exposure_s": t, "t_source": ex["t_source"]}
+        rec = {"name": ex["path"].name, "exposure_s": t, "t_source": ex["t_source"],
+               "capture": try_read_embedded_capture_meta(ex["path"])}
         if hash_inputs:
             rec["sha256"] = sha256_file(ex["path"])
         records.append(rec)
@@ -230,10 +268,19 @@ def merge(exposures, white_level, black, sat_frac, norm_percentile, hash_inputs)
 
     E = np.clip(E, 0.0, None)                    # irradiance is non-negative
 
+    if C == 1:
+        geom_channel_layout = channel_layout        # "mosaic" / "mono" / None
+        geom_cfa_pattern = cfa_pattern if geom_channel_layout == "mosaic" else None
+    else:
+        geom_channel_layout = "rgb"
+        geom_cfa_pattern = None
+
     info = {
         "geometry": {"width": W, "height": H, "channels": C,
                      "input_bits": (8 if in_dtype == np.uint8
-                                    else 16 if in_dtype == np.uint16 else "float")},
+                                    else 16 if in_dtype == np.uint16 else "float"),
+                     "channel_layout": geom_channel_layout,
+                     "cfa_pattern": geom_cfa_pattern},
         "white_level": wl,
         "black": black,
         "sat_frac": sat_frac,
@@ -246,6 +293,20 @@ def merge(exposures, white_level, black, sat_frac, norm_percentile, hash_inputs)
                                         for ex in exposures],
     }
     return E, info
+
+
+def _assert_single_description_tag(path):
+    """Confirm exactly one ImageDescription (TIFF tag 270) exists in the file
+    just written. Two tags in one IFD is invalid TIFF with reader-dependent
+    resolution — this is a structural check on the file itself, not a trust
+    that metadata=None above was enough."""
+    with tifffile.TiffFile(str(path)) as tf:
+        tags270 = [t for t in tf.pages[0].tags if t.code == 270]
+    if len(tags270) != 1:
+        sys.exit(f"INTERNAL: expected exactly one ImageDescription (tag 270) "
+                 f"in {path}, found {len(tags270)} — provenance would be "
+                 f"ambiguous to any reader.")
+    return len(tags270)
 
 
 def main():
@@ -280,6 +341,31 @@ def main():
                          "provenance block.")
     ap.add_argument("--no-compress", action="store_true",
                     help="write uncompressed instead of deflate.")
+    ap.add_argument("--white-level-source", default=None, metavar="TEXT",
+                    help="how --white-level was determined (e.g. 'empirical: "
+                         "frame5/frame4 median-ratio break'). Recorded "
+                         "verbatim in provenance; null if omitted. white_level "
+                         "is only valid for the analogue gain a bracket was "
+                         "actually shot at — see --analogue-gain.")
+    ap.add_argument("--analogue-gain", type=float, default=None, metavar="G",
+                    help="analogue gain this bracket was shot at, if known. "
+                         "Not auto-recoverable today (see this module's "
+                         "docstring); recorded in provenance, null if omitted.")
+    ap.add_argument("--black-note", default=None, metavar="TEXT",
+                    help="where/how any pedestal (black-level) subtraction "
+                         "was handled upstream of this tool. black=0.0 alone "
+                         "can't distinguish 'verified no pedestal' from "
+                         "'never handled' — this note is how a reader tells "
+                         "them apart. Recorded verbatim; null if omitted.")
+    ap.add_argument("--channel-layout", choices=("mosaic", "mono"), default=None,
+                    help="for a 1-channel plane: whether it's a raw Bayer "
+                         "mosaic or a true mono/already-extracted plane. The "
+                         "file's own TIFF tags can't tell a reader this "
+                         "(MINISBLACK with no CFA tag looks the same either "
+                         "way) — recorded in provenance, null if omitted.")
+    ap.add_argument("--cfa-pattern", default=None, metavar="PATTERN",
+                    help="CFA pattern name (e.g. BGGR), only meaningful with "
+                         "--channel-layout mosaic. Recorded verbatim.")
     args = ap.parse_args()
 
     if not (0.0 <= args.black < 1.0):
@@ -292,7 +378,8 @@ def main():
           f"({exposures[0]['t']:g}s .. {exposures[-1]['t']:g}s):")
 
     E, info = merge(exposures, args.white_level, args.black, args.sat,
-                    args.norm_percentile, args.hash)
+                    args.norm_percentile, args.hash,
+                    channel_layout=args.channel_layout, cfa_pattern=args.cfa_pattern)
 
     # ---- normalise: map a high percentile to 1.0 so the divisor is recoverable
     pos = E[E > 0]
@@ -318,8 +405,19 @@ def main():
                   "zero weight where v_i/white >= sat or <= black"),
         "domain": "linear, scene-referred (NOT tone-mapped)",
         "white_level": info["white_level"],
+        "white_level_source": args.white_level_source,
         "black": info["black"],
+        "black_note": args.black_note,
         "sat_frac": info["sat_frac"],
+        "analogue_gain": args.analogue_gain,
+        "white_level_gain_dependency": (
+            "white_level is only valid for the analogue gain this bracket "
+            "was actually shot at. analogue_gain is null (not supplied via "
+            "--analogue-gain and not recoverable from the input masters) — "
+            "treat white_level as valid for this bracket only and "
+            "re-measure before reuse on a different capture."
+            if args.analogue_gain is None else None
+        ),
         "exposures": info["exposures"],
         "exposure_ratios_vs_shortest": info["exposure_ratios_vs_shortest"],
         "geometry": info["geometry"],
@@ -360,12 +458,19 @@ def main():
     else:
         photometric = "rgb"
 
-    prov["output"].update({"path": str(args.output), "compression":
+    out_path = str(Path(args.output).resolve())
+    prov["output"].update({"path": out_path, "compression":
                            "deflate" if comp else "none",
                            "value_range": [float(out.min()), float(out.max())]})
     description = json.dumps(prov, separators=(",", ":"))
+    # metadata=None suppresses tifffile's own default {"shape": [...]} JSON,
+    # which otherwise lands in a SECOND ImageDescription (tag 270) alongside
+    # `description` above — two tags in one IFD is invalid TIFF, and which
+    # one a reader sees is undefined, so the provenance block above could be
+    # silently the one that gets dropped.
     tifffile.imwrite(args.output, out, photometric=photometric,
-                     compression=comp, description=description)
+                     compression=comp, description=description, metadata=None)
+    n_desc_tags = _assert_single_description_tag(args.output)
 
     print(f"\nWrote {args.output}")
     print(f"  output: {out.shape} {out_dtype}, {'deflate' if comp else 'uncompressed'}, linear")
@@ -374,7 +479,8 @@ def main():
     print(f"  dynamic range spanned by brackets: "
           f"{info['exposure_ratios_vs_shortest'][-1]:g}x "
           f"({np.log2(info['exposure_ratios_vs_shortest'][-1]):.1f} stops)")
-    print(f"  provenance JSON embedded in ImageDescription ({len(description)} bytes)")
+    print(f"  provenance JSON embedded in ImageDescription ({len(description)} bytes); "
+          f"{n_desc_tags} ImageDescription tag in file (confirmed, not assumed)")
 
 
 if __name__ == "__main__":
