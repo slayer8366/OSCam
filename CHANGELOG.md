@@ -7,6 +7,44 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-03
 
+### Record build: white_level defaults consolidated to one constant
+
+Built to the intent recorded below. No deviation.
+
+**Against the counted baseline** (two independent literals, two Python
+types — string `"65520"` in `hdr_from_session.py`, bare int `65520` in
+`qt_shell.py`): `hdr_from_session.py` gains `MERGE_WHITE_LEVEL_DEFAULT =
+65520` (plain int) right after `__version__`, with the comment the intent
+specified (container-range assumption; the August 2026 bracket's real
+~61000 ceiling at an unrecorded gain; why that number isn't promoted to
+a new default). Its own `--wl` argparse now defaults to the constant
+instead of the string literal. `qt_shell.py` gains a guarded import of
+`hdr_from_session` (mirroring the existing `_process_wizard`/
+`_plane_cache` pattern exactly: nested `try/except ImportError`,
+`None` if the sibling file is missing), and its own `--wl` default
+becomes `_hdr_from_session.MERGE_WHITE_LEVEL_DEFAULT if _hdr_from_session
+else 65520` — the `else 65520` is the documented "sibling script
+physically absent" fallback the intent called for, not a second source
+of truth for the normal case. `process_wizard.py` untouched, as planned.
+
+**A future grep for `65520` now shows exactly what the intent asked
+for**: one real definition (`hdr_from_session.py`'s
+`MERGE_WHITE_LEVEL_DEFAULT`), one reference to it, one degrade-path
+fallback that's commented as exactly that, and `process_wizard.py`'s own
+`DEFAULT_WHITE_LEVEL = 65520.0` sitting apart, unrelated, undisturbed.
+
+**Verification, as honestly as the intent asked for:** `python3 -m
+py_compile` passes for both files. `hdr_from_session.py` has zero non-
+stdlib dependencies, so — unlike `qt_shell.py`, which needs PyQt6/numpy
+this sandbox doesn't have — it could actually be imported and exercised
+for real: `import hdr_from_session; hdr_from_session.
+MERGE_WHITE_LEVEL_DEFAULT` reads back `65520` (int), `str()` of it is
+`"65520"` (byte-identical to the old literal, confirming no downstream
+formatting change), and `python3 hdr_from_session.py --help` shows the
+`--wl` flag wired correctly end to end. No real bracket/session data
+exists in this checkout, none fabricated; no re-run, no reported numbers
+— real pipeline verification is the user's to run on the Pi.
+
 ### Record intent: white_level defaults consolidated to one constant
 
 Own branch off `main`: `claude/white-level-constant-consolidation`.
