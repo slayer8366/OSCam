@@ -7,6 +7,158 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-03
 
+### Record research: pymmcore/MMCore exposure contract and platform reach — `set_exposure` splits
+
+Single entry, no intent phase — a survey of an external library
+(`pymmcore`) plus a decision made from it. The work was already done;
+there was no plan to diverge from.
+
+**Findings** (facts about MMCore, true regardless of what OSCam
+decides — checked against `pymmcore` 12.5.0.75.0, the running compiled
+binding, not documentation prose):
+
+```
+python3 -m venv venv && source venv/bin/activate
+pip install pymmcore
+python3 -c "import pymmcore; print(pymmcore.__version__)"
+# -> 12.5.0.75.0
+```
+
+- MMCore's camera contract is explicit exposure only: `setExposure(double)`
+  / `getExposure()`, milliseconds per the package's own shipped type stub
+  (`__init__.pyi`, distributed with the compiled module, not third-party
+  docs — "Sets the exposure setting of the current camera in
+  milliseconds.").
+- No auto-exposure concept exists in the core. A member-name sweep across
+  all 312 public `CMMCore` members (`[m for m in dir(core) if 'auto' in
+  m.lower() or ...]`) returns only autofocus and auto-shutter hits.
+  `getAutoShutter`/`setAutoShutter` were checked rather than assumed from
+  the name — stub docstring: "If this option is enabled Shutter
+  automatically opens and closes when the image is acquired." Physical
+  shutter automation around an exposure, not metering.
+- Stronger than absence from a signature: MMCore's Core-managed roles
+  (`MM::g_Keyword_Core*`, grepped directly from the SWIG-generated wrapper
+  source) are `CoreAutoFocus, CoreAutoShutter, CoreCamera,
+  CoreChannelGroup, CoreDevice, CoreFocus, CoreGalvo, CoreImageProcessor,
+  CoreInitialize, CorePressurePump, CoreSLM, CoreShutter, CoreTimeoutMs,
+  CoreVolumetricPump, CoreXYStage`. `CoreAutoFocus` and `CoreAutoShutter`
+  each get a Core-managed role; no `CoreAutoExposure`, no
+  `CoreAutoWhiteBalance`. Reads as a deliberate design cut, not an
+  omission — MMCore's own designers drew the same line PHILOSOPHY.md's
+  rule draws.
+- Where a device supports AE at all, the only mechanism is the per-device
+  property system — `hasProperty(label, propName)`,
+  `getAllowedPropertyValues(label, propName)`, `getProperty`,
+  `getDevicePropertyNames` — discoverable per-adapter, not standardized.
+- Convergence: only generic busy/wait primitives exist (`deviceBusy`,
+  `systemBusy`, `waitForDevice`, `waitForConfig`, `waitForSystem`),
+  nothing exposure- or AE-specific — architecturally different from a
+  single blocking call that returns settled values.
+- `pymmcore` ships wheels for `manylinux_x86_64`, `macosx_11_0` on both
+  `x86_64`/`arm64`, and `win_amd64` (checked across all 5 supported
+  CPython versions, cp310-cp314, against the full PyPI JSON release
+  listing — `curl -s https://pypi.org/pypi/pymmcore/json`, not a
+  truncated page). **No Linux aarch64 wheel exists for the current
+  release, in any Python version.**
+
+**Limits of these findings, stated rather than papered over:**
+
+- `pip install pymmcore` ships Core bindings only — no device adapters,
+  no demo camera (confirmed: the installed package directory holds only
+  the compiled SWIG module, stubs, and version file;
+  `getDeviceAdapterSearchPaths()` on a fresh `CMMCore()` resolves to that
+  same empty directory). The property mechanism is confirmed as the only
+  path to AE: what any real camera adapter actually *names* its AE
+  property is unknown, and was not guessed at.
+- Source-building `pymmcore` on Linux aarch64 looks plausible from
+  inspecting the downloaded sdist's declared build system (self-contained
+  `meson`+`ninja`+SWIG build, `mmcore`/`mmdevice` C++ source vendored
+  directly as subprojects, no Boost or proprietary library; every
+  declared build dependency — `meson-python`, `ninja`, `swig==4.4.0`,
+  `numpy>=2.0.0` — has an aarch64 Linux wheel on PyPI, checked
+  individually). **Build-system inspection only.** Nobody has attempted
+  this build; it was not attempted here either (this sandbox is
+  `x86_64`, confirmed via `uname -m` and the installed wheel's platform
+  tag).
+
+**Decision supported — `set_exposure` splits.** Manual shutter/gain stays
+a required method. AE/AWB-enable moves behind capability enumeration.
+Reasoning is `PHILOSOPHY.md`'s own test (a method whose contract cannot
+be met honestly by some devices is a capability, not a required method):
+a unified `set_exposure` would force an MM-backed implementation to raise
+on a per-adapter basis from a method it is required to implement — the
+definition of a capability rather than a requirement. The capability flag
+also has a real consumer, not just provision for a hypothetical backend:
+it resolves directly to `hasProperty`/`getAllowedPropertyValues` on the
+MM side.
+
+**Not decided — Micro-Manager's platform scope, recorded as open rather
+than resolved.** The absent aarch64 wheel is a packaging gap, not an
+architectural boundary; an MM backend on the Pi is intended to be
+attempted, not ruled out by this entry. Three things worth keeping
+distinct:
+
+- Intent is MM running on the Pi as well as desktop platforms. The
+  aarch64 build is an open question, not a closed door — see the
+  source-build finding above.
+- MMCore on a Pi would not by itself provide a second route to the
+  IMX477: there is no libcamera device adapter, so `picamera2` remains
+  the sensor path regardless of whether MM ever runs there. What MM would
+  add on a Pi is *other* device roles — stages, filter wheels, shutters —
+  not a second camera backend.
+- Consequence for the interface work, left as a question rather than
+  answered here: if MM and `picamera2` may both be live in one process
+  (rather than being per-platform alternatives to each other), a
+  "backend" may need to be a set of device roles rather than a single
+  object — which is how MMCore itself models a system (`CoreCamera`,
+  `CoreShutter`, `CoreXYStage`, etc. as independently-assigned roles, not
+  one monolithic device). This bears on the shape of the driver interface
+  and should be settled before that work starts, not discovered partway
+  through it.
+
+**Verified — discharges the sweep debt the Phase A entry (below) left
+open.** That entry recorded the 17-module `--render-check` sweep
+couldn't run for lack of `numpy`/`tifffile`. Both are now installed in
+this sandbox (`pip3 install numpy tifffile`, then `pip3 install PyQt6`
+to also close the two documented PyQt6-gated skips) and the sweep was
+re-run in full:
+
+- **16 of 17 modules pass clean** (`pixel_hash, annotations, export,
+  publish, calibrate, measure, ca_measure, wizard_pages, stacks, focus,
+  gallery, process_wizard, provenance, camera_backend, plane_cache,
+  function_index`), running their real assertions, not just imports —
+  `measure.py`'s two PyQt6-dependent checks correctly print `SKIPPED:
+  PyQt6 not available` even with PyQt6 now installed, because the actual
+  failure underneath is a missing system library (`libEGL.so.1`, part of
+  Mesa/EGL — confirmed directly: `from PyQt6.QtWidgets import
+  QApplication` raises `ImportError: libEGL.so.1: cannot open shared
+  object file`), and `measure.py` catches that and skips gracefully, per
+  `README.md`'s own documented expected behavior for this condition.
+- **`qt_shell.py` fails**, but for a real, newly-diagnosed reason, not an
+  environment gap: `render_check()` crashes with `NameError: name
+  'QApplication' is not defined` at `qt_shell.py:5963`. Root cause traced
+  precisely — the same `libEGL.so.1` absence trips `qt_shell.py`'s own
+  `except ImportError` at line 393, correctly setting `_HAVE_QT = False`.
+  The very next Qt-dependent line inside `render_check()`,
+  `qt_shell.py:5958`'s `if _HAVE_QT and QApplication.instance() is
+  None:`, is correctly guarded — but `qt_shell.py:5963`,
+  `qtapp_og = QApplication.instance() or QApplication([])`, sits
+  immediately after that `if` block *unconditionally*, with no
+  `_HAVE_QT` guard of its own. `measure.py` hits the identical
+  `libEGL.so.1` condition and skips cleanly; `qt_shell.py` does not. A
+  genuine, previously-undiscovered gap in this module's own self-check
+  gating, found incidentally by this sweep — not fixed here
+  (documentation only), not part of the driver-boundary overhaul, and not
+  investigated further than this diagnosis.
+- One further system-library install (`apt-get install libegl1`) was
+  attempted to see whether closing that gap too was practical, and hit a
+  transient package-mirror 404 unrelated to this repo; not pursued
+  further; standing up a full headless-display stack is out of scope for
+  a documentation-only verification pass.
+- `git diff --stat` after this entry and the following `HANDOFF.md`
+  update: only those two files, confirmed unchanged from the Phase A
+  entry's own equivalent check.
+
 ### Record survey: driver-boundary overhaul, Phase A
 
 Single entry, no intent phase — Phase A was a read-only survey of the
