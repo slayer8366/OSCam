@@ -7,6 +7,69 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-03
 
+### Record build: hdr_merge.py provenance-integrity fixes (six defects)
+
+Built to the intent recorded below. No deviation in scope or approach;
+one open question the intent left explicit is now answered by reading
+code rather than assumed, recorded as `DISCOVERED:` below.
+
+**Against the counted baseline (382 lines, `__version__ "1.0"`):**
+`hdr_merge.py` is now 488 lines (+106), `__version__ "1.1"`. Merge math
+(`E = sum_i w_i*(v_i/white - black)/t_i / sum_i w_i`) is byte-for-byte
+unchanged — checked against the diff, not just asserted.
+
+1. **white_level**: no code default changed (the script's own fallback
+   was always the honest `dtype_max`, never `65520` — that number only
+   ever arrived from a caller's `--white-level` flag). The fix here is
+   documentary: new `--white-level-source` records how a value was
+   determined (`null` if omitted), and a new `white_level_gain_dependency`
+   field states, whenever `analogue_gain` is `null`, that the value is
+   only valid for this bracket's gain. Setting `--white-level 64200` for
+   the real bracket is an invocation-time action on the Pi, not a code
+   change, matching what the intent already said it would be.
+2. `metadata=None` added to the `imwrite` call. `_assert_single_
+   description_tag()` re-opens the just-written file and hard-fails if
+   TIFF tag 270 isn't exactly one — proves the fix against the actual
+   bytes on disk, not just against the code that wrote them.
+3. `args.output` is now resolved to an absolute path
+   (`Path(args.output).resolve()`) before being recorded, rather than the
+   raw CLI string (which defaults to `"hdr_linear.tif"` if `-o` is
+   omitted and doesn't track where the file is later moved to).
+4. New `--channel-layout {mosaic,mono}` / `--cfa-pattern` flags feed
+   `geometry.channel_layout` / `geometry.cfa_pattern`, both `null` unless
+   the caller states them — deliberately not defaulted to `"mosaic"` even
+   though that's this tool's typical input, since the file's own tags
+   structurally can't prove which one it is; that was the defect.
+5. New `--black-note` flag feeds a `black_note` field, `null` unless
+   supplied.
+6. **DISCOVERED**: the intent entry left open whether defect 6's
+   propagation gap belongs to a script inside this repo or a Pi-only
+   acquisition script outside it. Answered by reading the actual code:
+   `camera_backend.py` and `provenance.py` (both in this repo) already
+   capture and persist `AnalogueGain`/`ExposureTime` per frame into each
+   capture's own `.meta.json` sidecar (`record_capture`/`record_burst`/
+   `record_hdr`) — the acquisition side is real, in-repo, and already
+   working. The actual gap is `frame_average.py` (also in this repo): its
+   own provenance dict (`frame_average.py` ~321-412) has no gain/sensor-
+   mode/capture-time fields at all and never reads those sidecars. So the
+   propagation fix is a real, buildable, in-repo change — but per
+   instruction it stays the user's to make, not built in this pass. New
+   `try_read_embedded_capture_meta()` gives `hdr_merge.py` the read side
+   ready now: it looks for `analogue_gain`/`sensor_mode`/
+   `capture_time_utc` in a master's own embedded JSON and records `null`
+   per-key when absent, never omitted — the day `frame_average.py` starts
+   writing those three keys, every exposure record here picks them up
+   automatically with no further change to this file.
+
+**Verification, as honestly as the intent asked for:** `python3 -m
+py_compile hdr_merge.py` passes — the only check possible here, since
+`numpy`/`tifffile` aren't installed in this checkout (a runtime smoke
+test wasn't attempted regardless; the intent already ruled out
+fabricating bracket data to exercise this). Real verification — the
+merge actually running, the saturation-rejected count going nonzero, the
+real embedded JSON, tag 270 confirmed against a real file — is left
+entirely to the user's own run on the Pi, not attempted or reported here.
+
 ### Record intent: hdr_merge.py provenance-integrity fixes (six defects)
 
 Own branch off `main`: `claude/hdr-merge-verification-w7sb22`. Prompted by
