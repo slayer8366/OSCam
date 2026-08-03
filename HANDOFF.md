@@ -61,18 +61,46 @@ budget a rig re-check, not just a code review.
 
 **Known problems, not fixed by the port and not fixed since** (this is
 their canonical location — `CHANGELOG.md` points back here rather than
-repeating them):
+repeating them). Reconciled against the current tree by a 2026-08-03
+read-only survey (`CHANGELOG.md`'s "Record survey: driver-boundary
+overhaul, Phase A" entry — read that for per-item verification detail,
+the sensor-shaped-facts sweep it ran beyond this list, the full
+`CameraBackend` ABC classification, and the guard-coupling analysis; not
+repeated here):
 
-- `GREEN_PLANE_RES` and `FULL_RES` duplicated across `measure.py`,
-  `qt_shell.py`, `gallery.py`, `calibrate.py`
-- The live bug at `qt_shell.py:3452` passing the module `GREEN_PLANE_RES`
-  constant instead of the camera's own configured size
-- The green-plane loader hardcoding `(3040, 4056)` and `(1520, 2028)`
-  instead of deriving shapes from the sensor profile
-- Missing mono / no-CFA path
-- BGGR assumed as the only CFA pattern in `calibrate.py` and
-  `ca_measure.py`
+- `GREEN_PLANE_RES` and `FULL_RES` duplicated across `measure.py` and
+  `qt_shell.py` (the `gallery.py`/`calibrate.py` half of this claim
+  didn't hold up — checked, neither file duplicates the constant today)
+- The live bug, now at `qt_shell.py:3468` (line shifted): passes the
+  module `GREEN_PLANE_RES` constant instead of a size derived from the
+  camera's own configured still resolution. The click-mapping fix
+  (`aa22cad`, on `main`) fixed the crop-rectangle half of this call site
+  but not this argument — still open.
+- **`camera_backend.py` itself never consults the sensor profile it
+  correctly resolves.** `_resolve_sensor_profile` runs and is used for
+  crop delegation, but `self._full_res` is set from the hardcoded
+  `FULL_RES` module default (`camera_backend.py:58`), never from
+  `self._sensor_profile.FULL_ARRAY_SIZE`. Neither self-check guard
+  catches this: both verify who may *import* a sensor-profile module,
+  neither verifies that an importer *uses* what it imports — a class of
+  blind spot, not a one-off. The comment directly above the constant
+  ("match `capture.py`") references a file that no longer exists,
+  corroborating that this block has sat unexamined for a while.
+- Missing mono / no-CFA path — per `PHILOSOPHY.md`'s "don't build ahead
+  of evidence" rule (same reasoning as the deliberately-unbuilt CA
+  correction model), this stays spec-only until real mono hardware
+  exists to validate against; not staged as a build.
+- BGGR assumed as the only CFA pattern: the hardcode is in
+  `calibrate.py` (`DEFAULT_CFA_PATTERN`) and, found by the wider sweep,
+  `debayer.py`'s `--pattern` CLI default; `ca_measure.py` only inherits
+  it via `_calibrate.DEFAULT_CFA_PATTERN`, it doesn't hardcode
+  independently
 - `FULL_MODE_LBL` hardcoded into every `session.json` provenance record
+  — also bakes in bit depth (the "12"), not just resolution
+- White level derived from container width/bit-width rather than sensor
+  bit depth — spans `frame_average.py` (no override), `hdr_merge.py`
+  (documented `--white-level` override), and a `65520` magic number
+  hand-duplicated across `hdr_from_session.py` and `process_wizard.py`
 - Open `G_IS_OBJECT` assertion at teardown
 - Extracting capture logic out of `qt_shell.py`
 - `provenance.py` phase 2 (store-mechanics migration) — see "Current
