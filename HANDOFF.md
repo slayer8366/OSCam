@@ -106,6 +106,22 @@ repeated here):
 - `provenance.py` phase 2 (store-mechanics migration) — see "Current
   state" below for what's actually landed
 
+**The `CameraBackend` interface question** (also from the Phase A
+survey above — 26 methods classified SATISFIABLE/CAPABILITY/UNCLEAR)
+has its first decision: `CHANGELOG.md`'s "Record research:
+pymmcore/MMCore exposure contract and platform reach" entry
+(2026-08-03) splits `set_exposure` — manual shutter/gain stays
+required, AE/AWB-enable moves behind capability enumeration — on
+evidence from the actual installed `pymmcore` API, not recollection.
+The other 25 methods' classifications stand as the survey left them,
+un-acted-on. That entry also leaves Micro-Manager's platform reach an
+open question, not a settled boundary: no Linux aarch64 wheel exists
+today, but MM on the Pi is intended to be attempted, not ruled out —
+and if MM and `picamera2` can both be live in one process there,
+a "backend" may need to be a set of device roles rather than a single
+object, which changes the shape of this interface work. Read that
+entry before assuming MM is desktop-only.
+
 Line numbers above haven't been re-verified since the port — check before
 trusting one.
 
