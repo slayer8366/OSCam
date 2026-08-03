@@ -5,6 +5,101 @@ dump — each entry names the commit(s) it corresponds to for traceability.
 See `HANDOFF.md` for what a fresh agent needs to know before working here;
 this file is the historical record of what happened and why.
 
+## 2026-08-03
+
+### Record intent: frame_average.py capture-metadata sidecar wiring
+
+Own branch off `main`: `claude/frame-average-sidecar-wiring`. Separate
+from, and not stacked on, `claude/hdr-merge-verification-w7sb22` (pushed
+and done) — same repo, different task. No bracket data or captures
+directory is reachable from this session (they live on the Pi only); no
+synthetic data was fabricated. `hdr_merge.py` is explicitly NOT modified
+by this task.
+
+**Investigation, done and reported before any code change, per direct
+instruction:**
+
+1. **The `--white-level 65520` caller.** Two, both duplicated, independent
+   argparse defaults: `qt_shell.py:5744` (`--wl` default `65520`, the
+   GUI's own `main()`) and `hdr_from_session.py:362` (`--wl` default
+   `"65520"`, its own standalone default). Both forward through
+   `hdr_from_session.py:178` (`hm += ["--white-level", a.wl, ...]`) into
+   `hdr_merge.py`. `process_wizard.py:61`'s `DEFAULT_WHITE_LEVEL = 65520.0`
+   is the same number but an unrelated codepath (feeds `debayer.py
+   --assume-linear` only — confirmed via grep, zero references to
+   `hdr_merge`/`hdr_from_session` in that file). No Makefile/shell
+   script/config anywhere in the repo carries this constant.
+2. **Whether `frame_average.py` averages saturated samples.** By default,
+   yes, unconditionally — `average_burst()` with no `--sigma-clip` sums
+   every frame's raw value with no proximity-to-ceiling check;
+   `dtype_max()` only knows the container max (65535 for uint16), with no
+   concept of the sensor's real white level. `--sigma-clip` rejects
+   statistical outliers relative to the burst's own mean, which is not
+   the same thing as saturation rejection and only incidentally catches
+   a clipped frame. No per-frame maximum or saturation count is recorded
+   anywhere; the only clip field (`prov["clipping"]`) is computed on the
+   post-average, post-correction result against the *container* ceiling
+   (65535), not the sensor's true one, so it would essentially never fire
+   on real data regardless of per-frame clipping. This is **consistent
+   with** (not proof of) the smearing mechanism described in the prior
+   task's finding (a 2.00x ratio holding to frame4=30500, breaking to
+   1.932, falling to 1.37 by 46500, no pileup, ~48% above the break) —
+   averaging a clipped sample with unclipped ones lands the mean between
+   them, a soft rolloff rather than a hard cutoff. Not asserted as the
+   confirmed cause; no real bracket was available to check directly.
+3. **Sidecar wiring gap.** Filename pattern `<prov_dir>/<raw_stem>.
+   meta.json` (`provenance.record_capture`/`record_burst`/`record_hdr`).
+   JSON keys confirmed identical on both backends (`camera_backend.py`
+   `request.get_metadata()` at line 1205, `_fake_metadata()` at
+   498-508, both via `_dump_meta`): `ExposureTime`, `AnalogueGain`,
+   `DigitalGain`, `ColourGains`, `SensorTimestamp` — real libcamera
+   casing. Two gaps that are NOT this task's to fix: `sensor_mode` does
+   not exist in this metadata on either backend at all (a
+   `camera_backend.py` gap); `SensorTimestamp` is a monotonic hardware
+   clock with no recorded epoch, not wall-clock UTC — mapping it directly
+   to a field named `capture_time_utc` would be a fabricated value, not a
+   real one. `frame_average.py` itself has zero sidecar awareness today
+   (confirmed by reading it in full) and, per its own docstring, is a
+   generic tool that doesn't import `provenance.py`.
+
+**Plan for the wiring (item 4 only — item 5, saturation rejection, is
+explicitly NOT built in this task; see below):** a new `--sidecar-dir DIR`
+flag on `frame_average.py`, applied to the science burst's own frames
+(the burst that becomes the HDR-level master `hdr_merge.py` reads).
+`frame_average.py` stays decoupled from `provenance.py` (no import) but
+replicates its known `<stem>.meta.json` naming as a documented contract.
+A new aggregation helper reads `AnalogueGain` across the science burst's
+sidecars: if every frame that has a sidecar agrees, record that single
+value; if they disagree, record the disagreement itself (every observed
+value), never silently the first one seen. `sensor_mode` and
+`capture_time_utc` are recorded `null` with an explanatory note for the
+structural reasons above — not a wiring bug, a real absence. Output key
+names match `hdr_merge.py`'s existing `try_read_embedded_capture_meta()`
+exactly (`analogue_gain`, `sensor_mode`, `capture_time_utc`, top-level in
+the provenance dict) so nothing else has to change once this lands.
+
+**Explicitly deferred, per direct instruction:** item 5 (saturation
+rejection in `frame_average.py`) is not built here even though item 2's
+finding shows the current code is consistent with averaging saturated
+samples. Changing the averaging stage would invalidate the knee
+measurement the current `hdr_merge.py` white_level fix was derived from;
+that sequencing decision belongs to the user, not this session. This
+pass only reports what such a fix would look like (reject/clamp/weight
+samples relative to a real white level, ideally the same operator-
+supplied one `hdr_merge.py` now accepts, rather than the container max
+`dtype_max()` uses today) and what it would change about the existing
+masters (a full recompute — the current masters embed the unconditional-
+average smear, not a decision point stored separately from the pixels).
+
+**Baseline:** `frame_average.py` is 431 lines, `__version__ = "2.1"`, zero
+code changes yet on this branch.
+
+**Verification, stated honestly up front:** no real bracket or sidecar
+data exists in this checkout (the Pi is unreachable), so this pass is
+self-check/code-review only. No synthetic sidecar or bracket data will be
+fabricated to exercise the new flag. No re-run, no reported numbers —
+verification happens on the Pi, by the user, separately.
+
 ## 2026-08-02
 
 ### Record build: HANDOFF.md restructure, part 1 — fix the confirmed-stale sections
