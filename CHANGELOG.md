@@ -7,6 +7,48 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-03
 
+### Record build: PHILOSOPHY.md — conflict resolution against the never-edit rule
+
+Built to the intent recorded below. No deviation.
+
+**Against the stated scope**: `PHILOSOPHY.md` is the only file touched
+(`CHANGELOG.md` carries only this task's own three-phase entries, not
+the amendment's subject matter — exactly as scoped). One new paragraph
+added to the Strict rules section's "A `CHANGELOG.md` entry, once
+written, is never modified" rule, placed at the end of that rule's
+existing discussion (after "No retroactive recording...", before the
+`---` divider into "Flexible — judgment applies") rather than interleaved
+into the middle of the existing intent/build/record-build discussion,
+which is about a different axis (whether an entry needs an intent phase)
+than the new paragraph's subject (whether a merge-conflict resolution
+counts as an edit). No other section touched. No branch-landing-form
+rule added — item 2's finding stays a factual report, not a rule, per
+instruction.
+
+The new paragraph states plainly: interleaving-only merge resolution is
+not an edit (every pre-existing entry byte-identical, still under its
+own header, only reordered); a resolution that changes existing entry
+text is an edit, and the correct form is the same superseding-entry
+mechanism already documented two paragraphs above for hand-authored
+corrections. It explicitly names this as "one invariant catching two
+different causes, not two rules," folding in the header-preservation
+corollary directly (confirmed absent from the file before this change,
+per the intent entry's own search) rather than presenting it as a
+separate concern.
+
+**Verification, as honestly as the intent asked for:** re-read the full
+amended rule (lines 208-262) end to end — reads as continuous prose
+consistent with the section's existing voice, no bullet formatting
+introduced, backtick-quoting matches the surrounding paragraphs' style.
+Cross-checked the new paragraph's own claims against the two `git`
+commands' real output already captured in the intent entry (empty diff,
+four distinct commits preserved) — the rule now states, as a general
+principle, exactly what that specific resolution already demonstrated in
+practice. No `PHILOSOPHY.md` self-check harness exists to run. No
+existing user data touched; this is a documentation-only change. No
+re-run, no reported numbers beyond what the intent entry already
+captured.
+
 ### Record intent: PHILOSOPHY.md — conflict resolution against the never-edit rule
 
 Own branch off `main`: `claude/philosophy-conflict-resolution-rule`.
