@@ -334,19 +334,28 @@ adds `capture_folder` (default `~/captures`) and `flat_library_folder`
 **Provenance is always written; Keep RAW Images is the only setting that
 changes what survives.** There is no setting that stops a record from
 being written — Brandon's framing: invisibility is the product, not the
-extinction of provenance. Off means raw frames + the linear master
-(`single_master.tif`/`master_*.tif`/`hdr_linear.tif`) are deleted once
-processing succeeds (`hdr_from_session.py process()`'s own
-`a.delete_raw_on_success`, wired from the `keep_raw_images` pref in
+extinction of provenance. Off means only this capture's own raw frames
+are deleted once processing succeeds (`hdr_from_session.py process()`'s
+own `a.delete_raw_on_success`, wired from the `keep_raw_images` pref in
 `qt_shell.py`'s `_run_process_cmd`, read live at processing time — not
-baked into an open session), and the session record states the discard
-was deliberate: `correction_status["raw_discarded"]` + (when true)
-`"raw_discard_reason"`, parsed out of `hdr_from_session.py`'s
+baked into an open session). **The linear master
+(`single_master.tif`/`master_*.tif`/`hdr_linear.tif`) is never touched
+by this setting** — until 2026-08-03 it was deleted alongside the raws,
+a real data-loss bug (a user leaving Keep RAW Images off was consenting
+to discard raws, not averaged/merged outputs built from a multi-frame
+bracket); see `CHANGELOG.md`'s "Keep RAW Images narrowed to raws only"
+entry for the full investigation and fix. The session record states the
+raw discard was deliberate: `correction_status["raw_discarded"]` + (when
+true) `"raw_discard_reason"`, parsed out of `hdr_from_session.py`'s
 `CORRECTION_STATUS_JSON:` stdout line and written onto the capture's own
 `session.json` entry by `qt_shell.py`'s `_record_correction_status` — a
 later reader (human or agent) can distinguish "the user chose not to
 keep these" from "a file is missing"; absence with a recorded reason is
-provenance, absence without one looks like corruption. `measure.py`
+provenance, absence without one looks like corruption. Two new,
+unconditional keys make the derived-output side explicit too, rather
+than leaving a reader to infer it from `raw_discarded` alone:
+`correction_status["derived_outputs_discarded"]` (always `False` today)
+and `["derived_outputs_note"]` (why). `measure.py`
 fails legibly (not obscurely, and specifically NOT a silent fallback to
 the JPG) on a raw-less capture: `load_measurement_plane`'s new
 `_raw_discard_reason` checks the owning capture's `raw_discarded` flag
@@ -2491,6 +2500,61 @@ changes the app's palette too, because the QSS themes
 fills in the rest on Linux — worth knowing before the macOS/Windows
 work, where no platform theme gets set at all and the app's appearance
 will be the QSS over whatever those platforms supply underneath.
+
+### Keep RAW Images narrowed to raws only — BUILT (data-loss fix), self-check only
+
+Own branch: `claude/keep-raw-images-scope-fix`, off `main` (fourth
+sibling alongside `claude/hdr-merge-verification-w7sb22`, `claude/frame-
+average-sidecar-wiring`, and `claude/white-level-constant-consolidation`
+— not stacked on any of them). Full investigation and the build are in
+`CHANGELOG.md`'s 2026-08-03 "Keep RAW Images narrowed to raws only"
+entry; see also the correction to the "Provenance relocation, Keep RAW,
+and auto-processing" section above, which described the old (buggy)
+behavior as the design.
+
+**The bug**: "Keep RAW Images" off deleted `master_N.tif`/
+`hdr_linear.tif`/`single_master.tif` — the averaged/merged
+intermediates — not only the raw frames the setting's name promises. A
+user leaving it off was consenting to discard raws, not derived outputs
+built from a multi-frame bracket. Real data loss: those intermediates
+are not re-derivable without re-shooting once the raws behind them are
+also gone.
+
+**Two adjacent findings from the investigation, NOT fixed (out of
+scope)**: `archive_raws()` (a different, separately-named feature,
+"Archive raws") globs by raw extension — off-rig (`--raw-ext tif`) it
+would also match every processed `.tif` output in the same directory,
+since raws and outputs share an extension there off-rig. Currently
+unreachable via the GUI (`qt_shell.py` always passes `--keep-raws`);
+only reachable via a direct CLI run. Nothing in the code guards a
+separately-launched `process_wizard.py` or Gallery view from reading a
+capture's files concurrently with, or right after, an auto-process
+worker thread's deletion — narrow, real, not addressed here.
+
+**The fix**: `hdr_from_session.py:process()`'s deletion loop no longer
+includes `master_files` — only `raw_files` are ever deleted by this
+setting. `correction_status` (persisted onto the capture's own
+`session.json` entry) now carries two new unconditional keys,
+`derived_outputs_discarded` (always `False`) and `derived_outputs_note`,
+matching `frame_average.py`'s/`hdr_merge.py`'s explicit-value-plus-note
+provenance convention — so a reader never has to infer "were
+intermediates kept?" from `raw_discarded` alone. `raw_discard_reason`'s
+text no longer falsely claims the master was discarded too.
+**Deliberately not added**: any new setting for discarding derived
+outputs — if disk pressure ever makes that wanted, it needs its own
+explicitly-named control and its own decision.
+
+**Verification, stated honestly**: `python3 -m py_compile` passes for
+both files. `hdr_from_session.py` was statically checked for real (the
+old buggy deletion expression is gone, the new fields exist, the false
+reason-text clause is gone) — no live functional exercise was run, and
+none was attempted even with placeholder/non-image files, since this
+task's own "no synthetic data" instruction was read as covering any
+fabricated on-disk stand-in given the task is specifically about file-
+deletion safety. `qt_shell.py`'s `render_check()` Keep RAW Images block
+was corrected to assert the new behavior but not run — no PyQt6/numpy
+in this sandbox, the same constraint every task on this repo has hit.
+No existing user data was touched, migrated, or deleted by this work.
 
 ## Things that will bite you if you don't know them
 
