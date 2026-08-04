@@ -7,6 +7,46 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-03
 
+### Record build: stale help text fixed, orphaned preview .jpgs cleaned up
+
+Built to the intent recorded below. No deviation.
+
+**Item 4.** `--delete-raw-on-success`'s `help=` string (the named target)
+now reads "delete this capture's own raw frames (and their preview
+.jpgs) only... never the averaged/merged intermediates
+(master_N.tif/hdr_linear.tif/single_master.tif)...". As the intent
+specified, `process()`'s own docstring, its inline comment above the
+deletion loop, and the runtime `correction_status["raw_discard_reason"]`
+string were all deliberately left untouched — they describe this
+branch's actual current behavior (deletion scope unchanged, per
+instruction), and changing them would have made them false here
+specifically. The cross-branch dependency this creates (this branch's
+docs now describe a contract only the sibling `claude/keep-raw-images-
+scope-fix` branch's code fulfills) is unchanged from what the intent
+already flagged.
+
+**Item 5.** The deletion loop's single `for f in raw_files +
+master_files` became two loops: `raw_files` (each raw's own
+`.with_suffix(".jpg")` sibling checked and unlinked alongside it) and
+`master_files` (unchanged, verbatim). Net files deleted when Keep RAW
+Images is off and no preview `.jpg`s exist (e.g. `FakeCamera`, or a
+session with no real hardware previews) is identical to before; on real
+hardware, each raw's own preview now goes with it.
+
+**Verification, as honestly as the intent asked for:** `python3 -m
+py_compile` passes. `hdr_from_session.py` has no non-stdlib dependencies
+and `--help` was actually run, confirming the corrected help text end to
+end, not just present in source. The jpg-cleanup logic was reviewed
+statically (confirmed `.with_suffix(".jpg")` correctly maps e.g.
+`1_frame_0000.dng` -> `1_frame_0000.jpg`, matching the real filename
+convention `Picamera2Camera._save_still_request` writes, and that the
+check-then-unlink is scoped strictly to `raw_files`, never
+`master_files`) — no placeholder files were created to exercise it live,
+consistent with this same session's own standard from the immediately
+preceding task. No existing user data was touched, migrated, or deleted.
+No re-run, no reported numbers — real verification is the user's, on the
+Pi.
+
 ### Record intent: stale help text fixed, orphaned preview .jpgs cleaned up
 
 Own branch off `main`: `claude/keep-raw-images-scope-fix-cleanup`. Fifth
