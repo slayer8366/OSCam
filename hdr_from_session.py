@@ -303,12 +303,25 @@ def process(capture_dir, session, cap, a, ext):
     # (an older caller, say) must degrade to keeping everything, never to
     # discarding by surprise. Runs AFTER the DNG export above on purpose --
     # that step needs the raw frames to still exist.
+    #
+    # Each raw frame's own preview .jpg (Picamera2Camera writes both per
+    # frame; FakeCamera never does, so this is a real-hardware-only path)
+    # follows the SAME retention rule as the raw it belongs to -- removed
+    # when the raw is, kept when the raw is kept -- since frames_for() only
+    # ever globs the raw extension, no other code path ever cleans these up
+    # and they would otherwise accumulate on every capture regardless of
+    # this setting. Derived directly from each raw's own path (.with_suffix)
+    # rather than a second frames_for() glob, so this can never touch a
+    # frame this run didn't itself select.
     raw_discarded = False
     if getattr(a, "delete_raw_on_success", False):
         for f in raw_files:
             f = Path(f)
             if f.exists():
                 f.unlink()
+            preview = f.with_suffix(".jpg")
+            if preview.exists():
+                preview.unlink()
         raw_discarded = True
 
     print("\nStages run:    " + ", ".join(ran))
