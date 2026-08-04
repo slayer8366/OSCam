@@ -5444,9 +5444,19 @@ if _HAVE_QT:
 
         def _open_gallery_browser(self):
             # Standalone browse mode (gallery.py): just looking, no commit.
-            # Independent of self._capturing -- it only reads the filesystem,
-            # and it is modal (exec()) like Process/Archive above, so it
-            # cannot race a capture in progress either way.
+            # CAVEAT: unguarded against self._capturing, unlike
+            # _open_processing_wizard right above -- this can race the
+            # auto-process worker thread's own deletion loop (Keep RAW
+            # Images off deletes this capture's raw frames + their preview
+            # .jpgs as process()'s last step). Being modal only blocks
+            # other GUI actions; it does not block a background worker
+            # thread, which is deliberately NOT blocked by the Qt event
+            # loop (that's the whole reason processing runs on one). A user
+            # opening this mid-process can list a file here and then fail
+            # to open it moments later (TOCTOU) if the worker thread's
+            # deletion lands in between. See CHANGELOG.md's 2026-08-03
+            # "Gallery race" investigation for the concurrency contract
+            # this function doesn't yet satisfy; no guard added here.
             if _gallery is None:
                 self._set_capture_status(
                     "gallery unavailable",
