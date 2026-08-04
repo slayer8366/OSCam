@@ -5,6 +5,73 @@ dump — each entry names the commit(s) it corresponds to for traceability.
 See `HANDOFF.md` for what a fresh agent needs to know before working here;
 this file is the historical record of what happened and why.
 
+## 2026-08-04
+
+### Record intent: append-with-positional-note conflict resolution, landed and generalized
+
+Own work directly against `main` (not a feature branch — this task's
+entire deliverable is documentation-shaped: two `CHANGELOG.md` entries
+and one `PHILOSOPHY.md` addition, plus landing one already-built
+branch). No code changes planned outside `CHANGELOG.md` and
+`PHILOSOPHY.md`; the Pi is not touched.
+
+**Background.** Landing `claude/white-level-constant-consolidation`
+produces a `CHANGELOG.md` merge conflict that a prior session correctly
+flagged and left unresolved rather than risk corrupting it: the
+conflict splits into two disjoint regions because
+`claude/keep-raw-images-scope-fix`'s and
+`claude/white-level-constant-consolidation`'s "Record intent" entries
+coincidentally share one boilerplate heading, `**Investigation, reported
+before any code change, per direct instruction:**`. Git's 3-way merge
+locks onto that identical line as a synchronization point and
+interleaves the two entries' numbered investigation lists around it;
+naively resolving each region independently would misattribute
+`white-level`'s own numbered list to a heading that isn't its own, and
+sandwich the entire unrelated `hdr-merge-verification` entry between the
+two halves of what should be one continuous section. That is exactly
+the case `PHILOSOPHY.md`'s never-edit rule exists to catch — the
+resolution needs to be a deliberate act, not a merge strategy.
+
+**Plan, part 1 — resolve the flagged conflict.** Land
+`claude/white-level-constant-consolidation`'s `CHANGELOG.md` content by
+appending it, in full and unaltered, to the end of the existing
+`## 2026-08-03` section, prefaced by a positional note (ordinary text,
+not a merge instruction) recording where it originally sat: the top of
+the document, on its own branch, directly preceding `## 2026-08-02`'s
+"Record build: HANDOFF.md restructure, part 1" entry (the most recent
+entry that existed when that branch forked from `main`), before its two
+siblings independently opened the same date heading and landed first.
+The note also states explicitly that the entry's own numbered
+investigation list is self-contained to it — not a continuation of, and
+not continued by, any list elsewhere in the document — since relabeling
+the list to make that visually obvious would itself be an edit to
+existing entry text, which this task's own instruction rules out.
+`HANDOFF.md`'s conflict is a plain, single-region append (verified by
+inspection, not assumed) and is resolved normally, with no positional
+note — it describes the present, not a history, so there is no
+position to preserve.
+
+**Plan, part 2 — generalize the method.** `claude/philosophy-conflict-
+resolution-rule` (not yet landed, not one of the "other three outstanding
+branches" this task is told to leave alone) added a `PHILOSOPHY.md` rule
+covering two conflict-resolution forms: interleaving (preserves
+everything in place, not an edit) and superseding (replaces a claim with
+a new entry pointing at the old one). This task folds that rule's
+existing two-form text forward as-is and adds a third form,
+append-with-positional-note, matching the method used in part 1: it
+preserves content while explicitly abandoning position and recording
+that position as text, for conflicts about arrangement rather than
+content. Its pass condition is stated in the same terms as the existing
+rule (every pre-existing entry present, byte-identical, still its own
+entry) plus the two requirements part 1 above needed in practice: name
+an anchor, not an index, and state a list's self-containment rather than
+renumber it.
+
+**Verification planned:** `git diff <pre-merge-main> HEAD -- CHANGELOG.md
+| grep '^-' | grep -v '^---'` must be empty — proof that no pre-existing
+entry lost a byte. `PHILOSOPHY.md`'s two existing forms carry forward
+unrestated once and are not rewritten to accommodate the third.
+
 ## 2026-08-03
 
 ### Record build: Keep RAW Images narrowed to raws only
