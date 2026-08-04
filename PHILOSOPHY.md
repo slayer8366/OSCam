@@ -247,6 +247,41 @@ the code wasn't built before the build record, undo only the building
 that was done and start over — keep every record, including the one
 that shows the false start.
 
+Resolving a merge conflict in `CHANGELOG.md` is not an edit, provided the
+resolution only interleaves entries: every pre-existing entry survives
+byte-identical and stays under its own header, and the two branches'
+entries are simply reordered relative to each other, never rewritten.
+The moment a resolution changes the text of an existing entry — even to
+fix a typo, even to reconcile two branches' near-identical wording — it
+is an edit, and the correct form is the one hand-authored corrections
+already use: a new entry that supersedes the changed one, recording what
+the parallel work actually changed. This is one invariant catching two
+different causes, not two rules: whether an entry's own header and text
+got altered by a careless hand correction or a careless merge, the check
+is the same — confirm every pre-existing entry is still present, still
+byte-identical, and still sitting under its own header, never folded
+into a neighbor's. A conflict resolution is verified exactly the way a
+superseding entry is, for exactly this reason.
+
+A third form covers conflicts about arrangement rather than content:
+append-with-positional-note. Two branches' entries can land under the
+same date heading in an order that misrepresents when either was
+actually written — interleaving would misattribute one entry's own
+sublist to a heading it doesn't belong to, or split an unrelated entry
+in half. The resolution appends the incoming entry, in full and
+unaltered, to the end of the section it's landing into, prefaced by an
+ordinary-text note (not a merge instruction) recording where it actually
+sat — named by an anchor already in the document, not a position index,
+since indices drift and anchors don't — and stating explicitly that
+anything internal to the entry, such as a numbered list, is
+self-contained to it rather than a continuation of anything nearby.
+Renumbering that list to make the boundary visually obvious would itself
+be a rewrite of existing entry text, which this rule forbids; the note
+carries that fact in prose instead. Verified the same way as the other
+two forms, plus the two things unique to this one: the note names an
+anchor rather than an index, and it states self-containment rather than
+renumbering to show it.
+
 ---
 
 ## Flexible — judgment applies
