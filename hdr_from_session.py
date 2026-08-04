@@ -45,14 +45,20 @@ __version__ = "1.0"
 # independently hardcoded and had already drifted into two different
 # Python types (str default here, int default there) despite agreeing
 # numerically; see CHANGELOG.md's 2026-08-03 "white_level defaults
-# consolidated" entry. The one real measurement on record differs from
-# this default: the August 2026 bracket's own frame5/frame4 ratio break
-# put the true ceiling at ~61000, at an analogue gain that went
-# unrecorded (see hdr_merge.py's own white_level_gain_dependency
-# provenance field). This default stays 65520, NOT 61000 -- that number
-# is only valid for one specific bracket's unrecorded gain, and
-# hardcoding it here as a new blanket default would repeat the exact
-# mistake this constant's own history is already one instance of.
+# consolidated" entry. The real ceiling differs from this default and is
+# measured, not a one-off guess: the August 2026 bracket's frame5/frame4
+# ratio break puts it at ~61000, reproduced on a second bracket a month
+# older. The actual merge for that bracket was run at --white-level
+# 62100, landing the cutoff below the ratio's departure from 2.00 rather
+# than at it, since that departure is gradual, not a step. The gain that
+# ceiling is valid for is now confirmed, not unrecorded: AnalogueGain
+# 3.282051, identical across all 80 science frames in that bracket's own
+# capture sidecars (session.json's capture_dir plus an exact per-level
+# exposure-time match tie the sidecars to this bracket unambiguously).
+# This default stays 65520, NOT 61000 -- that number is only valid at
+# this bracket's confirmed gain, and hardcoding it here as a new blanket
+# default would repeat the exact mistake this constant's own history is
+# already one instance of.
 MERGE_WHITE_LEVEL_DEFAULT = 65520
 
 
