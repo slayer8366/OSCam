@@ -7,6 +7,48 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-04
 
+### Record build: append-with-positional-note conflict resolution, landed and generalized
+
+Built to the intent recorded below, across two sessions (the second
+resuming after the first hung mid-merge). No deviation in the resolution
+method itself; one scope note below.
+
+**Part 1, landing the conflict.** `claude/white-level-constant-
+consolidation` merged as `119cefc`. `CHANGELOG.md`'s conflict resolved
+exactly as planned: the incoming branch's two entries appended verbatim
+to the end of the `## 2026-08-03` section, prefaced by the positional
+note describing where they originally sat and stating their numbered
+list's self-containment. `HANDOFF.md`'s conflict was, as predicted by
+inspection, a plain single-region append and needed no positional note.
+The two auto-merged code files were checked (`py_compile` clean,
+`MERGE_WHITE_LEVEL_DEFAULT` reads back correctly) before the merge
+commit.
+
+**Part 2, generalizing the rule.** `PHILOSOPHY.md`'s existing two-form
+conflict-resolution text (interleaving, superseding — from `claude/
+philosophy-conflict-resolution-rule`, still unlanded as a branch but
+folded forward here as the intent specified) carries forward unrestated
+once, immediately followed by a new third-form paragraph,
+append-with-positional-note, describing the method part 1 just used:
+preserves content while abandoning position, records that position as
+prose naming an anchor rather than an index, and states a list's
+self-containment rather than renumbering it to show the boundary.
+
+**Against the baseline the intent stated:** `git diff 031bbe6 HEAD --
+CHANGELOG.md | grep '^-' | grep -v '^---'` is empty — zero pre-existing
+lines lost. `PHILOSOPHY.md`'s two existing forms are present exactly
+once, byte-identical to `claude/philosophy-conflict-resolution-rule`'s
+own wording, not rewritten to accommodate the third. Full `qt_shell.py
+--render-check` sweep: exit 0, no failures.
+
+**Scope note, the one deviation from a literal reading of the intent:**
+the intent said this task's entire deliverable is "two `CHANGELOG.md`
+entries and one `PHILOSOPHY.md` addition" — that undercounted by one; a
+`CHANGELOG.md` entry describing the build (this one) is also required by
+this project's own intent/build convention, which the intent entry
+itself follows for every other piece of work in this file. Recording it
+here rather than treating it as silently implied.
+
 ### Record intent: append-with-positional-note conflict resolution, landed and generalized
 
 Own work directly against `main` (not a feature branch — this task's
