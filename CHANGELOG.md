@@ -7,6 +7,77 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-03
 
+### Record intent: PHILOSOPHY.md — conflict resolution against the never-edit rule
+
+Own branch off `main`: `claude/philosophy-conflict-resolution-rule`.
+Repo-only: the Pi is unreachable, no verification runs, no synthetic
+data, no existing user data touched.
+
+**Verification, done and reported before any file was touched, per
+direct instruction:**
+
+1. `git diff 031bbe6^1 origin/claude/keep-raw-images-scope-fix-cleanup --
+   CHANGELOG.md | grep '^-' | grep -v '^---'` — empty. Every pre-existing
+   line of `CHANGELOG.md` survived the rebase's conflict resolution
+   byte-identical; no entry's text changed and no entry's own header
+   line was removed (which an absorption into a neighboring entry would
+   show up as). `git log --oneline 031bbe6^1..origin/claude/keep-raw-
+   images-scope-fix-cleanup -- CHANGELOG.md` shows all four original
+   commits (two intent, two record-build, from the two independently-
+   authored tasks) still present as their own distinct commits, not
+   flattened into the merge. The rebase's conflict resolution was
+   interleaving only, consistent with the never-edit rule. Nothing to
+   fix; reported only.
+2. Branch-landing shapes in history, factually, no recommendation: every
+   `PHILOSOPHY.md`-touching commit series to date (`36ab34f` through
+   `49db921`) is a single-parent commit, a direct ancestor of `main`,
+   absent from `git log --merges` — fast-forward, no merge commit, no
+   PR. PRs #1-#9 (12 merge commits total in `main`'s history, most
+   recent `031bbe6`) are the only merge-commit-shaped landings; none
+   references `PHILOSOPHY.md`. Both shapes coexist; nothing in the repo
+   records which is intended for which kind of change. No branch-
+   landing-form rule is added in this task — that decision is the
+   user's, explicitly deferred.
+
+**The corollary this amendment is meant to fold in — "a superseding
+entry consumes the superseded entry's header" — was searched for and
+not found anywhere in the repo** (`PHILOSOPHY.md` or `CHANGELOG.md`).
+This amendment is therefore not a merge of two existing texts; it is one
+new paragraph stating the conflict-resolution rule and explicitly
+framing it as the same invariant as the existing never-edit rule
+(`PHILOSOPHY.md`'s "A `CHANGELOG.md` entry, once written, is never
+modified," Strict rules section) applied to a mechanical cause (a merge)
+rather than a hand-authored one (a careless correction) — one check,
+two causes, not two near-identical rules.
+
+**Scope** (reported as scope, not a count, per direct instruction):
+- **File touched**: `PHILOSOPHY.md` only. `CHANGELOG.md` is touched only
+  by this task's own three-phase entries (this one, plus the build and
+  record-build entries to follow) — not by the amendment's subject
+  matter.
+- **Rule that changes**: the existing "A `CHANGELOG.md` entry, once
+  written, is never modified" rule (Strict rules section) gains a new
+  paragraph, placed immediately after it, extending the same invariant
+  to mechanical merge-conflict resolution: interleaving-only is not an
+  edit; a resolution that changes existing entry text is an edit, and
+  the correct form is the same superseding-entry mechanism already
+  documented for hand-authored corrections. Wording fitted to the
+  section's existing voice (continuous prose, backtick-quoted names, no
+  bullet list) rather than pasted verbatim from the task's proposal.
+- **Deliberately left alone**: no branch-landing-form rule (item 2's
+  finding is reported, not turned into a rule — explicitly the user's
+  decision); no other section of `PHILOSOPHY.md`; no code file anywhere;
+  no restructuring of the existing never-edit paragraph itself beyond
+  appending the new one.
+
+**Verification, stated honestly:** this is a documentation-only change.
+Verification is a re-read of the amended section for internal
+consistency with the rest of the Strict rules section's voice and with
+the two `git` commands' actual output above, not a code check — there is
+no `PHILOSOPHY.md` self-check harness to run. No re-run, no reported
+numbers beyond the two commands' own output, no existing user data
+touched.
+
 ### Record build: Keep RAW Images narrowed to raws only
 
 Built to the intent recorded below. No deviation.
