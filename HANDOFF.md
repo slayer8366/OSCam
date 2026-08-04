@@ -2556,6 +2556,57 @@ was corrected to assert the new behavior but not run — no PyQt6/numpy
 in this sandbox, the same constraint every task on this repo has hit.
 No existing user data was touched, migrated, or deleted by this work.
 
+### hdr_merge.py provenance-integrity fixes (six defects) — BUILT, self-check only, NOT yet run on real hardware
+
+Own branch: `claude/hdr-merge-verification-w7sb22`. `hdr_merge.py` is now
+`__version__ = "1.1"` (was `"1.0"`) — six defects found by hand-auditing a
+real 5-frame bracket run's embedded provenance JSON against the actual
+bracket data (on the Pi only, not in this checkout). Full reasoning,
+measured baseline, and the six-defect list are in `CHANGELOG.md`'s
+2026-08-03 intent/build entries. Merge math is untouched by all six.
+
+**What changed, briefly** (see `CHANGELOG.md` for the why): `metadata=None`
+added to the `imwrite` call plus a new `_assert_single_description_tag()`
+that re-opens the written file and hard-fails if TIFF tag 270
+(ImageDescription) isn't exactly one — fixes a real duplicate-tag bug, not
+just the symptom. `-o`'s value is now resolved to an absolute path before
+being recorded in its own provenance, instead of the raw possibly-stale
+CLI string. Five new optional CLI flags — `--white-level-source`,
+`--analogue-gain`, `--black-note`, `--channel-layout {mosaic,mono}`,
+`--cfa-pattern` — record operator-supplied context that the file's own
+bytes structurally can't prove (mosaic vs. mono, why a black level of 0.0
+is real vs. never-implemented, what gain a white-level cutoff is only
+valid for); every one is `null` in the provenance JSON when omitted,
+never silently guessed or omitted from the record.
+
+**The capture-metadata propagation gap (defect 6) is real, in-repo, and
+deliberately NOT fixed here.** `camera_backend.py` and `provenance.py`
+already capture and persist `AnalogueGain`/`ExposureTime` per frame into
+each capture's own `.meta.json` sidecar (`record_capture`/`record_burst`/
+`record_hdr`) — confirmed by reading the code, not assumed. The actual
+gap is `frame_average.py`: its own provenance dict (`frame_average.py`
+~321-412) has no gain/sensor-mode/capture-time fields at all and never
+reads those sidecars. `hdr_merge.py` now has the read side ready
+(`try_read_embedded_capture_meta()`, looking for `analogue_gain`/
+`sensor_mode`/`capture_time_utc` in a master's own embedded JSON) so the
+day `frame_average.py` starts writing those three keys, every exposure
+record in `hdr_merge.py`'s output picks them up with zero further change
+here. **Backlog item, not scoped or started:** teach `frame_average.py`
+to read the per-frame `.meta.json` sidecars its own inputs came from and
+stamp `analogue_gain`/`sensor_mode`/`capture_time_utc` into its own output
+provenance under those exact key names.
+
+**Verification, stated honestly**: `python3 -m py_compile hdr_merge.py`
+passes. No real bracket exists in this checkout (the 5 masters live only
+on the Pi) and no synthetic bracket was fabricated to exercise this fix —
+a passing synthetic run would only prove the code agrees with the numbers
+used to derive the fix, and a fabricated bracket in a captures-shaped
+path is itself a provenance contamination risk. `numpy`/`tifffile` aren't
+even installed in this checkout, so a runtime smoke test wasn't possible
+here regardless. Real verification — the merge actually running, the
+saturation-rejected count going nonzero, the real embedded JSON, tag 270
+confirmed against a real file — is the user's to run on the Pi.
+
 ## Things that will bite you if you don't know them
 
 **`qt_shell.py`'s `render_check()` now monkeypatches `PROFILE_PATH` for
