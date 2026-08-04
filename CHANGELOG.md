@@ -7,6 +7,30 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-03
 
+### Record build: Gallery race comment corrected to a stated contract
+
+Built to the intent recorded below. No deviation.
+
+`_open_gallery_browser`'s comment (`qt_shell.py:5445`) no longer claims
+"it is modal... so it cannot race a capture in progress" — replaced with
+a `# CAVEAT:` block (PHILOSOPHY.md's convention for a durable fact about
+a specific line) stating plainly: unguarded against `self._capturing`,
+can race the auto-process worker thread's own deletion loop (raws +
+their preview `.jpg`s, as of the now-merged `claude/keep-raw-images-
+scope-fix`/`-cleanup` work), TOCTOU on listing-then-open, being modal
+only blocks other GUI actions and does not block a background worker
+thread by design. Points to this entry for the full concurrency contract
+rather than restating it inline. No guard added — per instruction, that
+choice (coarse `self._capturing` reuse vs. a finer per-capture check,
+both already on record) is the user's.
+
+**Verification, as honestly as the intent asked for:** `python3 -m
+py_compile qt_shell.py` passes — the only check possible here, no
+PyQt6/numpy in this sandbox for a live Qt exercise. No real bracket/
+session data exists in this checkout, none fabricated, no existing user
+data touched. No re-run, no reported numbers — real verification is the
+user's, on the Pi.
+
 ### Record intent: Gallery race comment corrected to a stated contract
 
 Own branch off the updated `main`: `claude/gallery-race-comment-fix`.

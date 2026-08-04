@@ -2556,6 +2556,38 @@ was corrected to assert the new behavior but not run — no PyQt6/numpy
 in this sandbox, the same constraint every task on this repo has hit.
 No existing user data was touched, migrated, or deleted by this work.
 
+### Gallery race comment corrected to a stated contract — BUILT (comment only), self-check only
+
+Own branch: `claude/gallery-race-comment-fix`, off the updated `main`
+(after `claude/keep-raw-images-scope-fix` landed via PR #9). Full
+investigation and the build are in `CHANGELOG.md`'s 2026-08-03 entries.
+
+**The fix**: `_open_gallery_browser`'s own comment used to claim it
+"cannot race a capture in progress" because it's modal — a real reasoning
+error, not just stale prose: a modal dialog blocks other Qt *GUI*
+actions, not a background *worker thread*, and auto-process's deletion
+runs on a worker thread specifically so it does NOT block the Qt event
+loop. Replaced with a `# CAVEAT:` stating the actual situation:
+unguarded, can race the worker thread's own deletion loop (raws + their
+preview `.jpg`s), TOCTOU on listing-then-open. No guard added — that
+decision (`_open_processing_wizard`'s existing coarse `self._capturing`
+check, reused, vs. a finer per-capture check against the already-tracked
+`self._last_process_session_dir`/`_last_process_index`) is the user's.
+
+**Also reported, design only, not built**: a re-tested, lower cost
+estimate for embedding a confirmed retention fact into `final.tif`
+before deletion (`debayer.py`'s inputs never touch raws, so reordering
+it after deletion is cheaper than originally estimated — only DNG
+export's non-merge path needs a raw file, and it can simply stay ahead
+of deletion); a third design (a supersede-after-the-fact record, keyed
+per capture, using the same append-only pattern `calibrate.py`'s
+calibration store already proves out) with its own real costs
+(no per-capture key exists yet; the generalized store module isn't built
+yet either) and a real discoverability gap if it lands as a sidecar
+rather than in the file. All three compared on whether the artifact's
+own embedded claim can ever be false — see `CHANGELOG.md` for the full
+comparison. None of this is built; the choice among them is the user's.
+
 ## Things that will bite you if you don't know them
 
 **`qt_shell.py`'s `render_check()` now monkeypatches `PROFILE_PATH` for
