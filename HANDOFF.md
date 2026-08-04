@@ -2607,6 +2607,46 @@ here regardless. Real verification — the merge actually running, the
 saturation-rejected count going nonzero, the real embedded JSON, tag 270
 confirmed against a real file — is the user's to run on the Pi.
 
+### white_level defaults consolidated + sigma-clip/raw-retention/UTC-anchor investigation — BUILT (constant only), self-check only
+
+Own branch: `claude/white-level-constant-consolidation`, off `main` (a
+third sibling alongside `claude/hdr-merge-verification-w7sb22` and
+`claude/frame-average-sidecar-wiring`, not stacked on either). Full
+investigation and the build itself are in `CHANGELOG.md`'s 2026-08-03
+entries; three findings worth keeping visible here:
+
+1. **`frame_average.py`'s `--sigma-clip` can reject genuine unclipped
+   samples and keep a clipped cluster as "the population"** — confirmed
+   against the actual formula (single-iteration mean/sd over ALL frames,
+   never refined) and verified numerically. Defaults OFF (`None`), and
+   no caller in this repo ever passes it — inactive in the real pipeline
+   today. Not fixed (out of scope for that task; no saturation rejection
+   was added to `frame_average.py`).
+2. **`hdr_from_session.py`'s "Keep RAW Images" off deletes `master_N.tif`
+   too, not just the raws** (`hdr_from_session.py:283-303`,
+   `a.delete_raw_on_success`) — whether a given bracket's masters/raws
+   still exist depends entirely on that session's own setting, which is
+   Pi-side state invisible from this repo.
+3. **A monotonic→UTC anchor for `capture_time_utc` needs a paired
+   reading taken once (near where the camera starts) and carried forward
+   via `session.json`, with the actual `SensorTimestamp` conversion done
+   upstream in `provenance.py` at sidecar-write time** — design only, not
+   built; `frame_average.py`'s existing `--sidecar-dir` wiring already
+   picks up a real `capture_time_utc` the moment a sidecar carries one.
+
+**Built**: `hdr_from_session.MERGE_WHITE_LEVEL_DEFAULT = 65520` (one
+definition, with the comment recording it's a container-range assumption
+vs. the real ~61000 measured ceiling at an unrecorded gain — see
+`hdr_merge.py`'s `white_level_gain_dependency` field). `qt_shell.py`
+imports it via a new guarded import (matching the existing
+`_process_wizard`/`_plane_cache` pattern) instead of keeping its own
+independent `65520` literal. `process_wizard.py`'s unrelated
+`DEFAULT_WHITE_LEVEL` (feeds `debayer.py --assume-linear`, a different
+codepath) is untouched. Verified for real, not just `py_compile`:
+`hdr_from_session.py` has no non-stdlib dependencies, so it was actually
+imported in this sandbox and its constant/`--wl` default confirmed to
+resolve and stringify identically to the old literal.
+
 ## Things that will bite you if you don't know them
 
 **`qt_shell.py`'s `render_check()` now monkeypatches `PROFILE_PATH` for

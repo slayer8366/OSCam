@@ -381,6 +381,145 @@ the code runs, not that the fix is numerically correct). Real numbers
 JSON, tag-270 count) come from a real run on the Pi, done separately by
 the user — not attempted or reported from this session.
 
+**Positional note.** The two entries directly below (`Record build:
+white_level defaults consolidated to one constant` and `Record intent:
+white_level defaults consolidated to one constant`) are appended here,
+in full and unaltered, from `claude/white-level-constant-consolidation`.
+On that branch they sat at the top of the document, directly preceding
+`## 2026-08-02`'s "Record build: HANDOFF.md restructure, part 1" entry
+— the most recent entry that existed when the branch forked from
+`main`, before its siblings `claude/hdr-merge-verification-w7sb22` and
+`claude/keep-raw-images-scope-fix` independently opened this same
+`## 2026-08-03` date heading and landed first. The entries' own numbered
+investigation list, below, is self-contained to the "Record intent"
+entry it appears in — not a continuation of, and not continued by, any
+other numbered list in this section.
+
+### Record build: white_level defaults consolidated to one constant
+
+Built to the intent recorded below. No deviation.
+
+**Against the counted baseline** (two independent literals, two Python
+types — string `"65520"` in `hdr_from_session.py`, bare int `65520` in
+`qt_shell.py`): `hdr_from_session.py` gains `MERGE_WHITE_LEVEL_DEFAULT =
+65520` (plain int) right after `__version__`, with the comment the intent
+specified (container-range assumption; the August 2026 bracket's real
+~61000 ceiling at an unrecorded gain; why that number isn't promoted to
+a new default). Its own `--wl` argparse now defaults to the constant
+instead of the string literal. `qt_shell.py` gains a guarded import of
+`hdr_from_session` (mirroring the existing `_process_wizard`/
+`_plane_cache` pattern exactly: nested `try/except ImportError`,
+`None` if the sibling file is missing), and its own `--wl` default
+becomes `_hdr_from_session.MERGE_WHITE_LEVEL_DEFAULT if _hdr_from_session
+else 65520` — the `else 65520` is the documented "sibling script
+physically absent" fallback the intent called for, not a second source
+of truth for the normal case. `process_wizard.py` untouched, as planned.
+
+**A future grep for `65520` now shows exactly what the intent asked
+for**: one real definition (`hdr_from_session.py`'s
+`MERGE_WHITE_LEVEL_DEFAULT`), one reference to it, one degrade-path
+fallback that's commented as exactly that, and `process_wizard.py`'s own
+`DEFAULT_WHITE_LEVEL = 65520.0` sitting apart, unrelated, undisturbed.
+
+**Verification, as honestly as the intent asked for:** `python3 -m
+py_compile` passes for both files. `hdr_from_session.py` has zero non-
+stdlib dependencies, so — unlike `qt_shell.py`, which needs PyQt6/numpy
+this sandbox doesn't have — it could actually be imported and exercised
+for real: `import hdr_from_session; hdr_from_session.
+MERGE_WHITE_LEVEL_DEFAULT` reads back `65520` (int), `str()` of it is
+`"65520"` (byte-identical to the old literal, confirming no downstream
+formatting change), and `python3 hdr_from_session.py --help` shows the
+`--wl` flag wired correctly end to end. No real bracket/session data
+exists in this checkout, none fabricated; no re-run, no reported numbers
+— real pipeline verification is the user's to run on the Pi.
+
+### Record intent: white_level defaults consolidated to one constant
+
+Own branch off `main`: `claude/white-level-constant-consolidation`.
+Sibling to `claude/hdr-merge-verification-w7sb22` and `claude/frame-
+average-sidecar-wiring` (both pushed and done) — not stacked on either.
+No bracket/captures data is reachable from this session; none was
+fabricated. `frame_average.py`'s averaging behavior is untouched.
+
+**Investigation, reported before any code change, per direct
+instruction:**
+
+1. **Can `--sigma-clip` discard unsaturated samples in favor of
+   saturated ones?** Yes, structurally possible, confirmed against the
+   actual formula (`frame_average.py:242-277`): `mean`/`sd` are computed
+   once over ALL frames (single iteration, never refined — matches the
+   docstring), so a majority-clipped pixel (identical, zero-spread
+   clipped values pulling the pooled mean toward them) can make the
+   minority unclipped samples the higher-deviation ones and get them
+   rejected instead. Verified numerically (illustrative arithmetic only,
+   3 identical 64200s + 58000/59000, not synthetic capture data, no
+   files written): at `K=1` the two genuine unclipped samples are
+   rejected and the clipped cluster survives; at `K=2`/`K=3` nothing is
+   rejected in this scenario. Parameter- and pixel-mix-dependent, not
+   guaranteed. **`--sigma-clip` defaults to `None` (off)**, and no
+   caller in this repo (`hdr_from_session.py:process()`, the only real
+   invocation site) ever passes it — inactive in the actual pipeline
+   today, reachable only via a manual direct CLI call.
+2. **Are pre-average raws retained?** Yes by default, conditionally.
+   Per-level frames: `<level>_frame_NNNN.<ext>` (prefix_template `""`,
+   confirmed at `qt_shell.py:4893-4894`), count set by the GUI's own
+   `armed["n"]` at capture time (not a fixed constant). `frame_average.py`
+   never deletes its inputs. But `hdr_from_session.py:process()` (lines
+   283-303) does, when "Keep RAW Images" is off
+   (`a.delete_raw_on_success`): every raw frame AND every `master_N.tif`
+   plus `hdr_linear.tif` are unlinked once processing succeeds — only
+   `final.tif`/`final_display.*`/exports survive. Whether the real
+   bracket's masters/raws still exist depends on that session's own
+   Keep-RAW setting, which is Pi-side state not visible from this repo.
+3. **Monotonic→UTC anchor design** (not implemented): take a paired
+   `datetime.now(timezone.utc)` + monotonic (believed `CLOCK_BOOTTIME`,
+   to be confirmed on-rig) reading close to where the camera actually
+   starts; carry it forward as new top-level `session.json` fields; do
+   the `SensorTimestamp` conversion once, upstream, in `provenance.py` at
+   sidecar-write time, stamping a real `capture_time_utc` directly into
+   each `.meta.json`. `frame_average.py`'s existing `--sidecar-dir`
+   wiring would then pick it up automatically via
+   `aggregate_capture_field()` with no further change there.
+
+**Plan for item 4 (the only code change in this task):** a new
+`MERGE_WHITE_LEVEL_DEFAULT` constant, defined once in `hdr_from_session.py`
+(the actual owner of `--wl` and the direct caller of `hdr_merge.py
+--white-level`), carrying a comment recording both that `65520` is a
+container-range assumption (not a measured sensor value) and that the
+one real measurement on record — the August 2026 bracket's frame5/frame4
+ratio-break finding — put the true ceiling at ~61000, at an analogue gain
+that went unrecorded (`hdr_merge.py`'s own `white_level_gain_dependency`
+field). `qt_shell.py:5744` imports it via this file's own established
+guarded-import pattern (matching `_process_wizard`/`_plane_cache`:
+nested `try/except ImportError`, degrading to a literal fallback — the
+existing "sibling script physically missing" case, already otherwise
+handled by `_run_process_cmd`'s own `PROCESSOR.exists()` check).
+`hdr_from_session.py`'s own `--wl` argparse default switches from the
+string literal `"65520"` to this constant; the constant's value (a plain
+int, `65520`) stringifies identically (`str(65520) == "65520"`), so
+every downstream consumer (the `hdr_merge.py`/`debayer.py` subprocess
+calls, the printed stage-summary lines) is byte-for-byte unaffected.
+**Not touched**: `process_wizard.py`'s own `DEFAULT_WHITE_LEVEL = 65520.0`
+— explicitly out of scope (different codepath, feeds `debayer.py
+--assume-linear` only) — and the value itself is not changed to `61000`
+anywhere; that number is only valid for one bracket's unrecorded gain,
+and hardcoding it as a new blanket default would repeat the exact
+mistake this constant's own history already is one instance of.
+
+**Baseline:** `hdr_from_session.py` is 431 lines, `qt_shell.py`'s `--wl`
+default is a bare int `65520`, `hdr_from_session.py`'s is the string
+`"65520"` — two independent literals, two different Python types, same
+numeric value, zero shared source today.
+
+**Verification, stated honestly:** no real bracket/session data exists
+in this checkout, none fabricated. `hdr_from_session.py` has no
+non-stdlib dependencies, so it can actually be imported and exercised
+directly in this sandbox (unlike `qt_shell.py`, which needs PyQt6/numpy
+this environment doesn't have) — `python3 -c "import hdr_from_session"`
+plus reading back the constant is real verification, not just
+`py_compile`. `qt_shell.py` gets `py_compile` only. No re-run, no
+reported numbers — real pipeline verification happens on the Pi.
+
 ## 2026-08-02
 
 ### Record build: HANDOFF.md restructure, part 1 — fix the confirmed-stale sections

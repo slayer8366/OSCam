@@ -38,6 +38,29 @@ from pathlib import Path
 SCRIPTS = Path(__file__).resolve().parent
 __version__ = "1.0"
 
+# Default --wl (sensor white level) for THIS merge path (frame_average ->
+# hdr_merge -> debayer): a container-range assumption (near the full
+# 16-bit ceiling), not a measured sensor value. qt_shell.py imports this
+# constant rather than keeping its own copy -- the two used to be
+# independently hardcoded and had already drifted into two different
+# Python types (str default here, int default there) despite agreeing
+# numerically; see CHANGELOG.md's 2026-08-03 "white_level defaults
+# consolidated" entry. The real ceiling differs from this default and is
+# measured, not a one-off guess: the August 2026 bracket's frame5/frame4
+# ratio break puts it at ~61000, reproduced on a second bracket a month
+# older. The actual merge for that bracket was run at --white-level
+# 62100, landing the cutoff below the ratio's departure from 2.00 rather
+# than at it, since that departure is gradual, not a step. The gain that
+# ceiling is valid for is now confirmed, not unrecorded: AnalogueGain
+# 3.282051, identical across all 80 science frames in that bracket's own
+# capture sidecars (session.json's capture_dir plus an exact per-level
+# exposure-time match tie the sidecars to this bracket unambiguously).
+# This default stays 65520, NOT 61000 -- that number is only valid at
+# this bracket's confirmed gain, and hardcoding it here as a new blanket
+# default would repeat the exact mistake this constant's own history is
+# already one instance of.
+MERGE_WHITE_LEVEL_DEFAULT = 65520
+
 
 def run_tool(name, args, cwd):
     cmd = [sys.executable, str(SCRIPTS / name)] + [str(a) for a in args]
@@ -382,7 +405,8 @@ def main():
     ap.add_argument("session", help="provenance folder (contains session.json)")
     ap.add_argument("--kind", choices=["auto", "hdr", "science", "snap"], default="auto")
     ap.add_argument("--index", type=int, default=None, help="process captures[INDEX]")
-    ap.add_argument("--wl", default="65520", help="sensor white level / saturation")
+    ap.add_argument("--wl", default=MERGE_WHITE_LEVEL_DEFAULT,
+                    help="sensor white level / saturation")
     ap.add_argument("--lw", default="2.2", help="Reinhard white point for the HDR path")
     ap.add_argument("--gains", nargs=2, metavar=("RED", "BLUE"), default=None,
                     help="ColourGains white balance (green=1.0)")
