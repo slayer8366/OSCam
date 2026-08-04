@@ -11,6 +11,28 @@ that happened. If you add, fix, or change something meaningful, update the
 relevant section here and add a `CHANGELOG.md` entry as part of that same
 piece of work, not as an afterthought at the end.
 
+**Immediate open item, as of 2026-08-04**: `task9-work` (this branch) is
+built, verified, and confirmed fast-forward-safe onto `origin/main`, but
+the push itself is blocked by the session's own auto-mode permission
+classifier — see `CHANGELOG.md`'s "Open: task9-work fast-forward to
+main, blocked on push permission" entry for the exact command and the
+check for whether this is already stale.
+
+## Open right now
+
+`task9-work` (ending `005ff56`) is fully built, committed, and confirmed as
+a clean fast-forward onto `origin/main` — `git merge-base --is-ancestor
+origin/main task9-work` passes, `origin/main` hasn't moved since the branch
+was cut. Nothing left to do but `git push origin task9-work:main`. That
+push is blocked in this environment (the auto-mode classifier denies direct
+pushes to `main` as a shared-state action, even after the user approved it
+in conversation) and needs a human to run it directly from a shell outside
+this session — see `CHANGELOG.md`'s "Open: task9-work fast-forward to
+main, blocked on push permission" entry for the verification behind
+"clean fast-forward," why this lands as a direct push rather than a PR,
+and the bookkeeping items (retired/outstanding branches) to handle once
+it lands.
+
 ## What this project is
 
 A microscopy capture + calibration + measurement suite for a Raspberry Pi 5

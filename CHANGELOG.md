@@ -7,6 +7,37 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-04
 
+### Open: task9-work fast-forward to main, blocked on push permission
+
+`task9-work` (this branch) carries the build below plus the
+`claude/white-level-constant-consolidation` merge (`119cefc`). Per the
+user's explicit instruction, it lands the same way every prior
+PHILOSOPHY.md-touching branch has: a direct fast-forward push to `main`,
+no PR, no merge commit — the same form used for the PyQt6 port (see
+`CHANGELOG.md`'s and `HANDOFF.md`'s port entries). Confirmed safe:
+`git fetch origin main && git merge-base --is-ancestor origin/main
+task9-work` printed "fast-forward safe" as of this entry.
+
+The push itself (`git push origin task9-work:main`, run from
+`/home/bwann83/imx/.claude/worktrees/land-hdr-merge-verification`) is
+blocked by the session's own auto-mode permission classifier, not by
+git — it refuses `git push` to `main` regardless of the user having
+already approved it in conversation. **Default, if no one revisits
+this**: the user runs the push directly from a shell outside this
+session, since that's the one path the classifier can't intercept.
+Whoever picks this up next: check `git log origin/main -1` against
+`task9-work`'s tip (`005ff56` as of this entry) — if they already
+match, this is stale and the push already happened.
+
+Two bookkeeping items for after it lands, from the user directly:
+`claude/white-level-constant-consolidation` is already merged in via
+`119cefc` (see below) — retired, don't attempt to land it again.
+`claude/frame-average-sidecar-wiring`,
+`claude/keep-raw-images-scope-fix-cleanup`, and
+`claude/gallery-race-comment-fix` are still outstanding and don't touch
+`PHILOSOPHY.md`, so they land under the other form (PR, not direct push)
+once this push clears.
+
 ### Record build: append-with-positional-note conflict resolution, landed and generalized
 
 Built to the intent recorded below, across two sessions (the second
