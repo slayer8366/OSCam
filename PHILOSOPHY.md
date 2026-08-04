@@ -247,6 +247,22 @@ the code wasn't built before the build record, undo only the building
 that was done and start over — keep every record, including the one
 that shows the false start.
 
+Resolving a merge conflict in `CHANGELOG.md` is not an edit, provided the
+resolution only interleaves entries: every pre-existing entry survives
+byte-identical and stays under its own header, and the two branches'
+entries are simply reordered relative to each other, never rewritten.
+The moment a resolution changes the text of an existing entry — even to
+fix a typo, even to reconcile two branches' near-identical wording — it
+is an edit, and the correct form is the one hand-authored corrections
+already use: a new entry that supersedes the changed one, recording what
+the parallel work actually changed. This is one invariant catching two
+different causes, not two rules: whether an entry's own header and text
+got altered by a careless hand correction or a careless merge, the check
+is the same — confirm every pre-existing entry is still present, still
+byte-identical, and still sitting under its own header, never folded
+into a neighbor's. A conflict resolution is verified exactly the way a
+superseding entry is, for exactly this reason.
+
 ---
 
 ## Flexible — judgment applies
