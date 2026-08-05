@@ -593,6 +593,150 @@ plus reading back the constant is real verification, not just
 `py_compile`. `qt_shell.py` gets `py_compile` only. No re-run, no
 reported numbers — real pipeline verification happens on the Pi.
 
+**Positional note.** The two entries directly below (`Record build:
+frame_average.py capture-metadata sidecar wiring` and `Record intent:
+frame_average.py capture-metadata sidecar wiring`) are appended here, in
+full and unaltered, from `claude/frame-average-sidecar-wiring`. On that
+branch they sat at the top of the document, directly following this same
+`## 2026-08-03` heading — the branch was cut before
+`claude/hdr-merge-verification-w7sb22` and `claude/keep-raw-images-
+scope-fix` independently opened it and landed first, and before
+`claude/white-level-constant-consolidation` (itself already appended
+above under its own positional note) landed after them. The entries'
+own numbered investigation list, below, is self-contained to the
+"Record intent" entry it appears in — not a continuation of, and not
+continued by, any other numbered list in this section.
+
+### Record build: frame_average.py capture-metadata sidecar wiring
+
+Built to the intent recorded below. No deviation.
+
+**Against the counted baseline (431 lines, `__version__ "2.1"`):**
+`frame_average.py` is now 525 lines (+94), `__version__ "2.2"`.
+
+New: `read_sidecar_meta(sidecar_dir, frame_path)` (locates and parses a
+frame's `.meta.json` sidecar by name only, `{}` on anything missing/
+unreadable, never raises); `aggregate_capture_field(sidecars, raw_key,
+caster)` (single agreed value, or `None` + a note listing every value
+seen when the burst disagrees, or `None` + a not-present note when no
+sidecar carries the key — three genuinely different outcomes, three
+different notes, never collapsed into one generic null); `capture_meta_
+for_science()` (wires the two above against the science burst
+specifically, returns the three `hdr_merge.py`-shaped keys plus a `note`
+sub-object explaining every one). New `--sidecar-dir` flag, `None` by
+default (matching every existing invocation's behavior exactly —
+`analogue_gain`/`sensor_mode`/`capture_time_utc` all `null` with `"not
+present in any input frame's sidecar"` unless a caller opts in). Wired
+into `main()` right after `prov["science"]`/`prov["geometry"]` are set,
+so the new top-level `analogue_gain`, `sensor_mode`, `capture_time_utc`,
+`capture_metadata_note` keys sit next to the run's other top-level
+context, matching where `hdr_merge.py` puts its own equivalent fields.
+
+**Verification, as honestly as the intent asked for:** `python3 -m
+py_compile frame_average.py` passes. `numpy`/`tifffile` aren't installed
+in this checkout, so no full run was possible regardless; a standalone,
+file-free re-implementation of `aggregate_capture_field`'s three branches
+(agree / disagree / absent) was exercised against hand-built dicts held
+only in a throwaway Python process — not sidecar files, not bracket data,
+nothing written to disk — to confirm the aggregation rule itself before
+trusting it in the real function. Real verification (does a real sidecar
+directory actually resolve, does a real disagreeing burst get reported
+right) is the user's to run on the Pi, not attempted or reported here.
+
+### Record intent: frame_average.py capture-metadata sidecar wiring
+
+Own branch off `main`: `claude/frame-average-sidecar-wiring`. Separate
+from, and not stacked on, `claude/hdr-merge-verification-w7sb22` (pushed
+and done) — same repo, different task. No bracket data or captures
+directory is reachable from this session (they live on the Pi only); no
+synthetic data was fabricated. `hdr_merge.py` is explicitly NOT modified
+by this task.
+
+**Investigation, done and reported before any code change, per direct
+instruction:**
+
+1. **The `--white-level 65520` caller.** Two, both duplicated, independent
+   argparse defaults: `qt_shell.py:5744` (`--wl` default `65520`, the
+   GUI's own `main()`) and `hdr_from_session.py:362` (`--wl` default
+   `"65520"`, its own standalone default). Both forward through
+   `hdr_from_session.py:178` (`hm += ["--white-level", a.wl, ...]`) into
+   `hdr_merge.py`. `process_wizard.py:61`'s `DEFAULT_WHITE_LEVEL = 65520.0`
+   is the same number but an unrelated codepath (feeds `debayer.py
+   --assume-linear` only — confirmed via grep, zero references to
+   `hdr_merge`/`hdr_from_session` in that file). No Makefile/shell
+   script/config anywhere in the repo carries this constant.
+2. **Whether `frame_average.py` averages saturated samples.** By default,
+   yes, unconditionally — `average_burst()` with no `--sigma-clip` sums
+   every frame's raw value with no proximity-to-ceiling check;
+   `dtype_max()` only knows the container max (65535 for uint16), with no
+   concept of the sensor's real white level. `--sigma-clip` rejects
+   statistical outliers relative to the burst's own mean, which is not
+   the same thing as saturation rejection and only incidentally catches
+   a clipped frame. No per-frame maximum or saturation count is recorded
+   anywhere; the only clip field (`prov["clipping"]`) is computed on the
+   post-average, post-correction result against the *container* ceiling
+   (65535), not the sensor's true one, so it would essentially never fire
+   on real data regardless of per-frame clipping. This is **consistent
+   with** (not proof of) the smearing mechanism described in the prior
+   task's finding (a 2.00x ratio holding to frame4=30500, breaking to
+   1.932, falling to 1.37 by 46500, no pileup, ~48% above the break) —
+   averaging a clipped sample with unclipped ones lands the mean between
+   them, a soft rolloff rather than a hard cutoff. Not asserted as the
+   confirmed cause; no real bracket was available to check directly.
+3. **Sidecar wiring gap.** Filename pattern `<prov_dir>/<raw_stem>.
+   meta.json` (`provenance.record_capture`/`record_burst`/`record_hdr`).
+   JSON keys confirmed identical on both backends (`camera_backend.py`
+   `request.get_metadata()` at line 1205, `_fake_metadata()` at
+   498-508, both via `_dump_meta`): `ExposureTime`, `AnalogueGain`,
+   `DigitalGain`, `ColourGains`, `SensorTimestamp` — real libcamera
+   casing. Two gaps that are NOT this task's to fix: `sensor_mode` does
+   not exist in this metadata on either backend at all (a
+   `camera_backend.py` gap); `SensorTimestamp` is a monotonic hardware
+   clock with no recorded epoch, not wall-clock UTC — mapping it directly
+   to a field named `capture_time_utc` would be a fabricated value, not a
+   real one. `frame_average.py` itself has zero sidecar awareness today
+   (confirmed by reading it in full) and, per its own docstring, is a
+   generic tool that doesn't import `provenance.py`.
+
+**Plan for the wiring (item 4 only — item 5, saturation rejection, is
+explicitly NOT built in this task; see below):** a new `--sidecar-dir DIR`
+flag on `frame_average.py`, applied to the science burst's own frames
+(the burst that becomes the HDR-level master `hdr_merge.py` reads).
+`frame_average.py` stays decoupled from `provenance.py` (no import) but
+replicates its known `<stem>.meta.json` naming as a documented contract.
+A new aggregation helper reads `AnalogueGain` across the science burst's
+sidecars: if every frame that has a sidecar agrees, record that single
+value; if they disagree, record the disagreement itself (every observed
+value), never silently the first one seen. `sensor_mode` and
+`capture_time_utc` are recorded `null` with an explanatory note for the
+structural reasons above — not a wiring bug, a real absence. Output key
+names match `hdr_merge.py`'s existing `try_read_embedded_capture_meta()`
+exactly (`analogue_gain`, `sensor_mode`, `capture_time_utc`, top-level in
+the provenance dict) so nothing else has to change once this lands.
+
+**Explicitly deferred, per direct instruction:** item 5 (saturation
+rejection in `frame_average.py`) is not built here even though item 2's
+finding shows the current code is consistent with averaging saturated
+samples. Changing the averaging stage would invalidate the knee
+measurement the current `hdr_merge.py` white_level fix was derived from;
+that sequencing decision belongs to the user, not this session. This
+pass only reports what such a fix would look like (reject/clamp/weight
+samples relative to a real white level, ideally the same operator-
+supplied one `hdr_merge.py` now accepts, rather than the container max
+`dtype_max()` uses today) and what it would change about the existing
+masters (a full recompute — the current masters embed the unconditional-
+average smear, not a decision point stored separately from the pixels).
+
+**Baseline:** `frame_average.py` is 431 lines, `__version__ = "2.1"`, zero
+code changes yet on this branch.
+
+**Verification, stated honestly up front:** no real bracket or sidecar
+data exists in this checkout (the Pi is unreachable), so this pass is
+self-check/code-review only. No synthetic sidecar or bracket data will be
+fabricated to exercise the new flag. No re-run, no reported numbers —
+verification happens on the Pi, by the user, separately.
+
+
 ## 2026-08-02
 
 ### Record build: HANDOFF.md restructure, part 1 — fix the confirmed-stale sections

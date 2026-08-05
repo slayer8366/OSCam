@@ -11,27 +11,51 @@ that happened. If you add, fix, or change something meaningful, update the
 relevant section here and add a `CHANGELOG.md` entry as part of that same
 piece of work, not as an afterthought at the end.
 
-**Immediate open item, as of 2026-08-04**: `task9-work` (this branch) is
-built, verified, and confirmed fast-forward-safe onto `origin/main`, but
-the push itself is blocked by the session's own auto-mode permission
-classifier — see `CHANGELOG.md`'s "Open: task9-work fast-forward to
-main, blocked on push permission" entry for the exact command and the
-check for whether this is already stale.
-
 ## Open right now
 
-`task9-work` (ending `005ff56`) is fully built, committed, and confirmed as
-a clean fast-forward onto `origin/main` — `git merge-base --is-ancestor
-origin/main task9-work` passes, `origin/main` hasn't moved since the branch
-was cut. Nothing left to do but `git push origin task9-work:main`. That
-push is blocked in this environment (the auto-mode classifier denies direct
-pushes to `main` as a shared-state action, even after the user approved it
-in conversation) and needs a human to run it directly from a shell outside
-this session — see `CHANGELOG.md`'s "Open: task9-work fast-forward to
-main, blocked on push permission" entry for the verification behind
-"clean fast-forward," why this lands as a direct push rather than a PR,
-and the bookkeeping items (retired/outstanding branches) to handle once
-it lands.
+`task9-work` has landed — its push was blocked in-session by the auto-mode
+permission classifier (see `CHANGELOG.md`'s "Open: task9-work fast-forward
+to main, blocked on push permission" entry for that history), the user ran
+it directly, and `origin/main`'s tip is now that commit. Closed, not open;
+left in for anyone who reads this expecting it to still be pending.
+
+What's actually open, none of it written down anywhere until now:
+
+1. **`frame_average.py`'s saturation-rejection question went from
+   theoretical to testable this session.** The investigation (`CHANGELOG.md`'s
+   2026-08-03 entries; summarized above under "frame_average.py
+   capture-metadata sidecar wiring") already established that the default
+   averaging path sums saturated samples unconditionally with no rejection.
+   What changed: 160 pre-average raws from the August 3 bracket turned out
+   to have survived rather than been discarded, so whether the level-5
+   raws actually hard-clip at a single value can now be checked directly
+   against real data instead of only reasoned about from the merged
+   masters. Not yet checked; whether/how to build saturation rejection is
+   still the user's sequencing decision to make (see item 2 in that same
+   backlog list above).
+2. **Retention-embed design** — parked, pending the user's decision. Not
+   detailed further here; came up in conversation, not yet drafted into a
+   plan file the way `PLAN_03_provenance_relocation_and_keep_raw.md`
+   covers the unrelated Part 03 retention/provenance-relocation work
+   below.
+3. **Gallery race guard** — parked, pending the user's decision. The gap
+   itself is already documented (see "Keep RAW Images narrowed to raws
+   only" below): nothing guards a separately-launched `process_wizard.py`
+   or the Gallery view from reading a capture's files concurrently with,
+   or right after, an auto-process worker thread's deletion. `claude/
+   gallery-race-comment-fix` (landing separately) states this as a
+   contract in a comment; it does not add the guard itself.
+4. **Stage 3** — hasn't moved. Named in conversation, not detailed here;
+   don't assume it's the same thing as the "Part 03" Preferences-dialog
+   plan set covered later in this file unless confirmed.
+
+One number worth a line since the constant alone doesn't explain it:
+`hdr_from_session.MERGE_WHITE_LEVEL_DEFAULT` stays `65520`, but the real
+August 2026 bracket was actually merged at `--white-level 62100` — the
+measured ceiling (~61000, reproduced on a second, older bracket) plus a
+margin, landing the cutoff below where the frame5/frame4 ratio starts
+departing from 2.00 rather than at it, since that departure is gradual,
+not a step (full reasoning: `hdr_from_session.py:41-61`'s comment).
 
 ## What this project is
 
@@ -2668,6 +2692,78 @@ codepath) is untouched. Verified for real, not just `py_compile`:
 `hdr_from_session.py` has no non-stdlib dependencies, so it was actually
 imported in this sandbox and its constant/`--wl` default confirmed to
 resolve and stringify identically to the old literal.
+
+### frame_average.py capture-metadata sidecar wiring — BUILT, self-check only, NOT yet run on real hardware
+
+Own branch: `claude/frame-average-sidecar-wiring`, off `main` (a sibling
+to the finished `claude/hdr-merge-verification-w7sb22`, not stacked on
+it). `frame_average.py` is now `__version__ = "2.2"` (was `"2.1"`). Full
+investigation (the `--white-level 65520` caller locations, whether
+`frame_average.py` averages saturated samples, and the exact sidecar
+naming/keys) and the build itself are in `CHANGELOG.md`'s 2026-08-03
+entries.
+
+**New `--sidecar-dir DIR` flag** carries `analogue_gain`/`sensor_mode`/
+`capture_time_utc` from the science burst's own `.meta.json` sidecars
+(`provenance.py`'s naming: `<sidecar_dir>/<raw_frame_stem>.meta.json`)
+into this tool's own output provenance, under the exact key names
+`hdr_merge.py`'s existing `try_read_embedded_capture_meta()` already
+reads back out of a master. `frame_average.py` does not import
+`provenance.py` — it only replicates the naming, staying usable with any
+camera that writes TIFF frames. `None` by default, so every existing
+invocation is byte-for-byte unaffected.
+
+**Two fields are null by design, not by bug, and stay that way until
+something upstream of this file changes:** `sensor_mode` is not a field
+libcamera's per-frame `capture_metadata()`/`get_metadata()` ever carries
+on either the real (`camera_backend.py:1205`) or fake (`camera_backend.
+py:498-508`) backend — confirmed by reading both, not assumed — so this
+is a `camera_backend.py` gap, not something `frame_average.py` reading
+harder can fix. `capture_time_utc` is null because the sidecar's own
+`SensorTimestamp` is a monotonic hardware clock with no recorded epoch,
+not wall-clock UTC; mapping it to a field named `..._utc` would be a
+fabricated value, so it isn't done. `analogue_gain` is the one field that
+actually resolves today when a real sidecar directory is given.
+
+**Disagreement across a burst's frames is recorded, never silently
+resolved to the first value** — `aggregate_capture_field()` returns
+`None` plus every distinct value it saw, in frame order, whenever a
+burst's sidecars don't agree. A missing sidecar (frame has none) simply
+doesn't vote; it is not treated as a disagreement of its own.
+
+**Backlog items surfaced by this investigation, not started here:**
+1. `qt_shell.py:5744` and `hdr_from_session.py:362` independently
+   hardcode `--wl`/white-level default `65520` — two copies of the same
+   magic number, no shared constant. Not touched (out of scope; only
+   `frame_average.py` was in scope for this task).
+2. `frame_average.py`'s default averaging path has no saturation
+   awareness at all — every frame's raw value is summed unconditionally,
+   and `dtype_max()` only knows the container max (65535 for uint16),
+   never the sensor's real white level. `--sigma-clip` is a statistical
+   outlier rejection, not a saturation rejection, and only incidentally
+   catches a clipped frame. No per-frame maximum or saturation count is
+   recorded anywhere. This is consistent with (not proven to be) the
+   smearing mechanism behind the `hdr_merge.py` white-level fix
+   (`claude/hdr-merge-verification-w7sb22`) — averaging a clipped sample
+   with unclipped ones lands the mean between them, a soft rolloff
+   rather than a hard cutoff. **Deliberately not fixed in this pass**:
+   changing the averaging stage would invalidate the knee measurement
+   that fix's white_level was derived from, and the sequencing of that
+   change belongs to the user.
+3. `camera_backend.py` records no per-frame sensor-mode identity at all
+   (see above) — needed before `sensor_mode` can ever be non-null
+   anywhere downstream.
+
+**Verification, stated honestly**: `python3 -m py_compile frame_average.py`
+passes. No real bracket or sidecar data exists in this checkout (the Pi
+is unreachable) and none was fabricated. `aggregate_capture_field()`'s
+three branches (agree / disagree / absent) were exercised against
+hand-built dicts in a throwaway process — logic-only, no files, no real
+sidecar or capture data. Real verification (a real `--sidecar-dir`
+resolving against real sidecars, a real disagreeing burst reported
+correctly) is the user's to run on the Pi.
+
+
 
 ## Things that will bite you if you don't know them
 
