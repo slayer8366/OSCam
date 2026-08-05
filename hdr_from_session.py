@@ -30,6 +30,7 @@ live in a separate capture folder, read from session.json's own
 """
 import argparse
 import json
+import os
 import subprocess
 import sys
 import tarfile
@@ -128,15 +129,32 @@ def pick_capture(session, kind, index):
     sys.exit("no processable capture found (kind={}).".format(kind))
 
 
-def process(capture_dir, session, cap, a, ext):
-    """capture_dir is where this capture's OWN frames and outputs live.
-    Flat comes from a.flat_root instead -- a standing library shared across
-    every session, never scanned out of this session's own captures list
-    (Part 03: "last flat wins" now means "whatever is in the flat library
-    right now", not "the last flat_ capture recorded in this session").
-    Dark frames (standalone or HDR's per-level dark_N_) live one level
-    down, in capture_dir/"dark" -- session-scoped imagery, nested under its
-    own session rather than flat alongside science/hdr frames.
+def process(capture_dir, dark_dir, session, cap, a, ext, publish_dir=None):
+    """capture_dir is where this capture's OWN frames and outputs are READ
+    and WRITTEN during processing -- the real session directory for a
+    direct/manual run, or a same-device staging directory when the caller
+    passed --capture-dir (gallery-race staging design, CHANGELOG.md's
+    2026-08-05 entries). dark_dir is passed separately and ALWAYS resolves
+    from the real session directory, never from a staging override: dark
+    captures (standalone or HDR's per-level dark_N_) are a separate,
+    never-staged call site in qt_shell.py's own capture flow, so they
+    physically live at the real session_dir/"dark" even while capture_dir
+    itself points at staging. Flat comes from a.flat_root instead -- a
+    standing library shared across every session, never scanned out of
+    this session's own captures list (Part 03: "last flat wins" now means
+    "whatever is in the flat library right now", not "the last flat_
+    capture recorded in this session").
+
+    publish_dir, when given, is the real session directory to publish the
+    finished set into once retention has run: each surviving file (never
+    a directory) is moved from capture_dir into publish_dir individually
+    via os.replace, after retention and after correction_status is built
+    -- see the publish step near the end of this function for exactly
+    which files and why this is per-file rather than a single directory
+    rename. None (the default) skips publishing entirely, matching every
+    non-staged caller (the manual processing wizard, the archive dialog),
+    which already operate directly on the real session directory and have
+    nothing to publish.
 
     Returns (display_path, correction_status). display_path is the
     conventional final_display.tif location -- a Path, not a promise it
@@ -158,7 +176,6 @@ def process(capture_dir, session, cap, a, ext):
     for a direct CLI user; correction_status is the same information in
     the shape a caller can persist onto the session record."""
     flat = frames_for(Path(a.flat_root), "flat_", ext)
-    dark_dir = capture_dir / "dark"
     ran, skipped = [], []
     if flat:
         ran.append("flat-field ({} frames)".format(len(flat)))
@@ -278,6 +295,13 @@ def process(capture_dir, session, cap, a, ext):
                 "{} display export (requested but not written -- check "
                 "stderr above, e.g. Pillow missing for PNG/JPG)".format(label))
 
+    # Hoisted above the export_dng block that sets it, and initialized here
+    # rather than left absent: the publish step near the end of this
+    # function needs to know whether a DNG export happened at all, and an
+    # undefined-unless-exported local would make that a NameError instead
+    # of the plain "was it requested" check dng_dest is None already reads
+    # as everywhere else.
+    dng_dest = None
     if getattr(a, "export_dng", False):
         # <file_prefix>raw.<ext> -- never a bare <stem>.dng for a merged
         # multi-frame result (a merge produces a derivative; a DNG
@@ -374,6 +398,43 @@ def process(capture_dir, session, cap, a, ext):
             "Keep RAW Images preference was off; raw frames were deleted "
             "once processing succeeded.")
     print("CORRECTION_STATUS_JSON: " + json.dumps(correction_status))
+
+    # Publish (gallery-race staging design, CHANGELOG.md's 2026-08-05
+    # entries): only reached when the caller passed --publish-dir, i.e.
+    # capture_dir above was a staging directory, not the real session
+    # directory -- every non-staged caller (the manual processing wizard,
+    # the archive dialog) leaves publish_dir None and this is a no-op,
+    # since those already operate directly on the real session directory
+    # and have nothing to move. Per-file os.replace, deliberately never a
+    # single os.replace(capture_dir, publish_dir) directory-level rename:
+    # a directory rename only succeeds against an EMPTY destination, which
+    # holds for a session's first auto-processed capture but not its
+    # second (self._session in qt_shell.py is never reset, so a re-Snap or
+    # a science reshoot routinely adds another capture into the same
+    # already-populated session directory) -- see the CHANGELOG entry for
+    # the full reasoning. Runs AFTER retention and AFTER correction_status
+    # above, never before: retention has already decided what survives,
+    # so this publishes exactly that set, nothing it might promise to
+    # remove later. master_files and whichever display/DNG exports were
+    # actually written are never subject to Keep RAW Images and always
+    # publish if they exist; raw_files (each one's own preview .jpg
+    # sidecar included, same pairing the retention loop above uses)
+    # publish only when they were not discarded. Each os.replace is
+    # same-device-atomic on POSIX and on Windows both -- unlike a
+    # directory-level replace, this has no platform limitation to record.
+    if publish_dir is not None:
+        publish_dir = Path(publish_dir)
+        to_publish = list(master_files) + [disp, png, jpg]
+        if dng_dest is not None:
+            to_publish.append(dng_dest)
+        if not raw_discarded:
+            to_publish += raw_files
+            to_publish += [Path(f).with_suffix(".jpg") for f in raw_files]
+        for f in to_publish:
+            f = Path(f)
+            if f.exists():
+                os.replace(str(f), str(publish_dir / f.name))
+
     return disp, correction_status
 
 
@@ -427,6 +488,22 @@ def main():
     ap.add_argument("--sharpen", default=None, metavar="RADIUS", help="unsharp radius px")
     ap.add_argument("--shadow-deepen", action="store_true")
     ap.add_argument("--raw-ext", default="dng", help="raw frame extension (default dng)")
+    ap.add_argument("--capture-dir", default=None,
+                    help="gallery-race staging design (CHANGELOG.md's 2026-08-05 "
+                         "entries): override where THIS capture's own raw frames "
+                         "and outputs are read/written, e.g. a same-device staging "
+                         "directory, instead of session[\"capture_dir\"]. Dark/flat "
+                         "correction inputs are unaffected -- they always resolve "
+                         "from the real session directory, never from this "
+                         "override. Validated against frames_for()'s own glob "
+                         "before use; must be given together with --publish-dir.")
+    ap.add_argument("--publish-dir", default=None,
+                    help="with --capture-dir: after processing and retention "
+                         "finish in --capture-dir, publish each surviving file "
+                         "individually via os.replace into this directory (the "
+                         "real, final session directory) -- never a single "
+                         "directory-level rename. Must be given together with "
+                         "--capture-dir.")
     ap.add_argument("--flat-root", default=str(Path.home() / "flat"),
                     help="flat-field library folder (Part 03: one standing set, "
                          "replaced outright by each new Flat capture, default ~/flat)")
@@ -478,11 +555,54 @@ def main():
     if not sj.is_file():
         sys.exit("no session.json in {}".format(session_dir))
     session = json.loads(sj.read_text())
-    capture_dir = Path(session["capture_dir"]) if "capture_dir" in session else session_dir
+    # CAVEAT: during the gallery-race staging design's staging window
+    # (CHANGELOG.md's 2026-08-05 entries), this field is a PROMISE, not a
+    # description. It always names the real/final session directory --
+    # provenance never moves -- but while a capture is staged (--capture-dir
+    # below), its bytes physically live elsewhere, not here yet. Any reader
+    # that resolves a path through this field during that window, this one
+    # included, gets a path to a file that does not exist yet. Accepted,
+    # deliberately, as the same defect class as HANDOFF.md open item 2 at
+    # smaller scope -- see the CHANGELOG entry, not engineered around here.
+    real_capture_dir = Path(session["capture_dir"]) if "capture_dir" in session else session_dir
+    if bool(a.capture_dir) != bool(a.publish_dir):
+        sys.exit("--capture-dir and --publish-dir must be given together "
+                 "(staging without a publish destination would strand the "
+                 "processed files there; a publish destination without a "
+                 "staging override has nothing to publish from).")
+    if a.capture_dir:
+        capture_dir = Path(a.capture_dir).resolve()
+        if not capture_dir.is_dir():
+            sys.exit("--capture-dir {} does not exist".format(capture_dir))
+    else:
+        capture_dir = real_capture_dir
+    # dark_dir is NEVER the --capture-dir override -- dark captures are a
+    # separate, never-staged call site in qt_shell.py's own capture flow
+    # (target_dir = session.dir / "dark"), so dark frames physically live
+    # under the real session directory even while capture_dir above points
+    # at staging.
+    dark_dir = real_capture_dir / "dark"
     cap = pick_capture(session, a.kind, a.index)
+    if a.capture_dir:
+        # Validated, not trusted: a bad override fails loudly here, with
+        # the path in the message, rather than silently falling back to
+        # session["capture_dir"] and processing the wrong directory --
+        # that silent fallback is exactly the failure this flag exists to
+        # prevent.
+        prefixes = ([lvl.get("file_prefix") for lvl in cap.get("levels", [])]
+                   if cap.get("kind") == "hdr" else [cap.get("file_prefix")])
+        if not any(frames_for(capture_dir, p, a.raw_ext) for p in prefixes if p):
+            sys.exit(
+                "--capture-dir {} contains no frames matching {}frame_*.{} "
+                "for capture #{}; refusing to fall back to "
+                "session[\"capture_dir\"] and process the wrong directory."
+                .format(capture_dir,
+                       next((p for p in prefixes if p), "<prefix>"),
+                       a.raw_ext, cap.get("index")))
     print("Processing capture #{} kind={} note={!r}".format(
         cap.get("index"), cap.get("kind"), cap.get("note", "")))
-    process(capture_dir, session, cap, a, a.raw_ext)
+    publish_dir = Path(a.publish_dir).resolve() if a.publish_dir else None
+    process(capture_dir, dark_dir, session, cap, a, a.raw_ext, publish_dir=publish_dir)
     archive_raws(capture_dir, a.raw_ext, a.archive)
 
 

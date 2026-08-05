@@ -1392,7 +1392,7 @@ def processable_captures(session_json):
     return [c for c in session_json.get("captures", []) if c.get("kind") in PROCESSABLE_KINDS]
 
 
-def capture_correction_status(session_dir, session_json, cap):
+def capture_correction_status(session_dir, session_json, cap, own_frames_dir=None):
     """What flat/dark correction frames actually exist on disk for `cap`
     RIGHT NOW, mirroring hdr_from_session.py's process() exactly:
       - flat: provenance.FLAT_ROOT, the one standing library shared across
@@ -1406,11 +1406,23 @@ def capture_correction_status(session_dir, session_json, cap):
         Either way, read from session_dir/"dark" -- session-scoped imagery
         nested under its own session, never flat alongside science/hdr
         frames (mirrors hdr_from_session.py's own frames_for/process split).
-    Also detects the raw file extension in use (dng on-rig, tif off-rig)
-    from whatever is actually on disk, so the wizard's eventual subprocess
-    call passes the right --raw-ext without guessing. Returns a dict with
-    flat_frames/dark_frames/own_frames counts and the detected ext."""
+        Always session_dir, never own_frames_dir below: dark is a separate,
+        never-staged capture call site (gallery-race staging design,
+        CHANGELOG.md's 2026-08-05 entries), so it physically lives under
+        the real session directory even while a capture's own frames are
+        staged elsewhere.
+    own_frames_dir: where THIS capture's own raw frames actually are right
+        now, if different from session_dir -- during the staging window
+        that is a same-device staging directory, not session_dir itself
+        (session_dir may not have this capture's frames yet at all). Also
+        detects the raw file extension in use (dng on-rig, tif off-rig)
+        from whatever is actually on disk there, so the wizard's eventual
+        subprocess call passes the right --raw-ext without guessing.
+        Defaults to session_dir, matching every caller before this
+        parameter existed. Returns a dict with flat_frames/dark_frames/
+        own_frames counts and the detected ext."""
     session_dir = Path(session_dir)
+    own_frames_dir = Path(own_frames_dir) if own_frames_dir is not None else session_dir
     dark_dir = session_dir / "dark"
 
     def _frames_in(base, prefix):
@@ -1436,7 +1448,7 @@ def capture_correction_status(session_dir, session_json, cap):
         own_prefix = cap.get("file_prefix")
         dark_frames = _frames_in(dark_dir, "dark_")
 
-    own_frames = _frames_in(session_dir, own_prefix)
+    own_frames = _frames_in(own_frames_dir, own_prefix)
     ext = own_frames[0].suffix.lstrip(".") if own_frames else "dng"
     return {"flat_frames": len(flat_frames), "dark_frames": len(dark_frames),
            "own_frames": len(own_frames), "ext": ext}
@@ -4165,7 +4177,13 @@ if _HAVE_QT:
             stem = "snap_frame_{:04d}".format(self._snap_counter)
             self._snap_counter += 1
             try:
-                self.camera.capture_still_async(self._session.dir, stem, _on_done)
+                # Staging, not self._session.dir directly -- gallery-race
+                # staging design (CHANGELOG.md's 2026-08-05 entries):
+                # _auto_process (triggered below once this capture is
+                # recorded) processes and applies retention against this
+                # same staging directory, then publishes into the session
+                # directory per file.
+                self.camera.capture_still_async(self._staging_dir(), stem, _on_done)
             except Exception as exc:
                 self.capture_done_signal.emit(exc)
 
@@ -4360,6 +4378,21 @@ if _HAVE_QT:
                 self._session = provenance.Session(
                     provenance.OUT_ROOT, provenance.load_profile() or {}, self._display_flags)
                 self._snap_counter = 0   # fresh per session; see _start_capture
+
+        def _staging_dir(self):
+            """Same-device staging directory for the current session's own
+            auto-processed captures (snap/science/hdr's science phase --
+            gallery-race staging design, CHANGELOG.md's 2026-08-05 entries).
+            Idempotent: every Snap/Science/HDR capture call site in this
+            class calls this fresh rather than caching the result, so a
+            re-Snap or a reshoot later in the same session gets the same
+            directory back (provenance.new_staging_dir keys it on
+            self._session.ts) and the same-device check runs again at the
+            moment it is actually needed, not just once at session-open
+            time. dark/flat capture call sites do NOT call this -- they are
+            never staged, see their own target_dir comments in
+            _run_burst_kind."""
+            return provenance.new_staging_dir(self._session.ts)
 
         # --- shared dialog shape (consistent, flat command dialogs) ---
         # QMessageBox's own convenience constructors (question/information) and
@@ -4906,8 +4939,15 @@ if _HAVE_QT:
                     # live, responsive preview.
                     self.camera.enter_still_mode()
                     try:
+                        # Staging, not session.dir directly -- gallery-race
+                        # staging design (CHANGELOG.md's 2026-08-05
+                        # entries): the dark phase below stays unstaged
+                        # (session.dir/"dark", untouched by this design),
+                        # but the science frames feed _auto_process once
+                        # the dark phase finishes, same as Science mode's
+                        # own capture below.
                         sci_levels = self.camera.capture_bracket_phase(
-                            session.dir, "", armed["n"], base_us, ordered)
+                            self._staging_dir(), "", armed["n"], base_us, ordered)
                     finally:
                         self.camera.exit_still_mode(base_us)
                     sci_n = sum(lv["frame_count"] for lv in sci_levels)
@@ -4952,7 +4992,12 @@ if _HAVE_QT:
                     target_dir = session.dir / "dark"
                     target_dir.mkdir(parents=True, exist_ok=True)
                 else:
-                    target_dir = session.dir
+                    # kind == "science": staging, not session.dir directly
+                    # -- gallery-race staging design (CHANGELOG.md's
+                    # 2026-08-05 entries), same as Snap's own capture and
+                    # HDR's science phase above. flat/dark just above stay
+                    # unstaged -- neither reaches _auto_process.
+                    target_dir = self._staging_dir()
                 result = self.camera.capture_burst(target_dir, prefix, armed["n"])
                 idx = provenance.record_burst(session, kind, prefix, result)
                 if kind == "science":
@@ -5055,10 +5100,22 @@ if _HAVE_QT:
             # assuming a camera class -- reused here instead of a second,
             # camera-duck-typed way to answer the same question.
             cap = next((c for c in self._session.captures if c.get("index") == index), None)
+            # own_frames_dir=staging: this capture's own raw frames are in
+            # staging right now, not self._session.dir (gallery-race
+            # staging design, CHANGELOG.md's 2026-08-05 entries) -- dark/
+            # flat correction detection is unaffected, still reads from
+            # the real session directory (capture_correction_status's own
+            # dark_dir is always session_dir/"dark").
+            staging_dir = self._staging_dir()
             ext = capture_correction_status(
-                self._session.dir, {"captures": self._session.captures}, cap)["ext"] \
+                self._session.dir, {"captures": self._session.captures}, cap,
+                own_frames_dir=staging_dir)["ext"] \
                 if cap is not None else "dng"
-            self._run_process_cmd(self._session.dir, index, extra_args=["--raw-ext", ext])
+            self._run_process_cmd(
+                self._session.dir, index,
+                extra_args=["--raw-ext", ext,
+                           "--capture-dir", str(staging_dir),
+                           "--publish-dir", str(self._session.dir)])
 
         def _run_process_cmd(self, session_dir, index, extra_args=None):
             # Shared by the automatic offer (_auto_process) and the manual
@@ -5876,6 +5933,13 @@ def render_check():
     provenance.PROVENANCE_ROOT = _rc_state_root / "provenance_root"
     provenance.OUT_ROOT = _rc_state_root / "capture_root"
     provenance.FLAT_ROOT = _rc_state_root / "flat_root"
+    # STAGING_ROOT (gallery-race staging design, CHANGELOG.md's 2026-08-05
+    # entries): a subdirectory of the SAME _rc_state_root temp tree as
+    # OUT_ROOT above, not a separate tempfile.mkdtemp() call -- guarantees
+    # the two share a device, so new_staging_dir's own same-device check
+    # cannot spuriously fail here regardless of how /tmp happens to be
+    # mounted on whatever machine this runs on.
+    provenance.STAGING_ROOT = _rc_state_root / "staging_root"
 
     box = FocusBox.centered(0.5, 0.4)
     bar = BarState(fill=0.5, current=0.02, hi=0.03, lo=0.0, at_peak=False, settled=True)
@@ -7458,7 +7522,15 @@ def render_check():
         if provenance.FLAT_ROOT.exists():
             shutil.rmtree(provenance.FLAT_ROOT)
         ap_session = provenance.Session(provenance.OUT_ROOT, {}, [])
-        ap_result = win.camera.capture_burst(ap_session.dir, "science_", 2)
+        # Staging, not ap_session.dir directly -- matches the real capture
+        # pipeline's own _run_burst_kind, which now writes science frames
+        # into provenance.new_staging_dir(session.ts) rather than
+        # session.dir (gallery-race staging design, CHANGELOG.md's
+        # 2026-08-05 entries); _auto_process below expects to find this
+        # capture's own frames in staging, not session.dir, and publishes
+        # them into session.dir itself once processing succeeds.
+        ap_result = win.camera.capture_burst(
+            provenance.new_staging_dir(ap_session.ts), "science_", 2)
         ap_idx = provenance.record_burst(ap_session, "science", "science_", ap_result)
         win._session = ap_session
         win._flat_question = lambda title, text, default=None: QMessageBox.StandardButton.No   # decline archive offer
@@ -7515,7 +7587,9 @@ def render_check():
         save_pref("keep_raw_images", False)
         try:
             kr_session = provenance.Session(provenance.OUT_ROOT, {}, [])
-            kr_result = win.camera.capture_burst(kr_session.dir, "science_", 2)
+            # Staging, not kr_session.dir directly -- see ap_result above.
+            kr_result = win.camera.capture_burst(
+                provenance.new_staging_dir(kr_session.ts), "science_", 2)
             kr_idx = provenance.record_burst(kr_session, "science", "science_", kr_result)
             win._session = kr_session
             win._auto_process("science", kr_idx)
@@ -7575,7 +7649,9 @@ def render_check():
         save_pref("export_format_dng_merge", True)
         try:
             ef_session = provenance.Session(provenance.OUT_ROOT, {}, [])
-            ef_result = win.camera.capture_burst(ef_session.dir, "science_", 2)
+            # Staging, not ef_session.dir directly -- see ap_result above.
+            ef_result = win.camera.capture_burst(
+                provenance.new_staging_dir(ef_session.ts), "science_", 2)
             ef_idx = provenance.record_burst(ef_session, "science", "science_", ef_result)
             win._session = ef_session
             win._auto_process("science", ef_idx)
@@ -7614,9 +7690,20 @@ def render_check():
             # switches on the checkbox rather than always doing one thing.
             save_pref("export_format_dng_merge", False)
             (ef_session.dir / "science_raw.tif").unlink()
+            # Staging again, not ef_session.dir directly -- see ap_result
+            # above. This is deliberately a SECOND auto-processed capture
+            # into the SAME already-published session directory (capture
+            # #1 above already left final_display.jpg/science_raw.tif/etc.
+            # there): per-file os.replace publish handles this fine, which
+            # is the whole reason this design does not use a single
+            # os.replace(staging_dir, session_dir) directory-level rename
+            # -- that would only succeed against an empty destination, and
+            # this directory is not empty by this point (see CHANGELOG.md's
+            # 2026-08-05 "gallery-race staging design" entry for why).
             ef_idx2 = provenance.record_burst(
                 ef_session, "science", "science2_",
-                win.camera.capture_burst(ef_session.dir, "science2_", 2))
+                win.camera.capture_burst(
+                    provenance.new_staging_dir(ef_session.ts), "science2_", 2))
             win._auto_process("science", ef_idx2)
             ef_deadline2 = time.time() + 20.0
             while win._capturing and time.time() < ef_deadline2:

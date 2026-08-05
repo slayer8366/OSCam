@@ -79,6 +79,18 @@ PROFILE_PATH = Path.home() / "imx" / "profile.json"
 PROVENANCE_ROOT = Path.home() / "provenance"
 FLAT_ROOT = Path.home() / "flat"
 
+# STAGING_ROOT: gallery-race staging design. The auto-processed kinds
+# (snap/science/hdr's science phase) capture and process into a same-device
+# staging directory here, then publish the finished set into the session
+# directory one file at a time (os.replace per file, never a directory-level
+# rename -- see new_staging_dir's own docstring and CHANGELOG.md's
+# 2026-08-05 "gallery-race staging design" entries for why). dark/flat
+# capture call sites are untouched by this and never write here -- dark
+# lives at session_dir/"dark", flat at FLAT_ROOT, neither reaches
+# _auto_process. Same attribute-only-reference rule as OUT_ROOT above --
+# render_check() redirects this too, alongside the other three roots.
+STAGING_ROOT = Path.home() / "staging"
+
 # Recorded into every session.json (see Session.write below); not camera
 # control inputs anywhere in this project, just fixed provenance fields
 # describing the capture mode/denoise/sharpness settings in force.
@@ -181,6 +193,45 @@ def new_zstack_root_dirs(capture_root=None, provenance_root=None):
     cap_dir.mkdir(parents=True, exist_ok=True)
     prov_dir.mkdir(parents=True, exist_ok=True)
     return ts_n, cap_dir, prov_dir
+
+
+def new_staging_dir(name, capture_root=None):
+    """Same-device staging directory for one session's own auto-processed
+    capture(s) (Path.home()/"staging"/name, name matching the session's own
+    timestamp so the two are traceable back to each other). Idempotent --
+    safe to call again for a later capture in the same session (re-Snap,
+    a reshoot), returns the same directory every time.
+
+    The device check runs on EVERY call, never cached: the whole staging
+    design rests on capture+processing landing on the same filesystem as
+    OUT_ROOT so the eventual per-file publish is a real os.replace, not a
+    copy+unlink pretending to be one (see hdr_from_session.py's own publish
+    step). A mismatch fails loudly here, at the moment staging is about to
+    be used, rather than degrading silently later -- this function never
+    calls shutil.move, which would hide exactly that degradation.
+
+    Raises RuntimeError (device mismatch) or OSError (STAGING_ROOT/the
+    per-session dir cannot be created) rather than falling back to writing
+    directly into capture_root -- an unstageable capture should stop and be
+    investigated, not silently lose the protection this design exists to
+    provide."""
+    capture_root = Path(capture_root) if capture_root is not None else OUT_ROOT
+    STAGING_ROOT.mkdir(parents=True, exist_ok=True)
+    staging_dev = os.stat(STAGING_ROOT).st_dev
+    capture_dev = os.stat(capture_root).st_dev
+    if staging_dev != capture_dev:
+        raise RuntimeError(
+            "staging root {} (st_dev={}) is not on the same device as the "
+            "capture root {} (st_dev={}); the staging design requires a "
+            "same-device publish (os.replace per file) and must never "
+            "silently degrade to copy+unlink. Point provenance.STAGING_ROOT "
+            "at a directory on the same filesystem as {}, or move {} "
+            "there, then retry.".format(
+                STAGING_ROOT, staging_dev, capture_root, capture_dev,
+                capture_root, capture_root))
+    d = STAGING_ROOT / name
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 
 class Session:
