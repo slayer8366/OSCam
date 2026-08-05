@@ -195,6 +195,22 @@ except ImportError:
     except ImportError:
         _plane_cache = None
 
+# hdr_from_session.py is normally reached only as a subprocess (PROCESSOR
+# below), never imported -- this import exists solely to share its
+# MERGE_WHITE_LEVEL_DEFAULT constant (see that constant's own comment for
+# why two independent copies of 65520 was worth fixing), the same
+# guarded-optional pattern as every other sibling above. None only if
+# hdr_from_session.py is somehow missing from disk -- already a broken
+# install _run_process_cmd's own PROCESSOR.exists() check treats as
+# "processing unavailable" regardless of this constant.
+try:
+    from . import hdr_from_session as _hdr_from_session
+except ImportError:
+    try:
+        import hdr_from_session as _hdr_from_session
+    except ImportError:
+        _hdr_from_session = None
+
 # annotations.py's mark store (Preferences-dialog plan set, Part 05): the
 # live measure panel builds marks with the same build_*_mark calls
 # measure.py's own commit path uses, and writes them with the same
@@ -5741,7 +5757,9 @@ def main(argv=None):
                     help="use the Pi camera (Picamera2Camera); default is the fake")
     # Display-processing flags, forwarded to hdr_from_session.py on a
     # process offer via build_display_flags.
-    ap.add_argument("--wl", default=65520, help="sensor white level for processing")
+    ap.add_argument("--wl", default=(_hdr_from_session.MERGE_WHITE_LEVEL_DEFAULT
+                                     if _hdr_from_session else 65520),
+                    help="sensor white level for processing")
     ap.add_argument("--lw", default=2.2, help="Reinhard white point for the HDR path")
     ap.add_argument("--gains", nargs=2, metavar=("RED", "BLUE"), default=None,
                     help="ColourGains white balance for processing")
@@ -7473,10 +7491,17 @@ def render_check():
               "(the default) leaves raw_discarded explicitly False and the "
               "raw frames themselves in place")
 
-        # Keep RAW Images OFF: raw frames + the linear master must be
-        # deleted once processing succeeds, and session.json must record
-        # the discard as deliberate (raw_discarded=True + a stated reason) --
-        # never a silent gap that could be mistaken for corruption.
+        # Keep RAW Images OFF: ONLY raw frames are deleted once processing
+        # succeeds -- the averaged master (a derived/merged output, not a
+        # raw) must survive, since the setting is named "Keep RAW Images",
+        # not "Keep Intermediates" (this used to delete the master too;
+        # see CHANGELOG.md's 2026-08-03 "Keep RAW Images narrowed to raws
+        # only" entry). session.json must record the discard as deliberate
+        # (raw_discarded=True + a stated reason) -- never a silent gap that
+        # could be mistaken for corruption -- and must say explicitly that
+        # derived outputs were NOT touched (derived_outputs_discarded is
+        # False, never omitted), so a reader never has to infer that from
+        # raw_discarded alone.
         save_pref("keep_raw_images", False)
         try:
             kr_session = provenance.Session(provenance.OUT_ROOT, {}, [])
@@ -7494,8 +7519,9 @@ def render_check():
                 "run, not a failure: {!r}".format(win.capture_status.text())
             assert not any(kr_session.dir.glob("science_frame_*.tif")), \
                 "Keep RAW Images off must delete this capture's own raw frames"
-            assert not (kr_session.dir / "single_master.tif").exists(), \
-                "Keep RAW Images off must delete the linear master too"
+            assert (kr_session.dir / "single_master.tif").exists(), \
+                "Keep RAW Images off must NEVER delete the linear master -- " \
+                "it is a derived/merged output, not a raw frame"
             assert (kr_session.dir / "final_display.tif").exists(), \
                 "Keep RAW Images off must NEVER touch the processed result itself"
             on_disk_kr = json.loads((kr_session.prov_dir / "session.json").read_text())
@@ -7506,14 +7532,23 @@ def render_check():
                 "the discard must be recorded as DELIBERATE, with a reason -- " \
                 "a later reader must be able to tell 'chose not to keep' from " \
                 "'a file is missing'"
+            assert "linear master" not in kr_entry.get("raw_discard_reason", ""), \
+                "the reason text must not claim the master was discarded too"
+            assert kr_entry.get("derived_outputs_discarded") is False, \
+                "derived outputs were kept -- must be recorded False " \
+                "explicitly, not left for a reader to infer from raw_discarded"
+            assert kr_entry.get("derived_outputs_note"), \
+                "the False above must carry a stated reason, same convention " \
+                "as raw_discard_reason -- never an unexplained bare flag"
         finally:
             save_pref("keep_raw_images", True)
             shutil.rmtree(kr_session.dir, ignore_errors=True)
             shutil.rmtree(kr_session.prov_dir, ignore_errors=True)
         print("Keep RAW Images check PASS: off deletes this capture's own raw "
-              "frames + linear master once processing succeeds, never the "
-              "processed result itself, and session.json records the discard "
-              "as deliberate with a stated reason, never a silent gap")
+              "frames ONLY -- the linear master and the processed result "
+              "both survive -- and session.json records the raw discard as "
+              "deliberate with a stated reason, plus an explicit, never-"
+              "omitted confirmation that derived outputs were kept")
 
         # Additional export formats (Part 03, lifted from casual_mode.py,
         # TIFF genuinely optional since the debayer.py tonemap/write split):

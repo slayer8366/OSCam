@@ -38,6 +38,29 @@ from pathlib import Path
 SCRIPTS = Path(__file__).resolve().parent
 __version__ = "1.0"
 
+# Default --wl (sensor white level) for THIS merge path (frame_average ->
+# hdr_merge -> debayer): a container-range assumption (near the full
+# 16-bit ceiling), not a measured sensor value. qt_shell.py imports this
+# constant rather than keeping its own copy -- the two used to be
+# independently hardcoded and had already drifted into two different
+# Python types (str default here, int default there) despite agreeing
+# numerically; see CHANGELOG.md's 2026-08-03 "white_level defaults
+# consolidated" entry. The real ceiling differs from this default and is
+# measured, not a one-off guess: the August 2026 bracket's frame5/frame4
+# ratio break puts it at ~61000, reproduced on a second bracket a month
+# older. The actual merge for that bracket was run at --white-level
+# 62100, landing the cutoff below the ratio's departure from 2.00 rather
+# than at it, since that departure is gradual, not a step. The gain that
+# ceiling is valid for is now confirmed, not unrecorded: AnalogueGain
+# 3.282051, identical across all 80 science frames in that bracket's own
+# capture sidecars (session.json's capture_dir plus an exact per-level
+# exposure-time match tie the sidecars to this bracket unambiguously).
+# This default stays 65520, NOT 61000 -- that number is only valid at
+# this bracket's confirmed gain, and hardcoding it here as a new blanket
+# default would repeat the exact mistake this constant's own history is
+# already one instance of.
+MERGE_WHITE_LEVEL_DEFAULT = 65520
+
 
 def run_tool(name, args, cwd):
     cmd = [sys.executable, str(SCRIPTS / name)] + [str(a) for a in args]
@@ -281,22 +304,31 @@ def process(capture_dir, session, cap, a, ext):
             skipped.append("DNG export (failed: {})".format(exc))
 
     # Keep RAW Images off (a.delete_raw_on_success): delete this capture's
-    # OWN raw frames + linear master now that processing has succeeded --
-    # never the shared flat library (a reusable calibration artifact, not
-    # this capture's own raw), never final.tif/final_display.*/the DNG or
-    # JPG exports just written above (the processed/delivered results
-    # themselves). Provenance is always written regardless (main()'s own
-    # record-keeping happens on the caller's side, in session.json); this
-    # only decides what survives on disk. getattr with a False default,
-    # deliberately, not a required attribute like a.flat_root above: the
-    # safe default for a destructive operation is "don't delete", so an
-    # args object that never heard of this flag (an older caller, say)
-    # must degrade to keeping everything, never to discarding by surprise.
-    # Runs AFTER the DNG export above on purpose -- that step needs the
-    # raw frames/master to still exist.
+    # OWN raw frames now that processing has succeeded -- ONLY raw frames.
+    # Never master_files (the averaged/merged intermediates: master_N.tif/
+    # hdr_linear.tif for HDR, single_master.tif for science/snap) -- a user
+    # leaving this off is consenting to discard raws, not derived outputs
+    # built from a multi-frame bracket; the setting is named "Keep RAW
+    # Images", not "Keep Intermediates". Never the shared flat library (a
+    # reusable calibration artifact, not this capture's own raw), never
+    # final.tif/final_display.*/the DNG or JPG exports just written above
+    # (the processed/delivered results themselves). Deleting derived
+    # outputs too was a real bug here until this fix (see CHANGELOG.md's
+    # 2026-08-03 "Keep RAW Images narrowed to raws only" entry) -- if disk
+    # pressure from keeping intermediates around is ever a real problem,
+    # that needs its own explicitly-named setting and its own decision,
+    # not a side effect of this one. Provenance is always written
+    # regardless (main()'s own record-keeping happens on the caller's
+    # side, in session.json); this only decides what survives on disk.
+    # getattr with a False default, deliberately, not a required attribute
+    # like a.flat_root above: the safe default for a destructive operation
+    # is "don't delete", so an args object that never heard of this flag
+    # (an older caller, say) must degrade to keeping everything, never to
+    # discarding by surprise. Runs AFTER the DNG export above on purpose --
+    # that step needs the raw frames to still exist.
     raw_discarded = False
     if getattr(a, "delete_raw_on_success", False):
-        for f in raw_files + master_files:
+        for f in raw_files:
             f = Path(f)
             if f.exists():
                 f.unlink()
@@ -308,12 +340,26 @@ def process(capture_dir, session, cap, a, ext):
     # longer guaranteed, so this can no longer assume disp itself exists.
     written_display = [p.name for p in (disp, png, jpg) if p.exists()]
     print("\nDisplay image(s): {}".format(", ".join(written_display) or "none written"))
-    correction_status = {"flat_correction": flat_status, "dark_correction": dark_status,
-                         "raw_discarded": raw_discarded}
+    # derived_outputs_discarded/derived_outputs_note are unconditional and
+    # always False/the same text today -- explicit, never omitted, matching
+    # frame_average.py's/hdr_merge.py's own explicit-value-plus-note
+    # provenance fields (e.g. white_level_source, black_note) -- so a
+    # reader of session.json never has to guess whether keeping derived
+    # outputs was even considered, only infer it from raw_discarded alone.
+    correction_status = {
+        "flat_correction": flat_status, "dark_correction": dark_status,
+        "raw_discarded": raw_discarded,
+        "derived_outputs_discarded": False,
+        "derived_outputs_note": (
+            "Keep RAW Images only ever discards this capture's own raw "
+            "frames; averaged/merged intermediates (master_N.tif/"
+            "hdr_linear.tif for HDR, single_master.tif for science/snap) "
+            "are retained regardless of this setting."),
+    }
     if raw_discarded:
         correction_status["raw_discard_reason"] = (
-            "Keep RAW Images preference was off; raw frames and the linear "
-            "master were deleted once processing succeeded.")
+            "Keep RAW Images preference was off; raw frames were deleted "
+            "once processing succeeded.")
     print("CORRECTION_STATUS_JSON: " + json.dumps(correction_status))
     return disp, correction_status
 
@@ -359,7 +405,8 @@ def main():
     ap.add_argument("session", help="provenance folder (contains session.json)")
     ap.add_argument("--kind", choices=["auto", "hdr", "science", "snap"], default="auto")
     ap.add_argument("--index", type=int, default=None, help="process captures[INDEX]")
-    ap.add_argument("--wl", default="65520", help="sensor white level / saturation")
+    ap.add_argument("--wl", default=MERGE_WHITE_LEVEL_DEFAULT,
+                    help="sensor white level / saturation")
     ap.add_argument("--lw", default="2.2", help="Reinhard white point for the HDR path")
     ap.add_argument("--gains", nargs=2, metavar=("RED", "BLUE"), default=None,
                     help="ColourGains white balance (green=1.0)")
@@ -376,8 +423,10 @@ def main():
                     help="never archive raws")
     ap.add_argument("--delete-raw-on-success", action="store_true",
                     help="Keep RAW Images off (Part 03): delete this capture's own "
-                         "raw frames + linear master once processing succeeds, "
-                         "never the shared flat library or final.tif/final_display.*")
+                         "raw frames only once processing succeeds -- never the "
+                         "averaged/merged intermediates (master_N.tif/hdr_linear.tif/"
+                         "single_master.tif), the shared flat library, or "
+                         "final.tif/final_display.*")
     # Additional export formats (Preferences > Advanced, Part 03: lifted from
     # casual_mode.py, then genuinely completed once the debayer.py tonemap/
     # write split landed -- TIFF used to be locked on here because debayer.py
