@@ -209,6 +209,7 @@ promise raws-only deletion while the code here still deletes
 least consistently wrong). These two branches need to land together, not
 this one alone. Proceeding per direct instruction, with this flagged.
 
+
 **Investigation, reported before any code change, per direct
 instruction:**
 
@@ -304,6 +305,160 @@ apply a different standard here. `qt_shell.py`'s own `_open_gallery_
 browser` finding is reported only — no code changed there, per
 instruction (design only for items 2-3). No re-run, no reported numbers
 — real verification is the user's, on the Pi.
+
+
+**Positional note.** The entries directly below (`Record build: Gallery
+race comment corrected to a stated contract` and `Record intent: Gallery
+race comment corrected to a stated contract`) are appended here, in full
+and unaltered, from `claude/gallery-race-comment-fix`. On that branch
+they sat at the top of this same `## 2026-08-03` section, directly above
+`claude/keep-raw-images-scope-fix-cleanup`'s entries (already landed,
+above) — both branches' "Record intent" entries happen to share the
+identical boilerplate heading `**Investigation, reported before any code
+change, per direct instruction:**`, the same collision this section's
+own earlier positional note (above `### Record build: Keep RAW Images
+narrowed to raws only`) already describes and resolves the same way.
+Each entry's own numbered investigation list is self-contained to it —
+not a continuation of, and not continued by, the other.
+
+### Record build: Gallery race comment corrected to a stated contract
+
+Built to the intent recorded below. No deviation.
+
+`_open_gallery_browser`'s comment (`qt_shell.py:5445`) no longer claims
+"it is modal... so it cannot race a capture in progress" — replaced with
+a `# CAVEAT:` block (PHILOSOPHY.md's convention for a durable fact about
+a specific line) stating plainly: unguarded against `self._capturing`,
+can race the auto-process worker thread's own deletion loop (raws +
+their preview `.jpg`s, as of the now-merged `claude/keep-raw-images-
+scope-fix`/`-cleanup` work), TOCTOU on listing-then-open, being modal
+only blocks other GUI actions and does not block a background worker
+thread by design. Points to this entry for the full concurrency contract
+rather than restating it inline. No guard added — per instruction, that
+choice (coarse `self._capturing` reuse vs. a finer per-capture check,
+both already on record) is the user's.
+
+**Verification, as honestly as the intent asked for:** `python3 -m
+py_compile qt_shell.py` passes — the only check possible here, no
+PyQt6/numpy in this sandbox for a live Qt exercise. No real bracket/
+session data exists in this checkout, none fabricated, no existing user
+data touched. No re-run, no reported numbers — real verification is the
+user's, on the Pi.
+
+### Record intent: Gallery race comment corrected to a stated contract
+
+Own branch off the updated `main`: `claude/gallery-race-comment-fix`.
+`main` now includes `claude/keep-raw-images-scope-fix` (merged via PR #9,
+commit `031bbe6`); `claude/keep-raw-images-scope-fix-cleanup` was rebased
+onto the result and force-pushed — see this session's own branch-handling
+report (delivered before this task's investigation began) for the full
+resolution, including how the `CHANGELOG.md`/`HANDOFF.md`/`hdr_from_
+session.py` conflicts were combined rather than picked from one side.
+Repo-only: the Pi is unreachable, no verification runs, no synthetic
+data, no existing user data touched.
+
+
+**Investigation, reported before any code change, per direct
+instruction:**
+
+1. **Design A cost, re-tested.** Walked `process()` on the current
+   (deletion-scope-fixed) code: `debayer.py`'s input is always
+   `hdr_linear.tif`/`single_master.tif` (a merged/averaged file), never a
+   raw or a preview `.jpg` — confirmed by reading both `db = [...]`
+   construction sites directly (lines 181, 209). The only step anywhere
+   in `process()` reading a raw file's *content* is DNG export's non-
+   merge path, `src = raw_files[0]` (line 272), which already runs after
+   `debayer.py` today with no dependency on `debayer.py`'s own output.
+   Deletion itself needs raw *paths* only, already known well before any
+   of this. **Revised cost estimate**: under `DNG export -> delete raws
+   -> debayer -> embed confirmed retention`, nothing between DNG export
+   and `debayer` reads a raw or preview jpg — the reordering is a cheap
+   step-sequence swap (DNG export and `debayer` trade relative position;
+   the format-existence-validation block, which reads `debayer.py`'s own
+   outputs, moves with it), no restructuring of any subprocess-invoking
+   block's own logic. What still stands from the original estimate:
+   `debayer.py` needs a new flag/field to accept and embed the confirmed
+   retention fact, and `process_wizard.py` (a second real caller, never
+   deletes anything) needs a sensible default for it.
+2. **Design C, evaluated.** The referenced primitive is `calibrate.py`'s
+   calibration store (`save_calibration`/`current_calibration`):
+   objective-keyed, append-only list per key, each entry carrying its own
+   `entry_id` + a `supersedes` pointer to the prior entry, current state
+   always the list's last element. Real and working, but does not fit
+   this use case unmodified: its key ("objective") is small, stable, and
+   GUI-selected; a retention record needs a key scoped to one specific
+   capture, and nothing in `hdr_from_session.py` computes one today (no
+   `pixel_sha256` of `final.tif` anywhere in this file, unlike the
+   green-plane/`plane_cache.py` side of the app). It also lives in its
+   own standalone JSON file, never amended onto an image file — matching
+   "sidecar," not "amended into the deliverable." The generalized version
+   (`json_store.py`, HANDOFF's own "provenance.py phase 2") isn't built
+   yet, so using this pattern now means building that generalization or
+   accepting a second, parallel implementation. Cost: define a stable
+   per-capture key (cheapest: reuse session timestamp + capture index,
+   already on hand; no new hashing required). No reordering of
+   `process()` at all — this writes after deletion, exactly where
+   `correction_status` already gets written today.
+   **Discovered sub-cost**: "amended into the deliverable" and "sidecar"
+   are not equally cheap. Amending `final.tif` itself means reopening and
+   fully rewriting the TIFF after `debayer.py` already wrote it
+   (`tifffile` has no incremental-append story) — changes the file's own
+   bytes/hash after the fact and reopens a race window of exactly the
+   kind this whole investigation is about. Sidecar avoids this.
+   **Discoverability**: a reader with only `final.tif` cannot find a
+   sidecar record unless `final.tif`'s own embedded JSON (written once,
+   at original write time) carries a stable pointer to the key, and even
+   then needs filesystem access the file won't carry with it once it
+   leaves the project's own directory tree (e.g. via `publish.py`'s own
+   package model).
+   **Three designs, compared on one axis — can the artifact's own claim
+   ever be false?** Design A (embed after deletion): true by construction
+   at write time, only stale from something out-of-band afterward.
+   Design B (embed before deletion, deletion honours it): can be false
+   the moment deletion fails, is interrupted, or is skipped, even under
+   otherwise-normal operation — a real, structural gap. Design C
+   (sidecar, written after deletion): the artifact's own bytes never
+   carry a retention claim at all, so nothing there can ever be false;
+   the external record inherits Design A's "true at write time" property
+   but has the discoverability weakness above, and — being append-only —
+   a later-discovered inconsistency can be appended as a correcting
+   entry, something neither A's nor B's baked-in file claim can ever do
+   once written. Design only, no implementation, no decision made.
+3. **The Gallery contract, stated.** `_open_gallery_browser`
+   (`qt_shell.py:5445`) must not permit a read (listing or open) of any
+   capture's files while that specific capture's own `process()` is in
+   flight on the auto-process/manual-process worker thread, because that
+   worker thread's own last step deletes files (raws, and now their
+   preview `.jpg`s) as part of the same run. A guard would have to hold
+   for the entire duration from when that worker thread starts until
+   `_on_process_finished` resets state, not a single point-in-time check
+   when Gallery happens to open — the race window is the whole processing
+   span, not an instant — evaluated either coarsely (any processing at
+   all) or against the specific in-flight capture, matching the coarse-
+   vs-fine choice already on record from the prior task. Design only, no
+   guard built.
+
+**Plan for item 4 (the only code change in this task):** replace
+`_open_gallery_browser`'s incorrect "it is modal... so it cannot race a
+capture in progress" reasoning with an accurate `# CAVEAT:` comment
+(PHILOSOPHY.md's convention for a durable fact about a specific line)
+stating: unguarded, can race the auto-process worker thread's deletion
+loop, TOCTOU on listing-then-open. No guard added — the coarse-versus-
+fine choice is the user's.
+
+**Baseline:** `qt_shell.py:_open_gallery_browser`'s comment currently
+reads "Independent of self._capturing -- it only reads the filesystem,
+and it is modal (exec()) like Process/Archive above, so it cannot race a
+capture in progress either way" — no `# CAVEAT:` marker present.
+
+**Verification, stated honestly:** no real bracket/session data exists in
+this checkout, none fabricated, no existing user data touched.
+`python3 -m py_compile qt_shell.py` is the only check possible — this
+sandbox has no PyQt6/numpy for a live Qt exercise, same constraint every
+task on this repo has hit. No re-run, no reported numbers — real
+verification is the user's, on the Pi.
+
+
 
 ### Record build: Keep RAW Images narrowed to raws only
 
