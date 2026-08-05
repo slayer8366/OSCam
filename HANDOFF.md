@@ -49,6 +49,20 @@ What's actually open, none of it written down anywhere until now:
 4. **Stage 3** — hasn't moved. Named in conversation, not detailed here;
    don't assume it's the same thing as the "Part 03" Preferences-dialog
    plan set covered later in this file unless confirmed.
+5. **The `--render-check` verification gap from PRs #10/#11/#12 is still
+   open, and now blocked on Pi access rather than just deferred.** All
+   three merged with `qt_shell.py --render-check` unrun against a merged
+   state (no `numpy` in this sandbox, true of every PR against this repo
+   so far). A follow-up task asked this session to close that gap on the
+   Pi and start a standardized sweep-check list; this session has no path
+   to the Pi at all (no `ssh`, no VPN/tailscale, no known hostname, and
+   the only registered remote environment is this same cloud sandbox) —
+   see `CHANGELOG.md`'s 2026-08-05 "Open: tenth task..." entry for the
+   full handoff: the exact commands to run, the report-only spec for
+   cataloging every check in the repo (with some unverified grep-only
+   groundwork already done), and the spec for the new sweep-list file.
+   Whoever picks this up next should start with that entry's own "Record
+   intent" step before building anything.
 
 One number worth a line since the constant alone doesn't explain it:
 `hdr_from_session.MERGE_WHITE_LEVEL_DEFAULT` stays `65520`, but the real

@@ -5,6 +5,107 @@ dump — each entry names the commit(s) it corresponds to for traceability.
 See `HANDOFF.md` for what a fresh agent needs to know before working here;
 this file is the historical record of what happened and why.
 
+## 2026-08-05
+
+### Open: tenth task (Pi verification-gap run + standardized sweep list), blocked on Pi access from this session
+
+Given as two parts under the three-phase convention (intent commit,
+build commit, record-build commit): close the `--render-check`
+verification gap left by PRs #10/#11/#12, then start a standardized
+sweep-check list. Neither part was started. This entry hands both off;
+it is not an intent commit for either.
+
+**Why nothing was built.** Part 1 requires running, on the Pi:
+`cd ~/imx && git pull --ff-only origin main && python3 qt_shell.py
+--render-check`, and reporting the result in full — stopping rather
+than fixing if it fails, since PRs #10, #11, and #12 all merged with
+`qt_shell.py --render-check` unrun (this sandbox has no `numpy`, true
+of every PR against this repo so far, so the gate has never once run
+against a merged state). This session has no path to the Pi: no `ssh`
+binary installed, no `~/.ssh` config or `known_hosts`, no VPN/tailscale,
+no Pi hostname or IP documented anywhere in this repo, and the only
+registered remote environment (`list_environments`) is this same cloud
+sandbox, not the Pi — checked, not assumed. Per direct instruction, this
+is handed to a new session with real Pi access rather than worked around
+from here.
+
+**Part 1, exact task for that session:** run the two commands above,
+report the full output. If it does not pass, stop there and report —
+do not attempt a fix in the same pass. Real capture data lives on the
+Pi's disk; do not delete, overwrite, or move any existing file while
+doing this.
+
+**Part 2, exact task, report only, nothing fixed:** enumerate every
+automated check in the repo — every individual assertion inside every
+module's `render_check()`, every `py_compile` gate, any self-test, any
+assertion helper like `hdr_merge.py`'s `_assert_single_description_tag`.
+For each: (a) whether its expected value comes from an external
+contract (a spec, a UI label, `PHILOSOPHY.md`, a physical standard) or
+from observed behavior — the `render_check` assertion that encoded the
+Keep RAW Images deletion bug as correct (see `CHANGELOG.md`'s 2026-08-03
+"Keep RAW Images narrowed to raws only" entry) is the known instance of
+the second kind; report honestly whether others exist, don't assume
+there's only the one; (b) where it can actually execute — sandbox, Pi,
+or both — and what it needs that the sandbox lacks (`numpy`, hardware,
+capture data).
+
+*Grep-only groundwork done this session, not verified or classified —
+treat as a starting point, not a catalog:* `grep -l "def render_check"
+*.py` finds it in exactly 15 files: `annotations.py`, `ca_measure.py`,
+`calibrate.py`, `export.py`, `focus.py`, `function_index.py`,
+`gallery.py`, `measure.py`, `plane_cache.py`, `process_wizard.py`,
+`provenance.py`, `publish.py`, `qt_shell.py`, `stacks.py`,
+`wizard_pages.py`. An earlier entry (2026-08-01 port work) describes "a
+full project `--render-check` sweep (all 16 modules, including
+`camera_backend.py`)" — `camera_backend.py` did NOT turn up in this
+grep, so either that count is off by one or `camera_backend.py`'s
+self-check is wired some other way; it does have its own assertion
+functions (`_assert_plain_types`, `assert_only_camera_backend_imports_
+picamera2`, `assert_only_camera_backend_imports_sensor_profiles`, all
+referenced in `PHILOSOPHY.md`). Not resolved here — a real finding for
+Part 2 to run down, not assumed either way. Two more assertion helpers
+spotted by grep, not yet read in full: `function_index.py`'s
+`assert_function_index_current` and `qt_shell.py`'s `assert_live_
+measuring_has_no_calibration_dependency`. One self-test sits outside the
+`render_check` convention entirely — `test_burst_backend.py` — not
+opened this session; what it tests and what it needs to run (`numpy`,
+hardware, or neither) is unknown.
+
+**Part 3, exact task:** create a new standing file holding a fixed,
+pre-written set of sweep checks, run as a standard event on every code
+change, never composed in the moment — a check written on the spot
+takes its expected value from the change that prompted it, which is
+exactly how the deletion bug got enshrined as correct in the first
+place. Each entry records: what it checks, what external contract
+supplies its expected value, where it can run (sandbox / Pi / both), and
+whether it's currently implemented or a gap. Seed categories to expand
+into concrete entries from what the repo actually contains: measurement
+correctness (calibration survives a capture-resolution change;
+measurement reads the green plane, not the debayered image; preview and
+still agree on field of view), provenance integrity (exactly one
+description tag per written TIFF; recorded values match the artifact
+they describe; recorded output paths resolve to the file they're
+embedded in), geometry derivation (no hardcoded sensor dimension above
+the driver layer; shape predicates derive from the sensor profile,
+matching the `assert_only_camera_backend_imports_sensor_profiles`
+convention `PHILOSOPHY.md` already documents), retention safety (no
+deletion path removes something its name doesn't cover; no writer's
+default output filename appears in any deletion list), sensor sanity
+(every check's expected value traces to a contract, not to observed
+behavior). Mark gaps as gaps — a list claiming coverage it doesn't have
+is worse than a short one. Report the intent baseline as scope, not a
+count. Do not implement any missing check found while building this
+list. Do not touch `frame_average.py`'s averaging behavior, the
+deletion path, or `archive_raws()` while doing any of this.
+
+**What the next session should do first, per the three-phase
+convention:** write its own "Record intent" entry — recording intent
+before the build begins is itself the rule (`PHILOSOPHY.md`), and this
+entry is a handoff, not that commit. This entry's own groundwork
+(the 15-file grep, the assertion-helper list, the `camera_backend.py`
+count discrepancy) should be verified, not trusted, before being relied
+on in that entry.
+
 ## 2026-08-04
 
 ### Open: task9-work fast-forward to main, blocked on push permission
