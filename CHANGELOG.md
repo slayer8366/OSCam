@@ -20,7 +20,15 @@ unguarded gallery-race function). `python3 function_index.py
 --render-check` now passes (`assert_function_index_current` included).
 Also re-ran `DISPLAY=:0 python3 qt_shell.py --render-check` directly
 (not just trusted from Part 1's commit message) — still exit 0, all
-assertions PASS, confirming that result still holds.
+assertions PASS, confirming that result still holds. Run as a direct,
+synchronous terminal command, not a backgrounded task invocation — the
+distinction matters because a backgrounded invocation of this same
+command captured no output to read, so only the direct terminal run
+produced anything to actually verify against. The check completing
+either way isn't the same as the result being read; this is the first
+time in this repo that a post-PR-#10/#11/#12 `--render-check` result
+was both run *and* read, covering the merge plus the `FUNCTION_INDEX.md`
+regeneration above.
 
 **What this failure mode reveals, per the user's own read:** the check
 existed and worked, but nothing invalidates the index at the event that

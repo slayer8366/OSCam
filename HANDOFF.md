@@ -32,7 +32,14 @@ What's actually open, none of it written down anywhere until now:
    against real data instead of only reasoned about from the merged
    masters. Not yet checked; whether/how to build saturation rejection is
    still the user's sequencing decision to make (see item 2 in that same
-   backlog list above).
+   backlog list above). **Still not checked as of the 2026-08-05 session
+   that closed item 7 below** — that session also ran directly on the Pi
+   (confirmed via `hostname`, same access as the session that opened this
+   item), but stopped at the item-7 commit (`ddb845c`) on the user's
+   explicit instruction, not because Pi access was unavailable. Whoever
+   picks this up next: access isn't the blocker, sequencing/scope is —
+   this is the one item in this list suited to a Pi-connected session
+   specifically (real bracket data), the other open items below are not.
 2. **Retention-embed design** — parked, pending the user's decision. Not
    detailed further here; came up in conversation, not yet drafted into a
    plan file the way `PLAN_03_provenance_relocation_and_keep_raw.md`
