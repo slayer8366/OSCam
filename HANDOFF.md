@@ -49,20 +49,44 @@ What's actually open, none of it written down anywhere until now:
 4. **Stage 3** — hasn't moved. Named in conversation, not detailed here;
    don't assume it's the same thing as the "Part 03" Preferences-dialog
    plan set covered later in this file unless confirmed.
-5. **The `--render-check` verification gap from PRs #10/#11/#12 is still
-   open, and now blocked on Pi access rather than just deferred.** All
-   three merged with `qt_shell.py --render-check` unrun against a merged
-   state (no `numpy` in this sandbox, true of every PR against this repo
-   so far). A follow-up task asked this session to close that gap on the
-   Pi and start a standardized sweep-check list; this session has no path
-   to the Pi at all (no `ssh`, no VPN/tailscale, no known hostname, and
-   the only registered remote environment is this same cloud sandbox) —
-   see `CHANGELOG.md`'s 2026-08-05 "Open: tenth task..." entry for the
-   full handoff: the exact commands to run, the report-only spec for
-   cataloging every check in the repo (with some unverified grep-only
-   groundwork already done), and the spec for the new sweep-list file.
-   Whoever picks this up next should start with that entry's own "Record
-   intent" step before building anything.
+5. **The `--render-check` verification gap from PRs #10/#11/#12 is
+   closed.** This session runs directly on the Pi (`hostname` ==
+   `raspberrypi`, real `numpy`, real `ssh`) — the first session on this
+   repo with that access. `git pull --ff-only` fast-forwarded to
+   `95fce3e`, then `python3 qt_shell.py --render-check` ran for the
+   first time ever against a merged state: **exit 0, every assertion
+   PASS**, including the PR #9-fixed Keep RAW Images block. Full detail:
+   `CHANGELOG.md`'s 2026-08-05 "Record: tenth task Part 1" entry.
+6. **Check-enumeration report (Part 2) done, nothing fixed.** All 15
+   `render_check()` files plus `camera_backend.py`, `imx477.py`,
+   `pixel_hash.py` were read in full and actually run on the Pi (not
+   just read). Findings, in full, in `CHANGELOG.md`'s 2026-08-05
+   "Record: tenth task Part 2" entry — summary: expected-value
+   provenance is external-contract for the large majority; a handful of
+   lower-stakes internal-threshold checks exist (`calibrate.py`
+   `stretch_to_uint8`, `ca_measure.py` `format_offset_table`/
+   `poly2_flag`, `measure.py`'s use of `stacks.py`'s `rel_drop=0.5`) but
+   none reproduce the Keep-RAW-Images shape exactly; three checks cite
+   planning docs (`PLAN_04_green_plane_cache.md`, `PLAN_quick_ruler.md`,
+   `PRIORITY_click_mapping_fix.md`) that don't exist anywhere in the
+   repo or its git history — unverifiable citations, not known errors;
+   several real coverage gaps identified (`ca_lib.py` has no self-check
+   at all; `stacks.py`'s `move_frames_to_discarded` isn't exercised by
+   any check; `provenance.py` never confirms a recorded path resolves to
+   the file it describes).
+7. **New, live: `function_index.py --render-check` currently fails on
+   `main`, discovered while running Part 2, not fixed (report-only).**
+   `FUNCTION_INDEX.md` is stale: PR #10/#11/#12 added functions to
+   `frame_average.py`/`hdr_merge.py` and a `CAVEAT:` comment to
+   `qt_shell.py` (item 3 above) without anyone re-running
+   `python3 function_index.py` afterward to regenerate it. Same shape as
+   this whole task's premise — a real, documented check, silently unrun
+   after a merge. Whoever picks this up: regenerate and commit
+   `FUNCTION_INDEX.md`, or decide it's someone else's call first.
+8. **Part 3 (standardized sweep-check list) still open.** Spec:
+   `CHANGELOG.md`'s 2026-08-05 "Open: tenth task..." entry below. Should
+   follow with its own "Record intent" → "Build" → "Record build"
+   sequence, same as every other build in this file.
 
 One number worth a line since the constant alone doesn't explain it:
 `hdr_from_session.MERGE_WHITE_LEVEL_DEFAULT` stays `65520`, but the real

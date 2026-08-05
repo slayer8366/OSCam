@@ -7,6 +7,185 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-05
 
+### Record: tenth task Part 1 — Pi render-check verification gap closed
+
+Picks up the handoff below ("Open: tenth task..."). This session runs
+directly on the Pi (`hostname` reports `raspberrypi`, `numpy 1.24.2`
+importable, real `ssh` present) — the opposite environment from every
+prior session on this repo, none of which had a path to the Pi. Stated
+per the task's own instruction that this fact is itself an input to
+Part 2 below.
+
+`cd ~/imx && git pull --ff-only origin main` fast-forwarded
+`7c1696b..95fce3e` (9 commits: PRs #10, #11, #12 — CHANGELOG.md,
+HANDOFF.md, PHILOSOPHY.md, `frame_average.py`, `hdr_from_session.py`,
+`qt_shell.py`). Working tree had a locally-modified `profile.json` and
+an untracked `calib/` (real specimen/rig data per `PHILOSOPHY.md`) —
+neither conflicts with the fast-forward and neither was touched, added,
+or committed.
+
+`python3 qt_shell.py --render-check` then run for the first time ever
+against a merged state on this repo. **Result: exit 0, every assertion
+PASS** — overlay/box/bar/letterbox geometry, XY ruler, onboarding gate,
+slider maps, capability-driven capture/preview resolution kwargs,
+lores-derived FocusPreviewWindow state, theming, capture-lock,
+processing-wizard helpers, dark-nesting, `archive_session_raws`,
+z-stack tagging and the full z-stack aid flow, full-screen mode, the
+Preferences dialog (both parts), Clean Cache Now, green-plane
+extraction, Export, Publish, capture-sharpness scoring, auto-processing,
+**Keep RAW Images** (the PR #9-fixed check — master/final now correctly
+survive, raw frames alone are deleted), export-format flags, Live
+Measuring (launch, commit round-trip, all five freeze-fix cases, all
+five canvas-fit cases), and the full Live Measuring module-boundary
+check. No failure, so per the task's own instruction there is nothing
+to stop on — three merges' worth of unrun gate ran clean on its first
+real pass. Full raw output retained in this session's transcript, not
+reproduced verbatim here; the check-name list above is exhaustive
+(nothing PASS'd was omitted).
+
+### Record: tenth task Part 2 — check enumeration (report only, nothing fixed)
+
+Per the handoff's Part 2 spec. `grep -l "def render_check" *.py` (rerun,
+matches the prior session's ungrounded groundwork): 15 files. Read every
+one of those 15 `render_check()` functions in full, plus
+`camera_backend.py`'s self-check (an `if __name__ == "__main__":` block,
+not a `def render_check` — resolves the prior session's noted count
+discrepancy: it exists, is real, and is exercised the same way, just
+under a different invocation convention, `python3 camera_backend.py`
+with no flag), `function_index.py`'s `assert_function_index_current`,
+`qt_shell.py`'s `assert_live_measuring_has_no_calibration_dependency`,
+`hdr_merge.py`'s `_assert_single_description_tag`, and
+`test_burst_backend.py`. Every one of these except `test_burst_backend.py`
+(needs a real camera + `.show()`'d Qt widget — not run, to avoid
+operating hardware for a report-only task) was actually executed on the
+Pi just now, not just read — findings below are grounded in real exit
+codes, not static reading alone.
+
+**(a) Expected-value provenance.** The overwhelming majority trace to an
+external contract: cross-module behavior another file's real code
+defines (e.g. `calibrate.py`'s green-plane check reuses `debayer.py`'s
+own `extract_green`; `export.py`'s schema cites "build checklist §11";
+`publish.py` cites "§12"; `plane_cache.py`/`stacks.py`/`provenance.py`
+check documented store/split contracts), a physical/math standard
+(Pythagorean distance, circle/ellipse area, BGGR Bayer layout), or a UI
+label (`measure.py`'s status-line strings, `wizard_pages.py`'s
+`snap_frame_<idx>` convention). The one **known** instance of a check
+encoding observed behavior as correct — `qt_shell.py`'s Keep RAW Images
+block, confirmed by reading the 2026-08-03 entry and the current code
+side by side — is now fixed (the assertion flipped from "master must be
+deleted" to "master must survive," matching the setting's own name/
+label, not the old buggy output). **A few more of the same shape exist,
+all lower-stakes:**
+  - `calibrate.py`'s `stretch_to_uint8` check (~line 1015) and
+    `ca_measure.py`'s `format_offset_table`/`poly2_flag` checks
+    (~lines 835, 856) assert against arbitrary internal thresholds with
+    no cited external spec — display-only / evidence-only paths, so an
+    error here can't corrupt a measurement, only a display or an
+    advisory flag.
+  - `measure.py`'s z-stack flagged-plane check exercises
+    `stacks.sharpness_relative_flag`'s real `rel_drop=0.5` default
+    ("half of best") — a genuine cross-module check, not circular — but
+    the `0.5` constant itself has no cited spec anywhere in the repo.
+  - `measure.py`'s green-plane-extraction check (and the pixel-hash
+    check built on it) computes its own "expected" value by calling
+    `debayer.extract_green` with the *same* `DEFAULT_CFA_PATTERN`/
+    `DEFAULT_GREEN_WHICH` constants `load_measurement_plane` itself
+    uses — proves the wrapper doesn't alter debayer.py's result, but
+    would not catch both call sites agreeing on a wrong constant. One
+    level removed from the Keep-RAW-Images shape, not the same bug.
+  - `annotations.py`'s `stored_calibration_ref` check derives part of
+    its own expectation by calling `calibration_ref_for` (the function
+    whose *relationship* to `stored_calibration_ref` is under test) —
+    flagged as a relational, not absolute, oracle; looks intentional and
+    documented, not accidental.
+  No other instance of the exact Keep-RAW-Images shape (assert whatever
+  the code under test currently outputs, call it correct) was found.
+
+  **Dangling contract citations, a distinct finding from the above:**
+  several checks cite a planning doc as their external contract —
+  `plane_cache.py` cites `PLAN_04_green_plane_cache.md`, `qt_shell.py`'s
+  `assert_live_measuring_has_no_calibration_dependency` cites
+  `PLAN_quick_ruler.md`, `camera_backend.py`/`imx477.py` cite
+  `PRIORITY_click_mapping_fix.md` — **none of these three files exist
+  anywhere in the repo, in any worktree, or in git history**
+  (`git log --all --diff-filter=A` for all three: no hits). The
+  citations may be accurate (docs shared outside the repo, e.g. in
+  conversation) but are not independently verifiable from inside it as
+  things stand. Not the same failure mode as Keep RAW Images (nothing
+  here is wrong), but it means "external contract" for these specific
+  checks is currently an unverifiable claim, not a checkable one.
+
+**(b) Where each can run.** All 15 `render_check()` files plus
+`camera_backend.py`, `imx477.py`, and `pixel_hash.py` (18 files total)
+were run just now on the Pi — **all 17 passed**; **`function_index.py`
+`--render-check` failed, exit 1** (see below — a real, current, live
+failure, discovered and reported, not fixed). All 18 need only `numpy`
+(all import it directly or transitively) — none touch real hardware,
+all use `FakeCamera`/synthetic data/tempdirs. `measure.py`'s Qt-gated
+sub-checks (marks-commit UI, ReviewWindow, z-stack UI) need a
+`QApplication` but not `.show()`/a real display — offscreen-capable, so
+sandbox-runnable given PyQt6 (this repo's actual sandboxes to date have
+had neither `numpy` nor PyQt6). `test_burst_backend.py` needs a real
+`Picamera2Camera` and a real `.show()`'d Qt event loop — Pi-only,
+hardware-only, not run this session. `hdr_merge.py`'s
+`_assert_single_description_tag` runs on every real production
+`hdr_merge.py`/`hdr_from_session.py` invocation (real code path, not a
+test) but has **zero automated-check coverage** — no render_check, no
+test file, invisible to the documented 15-module sweep; needs real (or
+realistically-shaped) bracket TIFFs to exercise. `py_compile`, cited
+throughout the CHANGELOG as "the only check possible" in numpy-less
+sandbox sessions, is **not an implemented gate** — no CI config,
+Makefile, or git hook in the repo runs it automatically (checked:
+no `.github/`, no `Makefile`, no non-sample hooks in `.git/hooks/`); it
+is a manual habit narrated in commit messages, and it only proves the
+file parses, nothing about behavior.
+
+**Live finding, not fixed:** `python3 function_index.py --render-check`
+**fails right now on this main**, exit 1: `FUNCTION_INDEX.md` is stale
+against the current source. `assert_function_index_current` (the
+freshness check itself is sound — external contract, byte-diff against
+a real committed artifact) reports `frame_average.py` gained
+`read_sidecar_meta`/`aggregate_capture_field`/`capture_meta_for_science`
+and `hdr_merge.py` gained `try_read_embedded_capture_meta`/
+`_assert_single_description_tag` plus a changed `merge()` signature —
+all real PR #10/#11/#12 additions — and `qt_shell.py` gained the
+Gallery-race `CAVEAT:` comment (`HANDOFF.md` open item 3) — none
+reflected in the committed `FUNCTION_INDEX.md`, because no one ran
+`python3 function_index.py` (no flag, regenerates for real) after those
+merges. This is a second, independent instance of exactly this task's
+own theme — a real check, part of the documented sweep, silently unrun
+after merges — found by actually running the enumeration rather than
+just reading it. **Not fixed here** (Part 2 is report-only); `HANDOFF.md`
+records it as open below.
+
+**Coverage gaps, not bugs — flagged per the task's "mark gaps as gaps"
+instruction:**
+  - `ca_lib.py` (chromatic-aberration math: `radial_warp`,
+    `apply_ca_correction`, `adapt_center` — the function calibration's
+    resolution-change survival depends on) has **no self-check of any
+    kind**, no `if __name__`, nothing.
+  - `frame_average.py`, `hdr_from_session.py`, `debayer.py` have no
+    `render_check`/self-test of their own — only indirectly exercised
+    where another module's `render_check` shells out to them as a real
+    subprocess (`process_wizard.py`'s does, for `frame_average.py`).
+  - `stacks.py`'s `move_frames_to_discarded` (the retention/deletion-
+    adjacent prefix-move) is defined but **never exercised** by
+    `render_check` — no assertion either way on whether a prefix match
+    could sweep up a differently-tagged capture sharing a prefix.
+  - `plane_cache.py`'s `clean_cache` checks all pass an explicit `root=`
+    temp dir; none exercises the `root=None` default-scoping path
+    against a realistic tree holding non-cache files — scoping is
+    structural (`_resolve_root` always appends `plane_cache/`), so this
+    is an untested assumption, not a demonstrated bug.
+  - `provenance.py`'s checks confirm sidecars/`session.json` land in the
+    *correct directory* and that `capture_dir` gets *recorded*, but none
+    re-opens a file at a recorded path to confirm it is the file the
+    entry describes — the "recorded path resolves to the file it's
+    embedded in" half of provenance integrity is untested.
+
+Nothing in this Part was fixed, deleted, or modified — `frame_average.py`,
+the deletion path, and `archive_raws()` were not touched, per instruction.
+
 ### Open: tenth task (Pi verification-gap run + standardized sweep list), blocked on Pi access from this session
 
 Given as two parts under the three-phase convention (intent commit,
