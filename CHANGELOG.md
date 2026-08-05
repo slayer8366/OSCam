@@ -7,6 +7,83 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-05
 
+### Record intent: tenth task Part 3 — standing sweep-check list
+
+Own step, per the three-phase convention (`PHILOSOPHY.md`), following
+directly from Parts 1+2 above (their findings are the baseline this
+scope is drawn from — grep-only groundwork already superseded by the
+verified catalog those entries hold).
+
+**What gets built.** One new file, `SWEEP_CHECKS.md`, at repo root
+(matching the existing all-caps `.md` naming convention —
+`HANDOFF.md`/`CHANGELOG.md`/`PHILOSOPHY.md`/`README.md`/
+`FUNCTION_INDEX.md`). No `.py` file, no test harness, no code — a fixed,
+pre-written list a human or a future session reads and runs down, not
+composed fresh each time. Per direct instruction, this list itself does
+not implement any missing check it finds — it records the gap.
+
+**Baseline scope, stated so the build can be checked against it.** Five
+sections, one per seed category, each expanded into concrete entries
+drawn only from what Parts 1+2 already verified exists in this repo
+(no new grepping/reading invented at build time — that would be
+composing checks in the moment, the exact failure mode this file
+exists to prevent):
+
+1. **Measurement correctness** — calibration surviving a capture-
+   resolution change (`ca_lib.adapt_center` — flagged in Part 2 as
+   having zero self-check coverage, a real gap, not implemented); green-
+   plane-only measurement (`measure.load_measurement_plane`,
+   `calibrate.load_green_plane` — both have real render_check coverage,
+   contract = BGGR Bayer layout / cross-checked against `debayer.py`);
+   preview/still field-of-view agreement (`camera_backend.py`'s sensor
+   crop geometry check + `imx477.py`'s FOV-ratio cross-check — both
+   real, contract partly cites the missing `PRIORITY_click_mapping_fix.md`,
+   noted as unverifiable-but-not-known-wrong per Part 2).
+2. **Provenance integrity** — one description tag per TIFF
+   (`hdr_merge._assert_single_description_tag` — real, on the
+   production path, zero automated-test coverage, per Part 2); recorded
+   values matching their artifact (`provenance.py`'s sidecar/session.json
+   location checks — real but partial, per Part 2's gap note: directory
+   placement is checked, round-trip path resolution is not); recorded
+   output paths resolving to the file they're embedded in (**gap**,
+   named explicitly in Part 2, nothing in the repo checks this today).
+3. **Geometry derivation** — no hardcoded sensor dimension above the
+   driver layer / `assert_only_camera_backend_imports_sensor_profiles`
+   (real, `camera_backend.py`, contract = `PHILOSOPHY.md`'s sensor-
+   profile rule); shape predicates deriving from the sensor profile
+   (`imx477.crop_for_size` internal-consistency + `_resolve_sensor_profile`
+   exact-name-match checks — both real).
+4. **Retention safety** — no deletion path removing more than its name
+   covers (`qt_shell.py`'s Keep RAW Images block — real, and the fixed
+   instance of the one known contract-vs-observed bug); `plane_cache
+   .clean_cache` never removing a referenced plane (real, three checks);
+   `stacks.move_frames_to_discarded` prefix-match safety (**gap**, named
+   in Part 2 — defined, never exercised); no writer's default output
+   filename appearing in any deletion list (**gap** — nothing in the
+   repo checks this as a standing invariant; the Keep RAW Images fix
+   corrected one specific instance by hand, this generalizes it into a
+   check no one has written).
+5. **Sensor sanity** — a meta-entry: every check above gets its
+   contract-vs-observed classification carried over verbatim from Part
+   2's catalog, not re-derived, plus the three dangling-citation checks
+   (`plane_cache.py`, `qt_shell.py`'s Live Measuring boundary check,
+   `camera_backend.py`/`imx477.py`) flagged as unverifiable-contract
+   rather than silently upgraded to "external contract" now that they're
+   being written into a standing list.
+
+**What this deliberately leaves alone**, per direct instruction:
+`frame_average.py`'s averaging behavior, the deletion path
+(`hdr_from_session.py:process()`), and `archive_raws()` — not read for
+new findings, not touched, not added to the list beyond what Parts 1+2
+already found in passing (the `archive_raws()` off-rig `--raw-ext tif`
+risk from the 2026-08-03 Keep RAW Images investigation, already on
+record there, not re-investigated here).
+
+**Checkable against the finished work:** the build record should list
+exactly these five sections with the entries above (or explain any
+deviation), confirm `SWEEP_CHECKS.md` is the only file touched, and
+confirm no check gets implemented as part of writing the list.
+
 ### Record: tenth task Part 1 — Pi render-check verification gap closed
 
 Picks up the handoff below ("Open: tenth task..."). This session runs
