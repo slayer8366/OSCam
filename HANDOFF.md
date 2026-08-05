@@ -2763,6 +2763,49 @@ sidecar or capture data. Real verification (a real `--sidecar-dir`
 resolving against real sidecars, a real disagreeing burst reported
 correctly) is the user's to run on the Pi.
 
+### Stale help text fixed, orphaned preview .jpgs cleaned up — BUILT (docs + narrow cleanup), self-check only
+
+Own branch: `claude/keep-raw-images-scope-fix-cleanup`, off `main` (fifth
+sibling alongside `claude/hdr-merge-verification-w7sb22`, `claude/frame-
+average-sidecar-wiring`, `claude/white-level-constant-consolidation`, and
+`claude/keep-raw-images-scope-fix` — all four now merged into `main`; this
+one lands last, via PR, after a local rebase onto the resulting `main`).
+Full investigation and the build are in `CHANGELOG.md`'s 2026-08-03
+entries.
+
+**Branch-sequencing dependency, resolved**: this section originally
+warned that this branch's `--delete-raw-on-success` help text describes
+a narrower contract than this branch's own (untouched, out-of-scope)
+`process()` code delivered on its own. That gap is closed:
+`claude/keep-raw-images-scope-fix` landed first (see the section above),
+and this branch was rebased onto the resulting `main` before merging, so
+the code this branch's own commits sit on top of already deletes only
+`raw_files`, never `master_files` — the docs and the code agree.
+
+**Audit finding (item 1, not fixed here, code untouched)**:
+`qt_shell.py:_open_gallery_browser`'s own comment claims opening it
+"cannot race a capture in progress" because it's modal — this conflates
+a modal dialog (blocks other Qt actions) with a background worker thread
+(auto-process's deletion, deliberately NOT blocked by the Qt event
+loop). `_open_processing_wizard`, right next to it, correctly guards
+with `self._capturing`; Gallery doesn't. Real, reported, not built.
+
+**Built**: the deletion loop's `raw_files` iteration now also checks
+each raw's own `.with_suffix(".jpg")` sibling (the preview
+`Picamera2Camera._save_still_request` writes per frame; `FakeCamera`
+never produces one) and unlinks it alongside the raw — scoped to exactly
+the raws this run selected, never a second glob, never touching
+`master_files`. Fixes a real, silent leftover: nothing else in the
+codebase ever cleaned these up.
+
+**Deferred, design only, per instruction**: whether `final.tif` can ever
+record its own retention state (two designs written up in `CHANGELOG.md`
+— defer-the-embed vs. record-the-decision-before-deletion, with the
+tradeoff that the second one embeds intent rather than a confirmed
+outcome), and a guard against Gallery/`process_wizard.py` reading a
+capture's files while an auto-process worker thread is mid-deletion. Both
+decisions are the user's.
+
 
 
 ## Things that will bite you if you don't know them

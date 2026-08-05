@@ -147,6 +147,164 @@ unrestated once and are not rewritten to accommodate the third.
 
 ## 2026-08-03
 
+### Record build: stale help text fixed, orphaned preview .jpgs cleaned up
+
+Built to the intent recorded below. No deviation.
+
+**Item 4.** `--delete-raw-on-success`'s `help=` string (the named target)
+now reads "delete this capture's own raw frames (and their preview
+.jpgs) only... never the averaged/merged intermediates
+(master_N.tif/hdr_linear.tif/single_master.tif)...". As the intent
+specified, `process()`'s own docstring, its inline comment above the
+deletion loop, and the runtime `correction_status["raw_discard_reason"]`
+string were all deliberately left untouched — they describe this
+branch's actual current behavior (deletion scope unchanged, per
+instruction), and changing them would have made them false here
+specifically. The cross-branch dependency this creates (this branch's
+docs now describe a contract only the sibling `claude/keep-raw-images-
+scope-fix` branch's code fulfills) is unchanged from what the intent
+already flagged.
+
+**Item 5.** The deletion loop's single `for f in raw_files +
+master_files` became two loops: `raw_files` (each raw's own
+`.with_suffix(".jpg")` sibling checked and unlinked alongside it) and
+`master_files` (unchanged, verbatim). Net files deleted when Keep RAW
+Images is off and no preview `.jpg`s exist (e.g. `FakeCamera`, or a
+session with no real hardware previews) is identical to before; on real
+hardware, each raw's own preview now goes with it.
+
+**Verification, as honestly as the intent asked for:** `python3 -m
+py_compile` passes. `hdr_from_session.py` has no non-stdlib dependencies
+and `--help` was actually run, confirming the corrected help text end to
+end, not just present in source. The jpg-cleanup logic was reviewed
+statically (confirmed `.with_suffix(".jpg")` correctly maps e.g.
+`1_frame_0000.dng` -> `1_frame_0000.jpg`, matching the real filename
+convention `Picamera2Camera._save_still_request` writes, and that the
+check-then-unlink is scoped strictly to `raw_files`, never
+`master_files`) — no placeholder files were created to exercise it live,
+consistent with this same session's own standard from the immediately
+preceding task. No existing user data was touched, migrated, or deleted.
+No re-run, no reported numbers — real verification is the user's, on the
+Pi.
+
+### Record intent: stale help text fixed, orphaned preview .jpgs cleaned up
+
+Own branch off `main`: `claude/keep-raw-images-scope-fix-cleanup`. Fifth
+sibling to `claude/hdr-merge-verification-w7sb22`, `claude/frame-average-
+sidecar-wiring`, `claude/white-level-constant-consolidation`, and
+`claude/keep-raw-images-scope-fix` (all pushed, none merged) — not
+stacked on any of them. Repo-only: the Pi is unreachable, no verification
+runs, no synthetic data, no existing user data touched.
+
+**Branch-sequencing note, surfaced before any change was made:** the
+stale `--delete-raw-on-success` help text this task names was already
+fixed on the sibling `claude/keep-raw-images-scope-fix` branch, as part
+of that task's own deletion-scope narrowing. Because every task branches
+fresh off `main` and none of these branches are merged yet, this branch
+does not have that fix either, so the help text genuinely is stale here
+too. Fixing only the help text on THIS branch, without that branch's
+actual code change, means: if this branch merges alone, the docs would
+promise raws-only deletion while the code here still deletes
+`master_files` too — a worse mismatch than today's (today both are at
+least consistently wrong). These two branches need to land together, not
+this one alone. Proceeding per direct instruction, with this flagged.
+
+**Investigation, reported before any code change, per direct
+instruction:**
+
+1. **Audit for other behaviour-derived records.** Checked every real
+   (non-`render_check`-scratch) deletion site against its own contract:
+   `provenance.Session.clear()`/`close()` match their docstrings exactly;
+   `archive_session_raws` mirrors `hdr_from_session.py`'s own
+   `archive_raws()` correctly; the flat-library replace-on-capture
+   matches its documented "one standing set, replaced outright" design;
+   `plane_cache.clean_cache()` is contract-first, already backed by real
+   hardware measurement. No other `help=` string in the repo shows the
+   same drift as `--delete-raw-on-success` did. **One further, real
+   finding**: `qt_shell.py:_open_gallery_browser`'s own comment claims
+   "it is modal... so it cannot race a capture in progress either way" —
+   this conflates a modal GUI dialog (blocks other Qt actions) with a
+   background worker thread (auto-process's deletion, which is
+   deliberately NOT blocked by the Qt event loop, that being the whole
+   point of running it on a worker thread). `_open_processing_wizard`,
+   right next to it, correctly guards with `if self._capturing: return`;
+   `_open_gallery_browser` doesn't, and its comment asserts a safety
+   property the code doesn't actually deliver — same category as the two
+   named in this task: written to match a belief about the code, not
+   checked against the real concurrency contract. Beyond this, **no**
+   broader pattern found — not manufactured, and the audit was scoped to
+   deletion/retention-adjacent code, not an exhaustive line-by-line pass.
+2. **Why the deliverable can't self-report retention (design only).**
+   Design A (defer the embed until retention is settled): reorder
+   `process()` so deletion runs before `debayer.py`, which then embeds a
+   confirmed fact. Real conflict: DNG export's non-merge path needs an
+   actual raw file (`raw_files[0]`) present at export time, so deletion
+   can't simply move earlier without restructuring that feature too;
+   also requires teaching `debayer.py` (a second real caller,
+   `process_wizard.py`, which never deletes anything) a new retention
+   concept. Design B (write the decision before deletion, deletion
+   honours it): cheap, no reordering — `a.delete_raw_on_success` is
+   already known before any subprocess runs. But it embeds intent, not a
+   confirmed outcome — if deletion later fails or is skipped, the file's
+   own claim would be wrong, a smaller instance of the exact "recorded
+   from expectation, not fact" pattern item 1 audits for. A naming
+   refinement (`raw_deletion_planned` vs. a `_confirmed` field reserved
+   for `session.json`) reduces but doesn't remove that risk. Decision is
+   explicitly the user's, not made here.
+3. **The read-during-deletion race (design only).** Concrete sequence:
+   auto-process starts on a worker thread, `self._capturing` stays
+   `True` for its whole duration; `_open_processing_wizard` is correctly
+   gated and can't race it; `_open_gallery_browser` is not gated at all,
+   so opening Gallery mid-process can list a file and then fail to open
+   it moments later (TOCTOU) if the worker thread's deletion lands in
+   between — extends to preview `.jpg`s after item 5. Guard sketched, not
+   built: simplest is the same `if self._capturing: return` check
+   `_open_processing_wizard` already uses (coarse — blocks browsing any
+   session while any capture anywhere is processing); a finer guard
+   would compare against the already-tracked
+   `self._last_process_session_dir`/`_last_process_index` and only
+   block/warn on the specific in-flight item.
+
+**Plan for items 4-5 (the only code change in this task):**
+4. Fix `--delete-raw-on-success`'s `help=` string (the exact location
+   named) to describe the corrected contract (raws + their preview
+   `.jpg`s only, never the averaged/merged intermediates). Deliberately
+   NOT touched: `process()`'s own docstring and its inline comment above
+   the deletion loop, and the runtime `correction_status["raw_discard_
+   reason"]` string — all three describe what this branch's code
+   *actually does right now* (still `raw_files + master_files`, deletion
+   scope untouched per instruction), so changing them would make them
+   false on this branch specifically, which is worse than leaving them
+   accurate-but-pending-the-other-fix.
+5. `frames_for()` only globs the raw extension, so each raw frame's own
+   preview `.jpg` (written only by `Picamera2Camera`; `FakeCamera` never
+   produces one) is never cleaned up by any existing path and
+   accumulates on every real-hardware capture regardless of the setting.
+   The deletion loop's `raw_files` iteration gains a same-stem
+   `.with_suffix(".jpg")` check-and-unlink, scoped exactly to the raw
+   files this run selected (not a second glob) — removed when the raw
+   is, kept when the raw is kept, matching the setting's own name.
+   `master_files`' own deletion loop is untouched (split into its own
+   loop so the jpg-cleanup can't accidentally apply to non-raw files).
+
+**Baseline:** `hdr_from_session.py` (this branch, off `main`) is 431
+lines; `--delete-raw-on-success`'s help string still reads "raw frames +
+linear master"; no preview-`.jpg` cleanup exists anywhere in the repo.
+
+**Verification, stated honestly:** no real bracket/session data exists
+in this checkout, none fabricated, no existing user data touched.
+`python3 -m py_compile` plus real argument-parsing (`--help`) will be
+used to confirm the help text change, since `hdr_from_session.py` has no
+non-stdlib dependencies. The jpg-cleanup logic itself will be verified by
+static/source-level review only (confirming the code derives the sibling
+path and unlinks it conditionally) — consistent with this same session's
+own prior call, on the immediately preceding task, not to create even
+placeholder on-disk files to exercise deletion-safety code; no reason to
+apply a different standard here. `qt_shell.py`'s own `_open_gallery_
+browser` finding is reported only — no code changed there, per
+instruction (design only for items 2-3). No re-run, no reported numbers
+— real verification is the user's, on the Pi.
+
 ### Record build: Keep RAW Images narrowed to raws only
 
 Built to the intent recorded below. No deviation.
