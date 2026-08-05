@@ -7,6 +7,89 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-05
 
+### Record build: gallery-race staging design (per-file publish, not directory rename)
+
+Compares the built result against the recorded intent and reports
+verification honestly, including what verification itself got wrong
+first.
+
+**`python3 qt_shell.py --render-check`: exit 0, every assertion PASS**,
+run directly in the foreground (not backgrounded — a backgrounded
+invocation captures no output to read, same caution as the tenth task's
+own Part 4 entry above), twice: once right after the `Build` commit, once
+again after the on-rig fix described below, to confirm the fix didn't
+regress it. Both runs clean, including the `auto-processing`/`Keep RAW
+Images`/`export-format` blocks and the `science2_` second-capture-in-one-
+session sub-test.
+
+**On-rig hardware verification, real `Picamera2Camera`, both retention
+paths, driven through the actual staging-aware call sites
+(`win._run_burst_kind`/`win._auto_process`), not a mock:**
+
+The first attempt hung for 2h11m — `ps`/`strace` showed every thread
+parked in `futex_wait` with 2 seconds of real CPU time used across the
+whole run. Root cause was in the throwaway verification script, not this
+task's code changes: `_run_burst_kind` is documented as meant to run on a
+background thread while the Qt event loop keeps pumping on the main
+thread (`_fire_armed_burst`'s own `threading.Thread`, the only way the
+real app ever calls it) — the script called it synchronously on the main
+thread instead, with the event loop idle, deadlocking something in the
+camera backend that needed it serviced concurrently. Killed, camera
+device confirmed freed (`fuser`), script rewritten to mirror
+`_fire_armed_burst`'s own threading pattern exactly plus a hard `timeout`
+wrapper so a repeat could not hang silently again.
+
+The second attempt aborted (`ValueError: read of closed file` in
+picamera2's own `QGlPicamera2.handle_requests`, a background thread
+reading a notification pipe closed by the first camera's teardown) —
+running two `Picamera2Camera`/`FocusPreviewWindow` pairs sequentially in
+one process hit a picamera2 preview-widget teardown-ordering issue, not
+this task's code either; the real app itself only ever constructs one
+camera per process lifetime. Split into one process per retention path
+instead, matching that.
+
+**The third attempt is what actually verified the design, and caught a
+real bug in it.** Keep RAW Images ON first: session directory ended up
+with `final_display.jpg/png/tif`, `science_frame_0000/0001.dng/.jpg`, and
+`single_master.tif` — but staging was NOT empty afterward, `final.tif`
+(debayer.py's primary `-o` output, the RGB measurement master, always
+written, no checkbox) was left behind, published nowhere. Root cause:
+`final.tif` was referenced only as a bare string literal handed to the
+debayer.py subprocess call in both the `hdr`/`science`-`snap` branches of
+`process()`, never captured as a Python `Path` anywhere else in the
+function — the publish loop, built from `master_files`/`disp`/`png`/
+`jpg`/`dng_dest`, had no way to know it existed. Fixed: `final_tif =
+capture_dir / "final.tif"` named right beside `disp`/`png`/`jpg`, added
+to the publish list (`hdr_from_session.py`, own commit, message has the
+full detail). Re-ran both retention paths after the fix:
+
+- **Keep RAW Images ON** (session `2026-08-05_145832`): session directory
+  = `final.tif`, `final_display.jpg/png/tif`, `science_frame_0000/0001.
+  dng/.jpg`, `single_master.tif`. Staging = empty. Embed: `raw_discarded
+  = False`. Matches — raws present, embed says kept.
+- **Keep RAW Images OFF** (session `2026-08-05_150021`): session
+  directory = `final.tif`, `final_display.jpg/png/tif`, `single_master.
+  tif` — no raw `.dng`/`.jpg`. Staging = empty. Embed: `raw_discarded =
+  True`, `raw_discard_reason` stated. Matches — raws absent, embed says
+  discarded, master survives regardless as designed.
+
+Pass condition (embed matches directory) held for both, on real
+hardware, after the fix. These two real sessions were left on disk under
+the real `~/captures`/`~/provenance`/`~/staging` (not cleaned up) —
+they're genuine verification evidence, not synthetic data, and harmless
+to leave; the user can remove them at their discretion.
+
+**Verification-hygiene note for whoever reads this next:** two of these
+three attempts failed before the design was ever actually exercised, and
+both failures were reported here rather than quietly retried and
+forgotten — the point of running on real hardware is exactly to catch
+what a self-check with `FakeCamera` cannot (`FakeCamera` never runs the
+real `Picamera2Camera`/`QGlPicamera2` teardown paths, and `render_check`
+never actually inspects a real `final.tif` disk artifact against a real
+retention setting the way this on-rig run did — that gap is precisely
+how the `final.tif` bug survived every render-check pass above). No
+result here was assumed from render-check alone.
+
 ### Record intent: gallery-race staging design (per-file publish, not directory rename)
 
 Own branch off `main`: `claude/gallery-race-staging-design`. Runs directly

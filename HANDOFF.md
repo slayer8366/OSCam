@@ -40,11 +40,35 @@ What's actually open, none of it written down anywhere until now:
    picks this up next: access isn't the blocker, sequencing/scope is —
    this is the one item in this list suited to a Pi-connected session
    specifically (real bracket data), the other open items below are not.
-2. **Retention-embed design** — parked, pending the user's decision. Not
-   detailed further here; came up in conversation, not yet drafted into a
-   plan file the way `PLAN_03_provenance_relocation_and_keep_raw.md`
-   covers the unrelated Part 03 retention/provenance-relocation work
-   below.
+2. **Closed (gallery-race staging design).** `correction_status`
+   (`raw_discarded`/`raw_discard_reason`/the derived-outputs fields) is
+   built strictly after the retention-deletion loop, inside the one
+   `process()` function `hdr_from_session.py` shares between every
+   caller — the auto-processed staging path (`_auto_process`, snap/
+   science/hdr) and the unstaged manual reprocessing wizard/archive
+   dialog alike. Deliberately unconditional on staging, not a
+   staging-only branch: retention-before-embed holds for every caller,
+   so this item closes for all of them, not just a session's first
+   capture. Full reasoning, including why the ordering must not live
+   inside a staging-specific branch: `CHANGELOG.md`'s 2026-08-05
+   "gallery-race staging design" entries. Same session also built the
+   staging design itself — capture+processing for snap/science/hdr now
+   write into a same-device staging directory
+   (`Path.home()/"staging"/<session_ts>`, `provenance.new_staging_dir`)
+   and publish the finished set into the session directory one file at a
+   time via `os.replace`, not a single directory-level rename (a
+   directory rename only succeeds against an empty destination, which
+   does not hold once a session holds more than one auto-processed
+   capture — the common case, since `self._session` is never reset).
+   `dark`/`flat` capture call sites are untouched, never staged.
+   `--render-check` clean (exit 0) and both retention paths (Keep RAW
+   Images on/off) verified on real `Picamera2Camera` hardware, embed
+   matching directory contents in both cases — one real bug (`final.tif`,
+   debayer.py's always-written primary output, was never in the publish
+   list) found by the on-rig run and fixed; render-check alone would
+   never have caught it. Full detail, including two verification-script
+   failures along the way (neither in this task's own code): `CHANGELOG.
+   md`'s 2026-08-05 "Record build: gallery-race staging design" entry.
 3. **Gallery race guard** — parked, pending the user's decision. The gap
    itself is already documented (see "Keep RAW Images narrowed to raws
    only" below): nothing guards a separately-launched `process_wizard.py`
@@ -103,6 +127,26 @@ What's actually open, none of it written down anywhere until now:
    own live example of what happens when a check isn't. Full
    intent/build/record-build detail: `CHANGELOG.md`'s 2026-08-05 "tenth
    task Part 3" entries.
+9. **Gallery pick-mode silently drops in-progress entries — found during
+   the gallery-race staging design work (item 2 above), not fixed, out
+   of scope for that task by explicit instruction.** `GalleryWidget`
+   lists once at construction (`gallery.py:334`, the only call site of
+   `.refresh()` anywhere in the repo) and never refreshes — an already-
+   open gallery is a snapshot, not a live view. `GalleryPickDialog`'s
+   `selected_paths()` (`gallery.py`) silently filters out any entry whose
+   `raw_path` is `None` before returning the selection — so a user who
+   picks a tile for a capture whose raw isn't on disk yet (or, for a
+   fully-processed-and-retention-discarded capture, ever) and clicks OK
+   gets an empty selection with no message, not an error, not a
+   "not ready yet." Pre-existing, not introduced by staging — but the
+   staging design widens the window in which it's reachable: a capture
+   now lists in the gallery (`session.json` gains its capture entry,
+   `qt_shell.py`'s `record_capture`) well before its raw frame is
+   published into the session directory, whereas before staging that gap
+   was only the length of one subprocess call. Needs its own decision
+   (an error message on empty-selection OK? disable/gray those tiles?
+   the gallery race guard in item 3 above, once built, may be the more
+   natural place to fix this from) — not guessed at here.
 
 One number worth a line since the constant alone doesn't explain it:
 `hdr_from_session.MERGE_WHITE_LEVEL_DEFAULT` stays `65520`, but the real
