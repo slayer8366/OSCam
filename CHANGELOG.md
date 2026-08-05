@@ -7,6 +7,115 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-05
 
+### Record intent: gallery-race staging design (per-file publish, not directory rename)
+
+Own branch off `main`: `claude/gallery-race-staging-design`. Runs directly
+on the Pi (`hostname` == `raspberrypi`).
+
+**What this is.** Capture and processing for the auto-processed kinds
+(`snap`/`science`/`hdr`'s science phase — the three that reach
+`_auto_process`/`_run_process_cmd`) write into a same-device staging
+directory (`Path.home()/"staging"/<session_ts>`) instead of the session
+directory directly. Retention (Keep RAW Images off) deletes from staging.
+Once processing succeeds, the finished set is published into the session
+directory one file at a time via `os.replace` — not a single
+`os.replace(staging_dir, session_dir)` directory-level rename.
+
+**Why not a directory rename, despite that being the original brief.**
+Investigated and reported before writing code, per the user's own
+correction: a directory-level `os.replace` only succeeds when the
+destination is empty (POSIX requires it), which only holds for a
+session's *first* auto-processed capture — `self._session` is never
+reset (`qt_shell.py:2543`/`4360`) and re-Snap/reshoot routinely adds a
+second, third, ... capture into the same session directory
+(`_snap_counter`, `_reshoot_guard`), so a directory-rename design would
+have protected almost nothing in practice. The actual hazard the gallery
+CAVEAT (`qt_shell.py:5461-5475`) names is *deletion* under a stale
+listed path — and staging already removes every delete from ever
+touching the session directory, since retention (step 5) runs entirely
+in staging. Once nothing is ever unlinked from a directory the gallery
+can see, publish atomicity stops being the load-bearing property; a
+per-file `os.replace` — the repo's own existing seven-site pattern
+(`provenance.py`/`qt_shell.py`/`calibrate.py`/`ca_measure.py`/
+`annotations.py`/`measure.py`/`plane_cache.py`, all tmp-write-then-
+`os.replace`), applied to more files rather than a directory operation
+with no precedent in this codebase — gets the same protection for every
+capture in a session, not just the first, with no `ENOTEMPTY`
+constraint, no placeholder needed (the session directory is never
+emptied out from under itself, so nothing needs to keep it non-empty),
+and no Windows limitation (per-file `os.replace` is atomic there too,
+unlike a directory replace). Cost, stated plainly rather than hidden:
+the published set no longer appears at once — worst case a gallery
+already open mid-publish sees fewer files than it eventually will, all
+of which exist and open correctly. Given the gallery lists once at
+construction and never refreshes (`gallery.py:334`, the only call site
+of `.refresh()` in the repo) and `_first_frame_paths` takes the first
+`dng`/`tif` it finds and stops, this reduction in protection is real but
+narrow, and is the user's accepted tradeoff, not mine.
+
+**`capture_dir` is a promise during staging, not a description — stated
+as a contract, not fixed.** For the whole staging window (from
+`record_capture` right after the shutter through the per-file publish
+loop completing), `session.json`'s `capture_dir` field continues to name
+the *final* session directory (provenance never moves — this file was
+already always written that way, `provenance.py:231`), while the actual
+bytes sit in staging. Any reader that resolves a path through
+`capture_dir` during that window — `gallery.py`'s `_first_frame_paths`
+included — gets a path to a file that does not exist yet. This is the
+same defect class as HANDOFF item 2 (retention-embed design: a stored
+description written before the fact it describes is actually true), at
+smaller scope, and it is being accepted rather than engineered around.
+A `# CAVEAT:` comment goes at `hdr_from_session.py`'s `capture_dir`
+derivation saying the same thing in place.
+
+**Two more "resolves its path from wherever frames currently are" bugs
+found by tracing this through, fixed before proceeding rather than
+guessed past:**
+1. `hdr_from_session.py`'s dark-frame lookup (`dark_dir = capture_dir /
+   "dark"`) would silently stop finding dark correction frames once
+   `capture_dir` is redirected to staging — dark captures are a
+   separate, never-staged call site (`qt_shell.py`'s `_run_burst_kind`,
+   `target_dir = session.dir / "dark"`, untouched by this work), so dark
+   frames physically live under the real session directory even during
+   staging. Fixed by decoupling `dark_dir` from the (now overridable)
+   `capture_dir` — it always resolves from `session["capture_dir"]`,
+   never from the `--capture-dir` override.
+2. `qt_shell.py`'s `capture_correction_status` detects the on-disk raw
+   extension (`dng` vs `tif`) by globbing `session_dir` for the just-
+   captured frame — during staging that frame is not in `session_dir`
+   yet, so this would have silently fallen back to its `"dng"` default
+   every time (happens to be harmless on real Picamera2 hardware, wrong
+   for `FakeCamera`'s `.tif` output — a real, if narrow, silent-wrong
+   path). Fixed with an explicit `own_frames_dir=None` parameter
+   (defaults to `session_dir`, so every other caller of this function is
+   unaffected) that `_auto_process` now passes as the staging directory.
+
+**`--capture-dir` validated, not trusted.** Per the earlier round's own
+agreed shape: if `--capture-dir` is given and the directory does not
+exist, or contains no frames matching `frames_for()`'s own glob for this
+capture, `hdr_from_session.py` fails loudly with the path in the
+message rather than falling back to `session["capture_dir"]` — a silent
+fallback would mean quietly processing the wrong directory, which is
+exactly the failure this flag exists to prevent. `--capture-dir` and
+`--publish-dir` are cross-validated to be given together.
+
+**Scope.** `dark`/`flat` capture call sites are untouched (never staged
+— `flat` already writes straight to the standing `FLAT_ROOT` library,
+`dark` to `session.dir/"dark"`, neither reaches `_auto_process`). The
+gallery race guard itself, the gallery's never-refreshing entry list,
+Stage 3, and `white_level`/`frame_average.py`/sigma-clip behavior are
+untouched, per instruction.
+
+**This makes the retention-before-embed ordering (`correction_status`,
+including `raw_discarded`, is constructed strictly after the deletion
+loop, `hdr_from_session.py:339` through `~362`) the resolution of
+HANDOFF.md open item 2** — deliberately as a property of the one shared
+`process()` function used by both the staged auto-process path and the
+unstaged manual-reprocess/archive-wizard path, not a staging-only
+branch, so the item closes for every caller, not just the first capture
+of a session. See the matching "Build" entry below for what was
+actually verified.
+
 ### Build: tenth task Part 4 — regenerate `FUNCTION_INDEX.md`, close item 7
 
 Ran on the Pi (`hostname` == `raspberrypi`, real `numpy`), the same
