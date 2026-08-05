@@ -74,15 +74,17 @@ What's actually open, none of it written down anywhere until now:
    at all; `stacks.py`'s `move_frames_to_discarded` isn't exercised by
    any check; `provenance.py` never confirms a recorded path resolves to
    the file it describes).
-7. **New, live: `function_index.py --render-check` currently fails on
-   `main`, discovered while running Part 2, not fixed (report-only).**
-   `FUNCTION_INDEX.md` is stale: PR #10/#11/#12 added functions to
-   `frame_average.py`/`hdr_merge.py` and a `CAVEAT:` comment to
-   `qt_shell.py` (item 3 above) without anyone re-running
-   `python3 function_index.py` afterward to regenerate it. Same shape as
-   this whole task's premise — a real, documented check, silently unrun
-   after a merge. Whoever picks this up: regenerate and commit
-   `FUNCTION_INDEX.md`, or decide it's someone else's call first.
+7. **Closed, 2026-08-05 (tenth task Part 4).** `function_index.py
+   --render-check` had been failing on `main` since PR #10/#11/#12 added
+   functions to `frame_average.py`/`hdr_merge.py` and a `CAVEAT:`
+   comment to `qt_shell.py` (item 3 above) without anyone re-running
+   `python3 function_index.py` afterward. Regenerated and re-verified
+   (`assert_function_index_current` PASS); `qt_shell.py --render-check`
+   independently re-run and confirmed still exit 0. `SWEEP_CHECKS.md`'s
+   sensor-sanity section now names the trigger this should run on ("any
+   PR that adds/removes/changes a function's signature regenerates
+   `FUNCTION_INDEX.md` in that same PR") — enforcing that trigger
+   automatically (hook/CI, not memory) is still a gap, not built here.
 8. **Part 3 (standardized sweep-check list) closed.** `SWEEP_CHECKS.md`
    added at repo root — five sections (measurement correctness,
    provenance integrity, geometry derivation, retention safety, sensor

@@ -94,12 +94,16 @@ contract" and "observed behavior," until the cited document either
 turns up or gets committed.
 
 **A second, live example of this file's own reason for existing:**
-`function_index.py --render-check` is currently failing on `main`
+`function_index.py --render-check` was failing on `main`
 (`FUNCTION_INDEX.md` stale against real PR #10/#11/#12 additions —
 `CHANGELOG.md`'s 2026-08-05 "tenth task Part 2" entry has the full
-diff). Not fixed as part of this list; recorded in `HANDOFF.md`'s open
-items instead. Its presence here is the argument for this file: a
-real, standing check that nobody re-ran after a merge is precisely the
-failure mode a fixed, standard sweep — run every time, not composed
-when someone remembers to — is meant to catch before it goes stale
-silently again.
+diff) until it was regenerated and re-verified this session
+(`CHANGELOG.md`'s 2026-08-05 "tenth task Part 4" entry). Its presence
+here is the argument for this file: a real, standing check that nobody
+re-ran after a merge is precisely the failure mode a fixed, standard
+sweep — run every time, not composed when someone remembers to — is
+meant to catch before it goes stale silently again.
+
+| Check | Expected-value source | Where it runs | Status |
+|---|---|---|---|
+| `FUNCTION_INDEX.md` matches the real per-module function set | Observed behavior — `function_index.py`'s own regeneration is authoritative; no external contract | Sandbox or Pi (`python3 function_index.py --render-check`, no hardware) | Implemented (`assert_function_index_current`), but its trigger is unenforced — nothing runs `python3 function_index.py` automatically when a function is added, removed, or has its signature changed. **Trigger:** any PR that adds, removes, or changes the signature of a module-level function regenerates and commits `FUNCTION_INDEX.md` as part of that same PR, not a later cleanup pass. This is exactly how it went stale after PR #10/#11/#12 — three PRs each added functions, none regenerated the index, and the drift wasn't caught until this list's own Part 2 sweep ran the check directly. Enforcing the trigger itself (a pre-commit hook or CI step, as opposed to remembering to run it) is not built — still a gap.

@@ -150,6 +150,9 @@ facts worth reading in full.
 - `def load_frame(path):`
 - `def dtype_max(dtype):`
 - `def sha256_file(path, _buf=1 << 20):`
+- `def read_sidecar_meta(sidecar_dir, frame_path):`
+- `def aggregate_capture_field(sidecars, raw_key, caster=lambda v: v):`
+- `def capture_meta_for_science(sci_files, sidecar_dir):`
 - `def _checked_load(path, want_shape, want_dtype):`
 - `def average_burst(files, sigma_clip=None, report_deviation=False, label='frames', gamma=None):`
 - `def flat_field(sci01, flat01, dark01):`
@@ -203,8 +206,10 @@ facts worth reading in full.
 - `def dtype_max(dtype):`
 - `def sha256_file(path, _buf=1 << 20):`
 - `def try_read_embedded_exposure(path):`
+- `def try_read_embedded_capture_meta(path):`
 - `def parse_exposures(raw_pairs):`
-- `def merge(exposures, white_level, black, sat_frac, norm_percentile, hash_inputs):`
+- `def merge(exposures, white_level, black, sat_frac, norm_percentile, hash_inputs, channel_layout=None, cfa_pattern=None):`
+- `def _assert_single_description_tag(path):`
 - `def main():`
 
 ## imx477.py
@@ -279,6 +284,8 @@ facts worth reading in full.
 - `def render_check():`
 
 ## qt_shell.py
+
+> CAVEAT: unguarded against self._capturing, unlike _open_processing_wizard right above -- this can race the auto-process worker thread's own deletion loop (Keep RAW Images off deletes this capture's raw frames + their preview .jpgs as process()'s last step). Being modal only blocks other GUI actions; it does not block a background worker thread, which is deliberately NOT blocked by the Qt event loop (that's the whole reason processing runs on one). A user opening this mid-process can list a file here and then fail to open it moments later (TOCTOU) if the worker thread's deletion lands in between. See CHANGELOG.md's 2026-08-03 "Gallery race" investigation for the concurrency contract this function doesn't yet satisfy; no guard added here.
 
 - `def discover_themes(themes_root=None):`
 - `def resolve_theme_qss_path(theme_name, themes_root=None):`

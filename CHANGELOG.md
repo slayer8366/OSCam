@@ -7,6 +7,33 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-05
 
+### Build: tenth task Part 4 — regenerate `FUNCTION_INDEX.md`, close item 7
+
+Ran on the Pi (`hostname` == `raspberrypi`, real `numpy`), the same
+session that closed Parts 1-3. Mechanical fix: `python3
+function_index.py` regenerated `FUNCTION_INDEX.md` against the actual
+PR #10/#11/#12 additions (`frame_average.py` gained
+`read_sidecar_meta`/`aggregate_capture_field`/`capture_meta_for_science`;
+`hdr_merge.py` gained `try_read_embedded_capture_meta` and a widened
+`merge()` signature; `qt_shell.py` gained the `CAVEAT:` comment on its
+unguarded gallery-race function). `python3 function_index.py
+--render-check` now passes (`assert_function_index_current` included).
+Also re-ran `DISPLAY=:0 python3 qt_shell.py --render-check` directly
+(not just trusted from Part 1's commit message) — still exit 0, all
+assertions PASS, confirming that result still holds.
+
+**What this failure mode reveals, per the user's own read:** the check
+existed and worked, but nothing invalidates the index at the event that
+actually stales it — a PR adding a function. `SWEEP_CHECKS.md`'s
+sensor-sanity section gained a formal entry for this, naming the
+trigger explicitly ("any PR that adds, removes, or changes the
+signature of a module-level function regenerates and commits
+`FUNCTION_INDEX.md` as part of that same PR") and marking the trigger's
+*enforcement* (a hook or CI step, as opposed to remembering) as a
+still-open gap — the mechanical fix here doesn't close that part.
+
+`HANDOFF.md` item 7 updated to closed below.
+
 ### Record build: tenth task Part 3 — standing sweep-check list
 
 Built to the intent recorded below. No deviation: `SWEEP_CHECKS.md` is
