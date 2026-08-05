@@ -7,6 +7,37 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-05
 
+### Record build: tenth task Part 3 — standing sweep-check list
+
+Built to the intent recorded below. No deviation: `SWEEP_CHECKS.md` is
+the only file added, all five sections landed exactly as scoped (three
+implemented-with-caveats items, five gaps, three unverifiable-citation
+flags, one live-failure cross-reference to `function_index.py`), and no
+check named as a gap was implemented — verified by re-reading the
+committed file against the intent entry section by section.
+
+**Against the counted baseline:** every named entry from the intent
+(`ca_lib.adapt_center`'s missing coverage; the green-plane/debayer
+delegation caveat; the FOV-ratio unverifiable citation; the description-
+tag/provenance-path/retention gaps; the sensor-sanity meta-section)
+appears in the built file, none dropped, none added beyond what the
+intent scoped plus the one explicit cross-reference the intent itself
+called for (the `function_index.py` live failure, used as the file's
+own closing argument for why it exists).
+
+**Verification, stated honestly:** `SWEEP_CHECKS.md` is prose/tables,
+no executable content — verified by rereading it against `CHANGELOG.md`'s
+Part 1/Part 2 entries it was seeded from (every cited file/line/function
+name traced back to something actually read or actually run this
+session, not invented at write time) and against the intent entry
+(scope match, confirmed above). Not re-run against the repo a second
+time beyond what Parts 1+2 already executed — this file makes no new
+claims about the code that weren't already grounded there.
+
+`HANDOFF.md`'s open items updated below: item 8 (Part 3) closed; item 7
+(`function_index.py` stale) stays open, now cross-referenced from
+`SWEEP_CHECKS.md` itself as the file's own live example.
+
 ### Record intent: tenth task Part 3 — standing sweep-check list
 
 Own step, per the three-phase convention (`PHILOSOPHY.md`), following

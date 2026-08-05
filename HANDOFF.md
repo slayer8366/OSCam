@@ -83,10 +83,17 @@ What's actually open, none of it written down anywhere until now:
    this whole task's premise — a real, documented check, silently unrun
    after a merge. Whoever picks this up: regenerate and commit
    `FUNCTION_INDEX.md`, or decide it's someone else's call first.
-8. **Part 3 (standardized sweep-check list) still open.** Spec:
-   `CHANGELOG.md`'s 2026-08-05 "Open: tenth task..." entry below. Should
-   follow with its own "Record intent" → "Build" → "Record build"
-   sequence, same as every other build in this file.
+8. **Part 3 (standardized sweep-check list) closed.** `SWEEP_CHECKS.md`
+   added at repo root — five sections (measurement correctness,
+   provenance integrity, geometry derivation, retention safety, sensor
+   sanity), each entry with what it checks, its contract source (or
+   "gap"/"unverifiable citation" if it doesn't have one), and where it
+   can run. Read this file first, before composing a check on the spot,
+   for anything touching those five areas — that is the whole reason it
+   exists. It cross-references item 7 above (`function_index.py`) as its
+   own live example of what happens when a check isn't. Full
+   intent/build/record-build detail: `CHANGELOG.md`'s 2026-08-05 "tenth
+   task Part 3" entries.
 
 One number worth a line since the constant alone doesn't explain it:
 `hdr_from_session.MERGE_WHITE_LEVEL_DEFAULT` stays `65520`, but the real
