@@ -195,6 +195,22 @@ except ImportError:
     except ImportError:
         _plane_cache = None
 
+# hdr_from_session.py is normally reached only as a subprocess (PROCESSOR
+# below), never imported -- this import exists solely to share its
+# MERGE_WHITE_LEVEL_DEFAULT constant (see that constant's own comment for
+# why two independent copies of 65520 was worth fixing), the same
+# guarded-optional pattern as every other sibling above. None only if
+# hdr_from_session.py is somehow missing from disk -- already a broken
+# install _run_process_cmd's own PROCESSOR.exists() check treats as
+# "processing unavailable" regardless of this constant.
+try:
+    from . import hdr_from_session as _hdr_from_session
+except ImportError:
+    try:
+        import hdr_from_session as _hdr_from_session
+    except ImportError:
+        _hdr_from_session = None
+
 # annotations.py's mark store (Preferences-dialog plan set, Part 05): the
 # live measure panel builds marks with the same build_*_mark calls
 # measure.py's own commit path uses, and writes them with the same
@@ -5751,7 +5767,9 @@ def main(argv=None):
                     help="use the Pi camera (Picamera2Camera); default is the fake")
     # Display-processing flags, forwarded to hdr_from_session.py on a
     # process offer via build_display_flags.
-    ap.add_argument("--wl", default=65520, help="sensor white level for processing")
+    ap.add_argument("--wl", default=(_hdr_from_session.MERGE_WHITE_LEVEL_DEFAULT
+                                     if _hdr_from_session else 65520),
+                    help="sensor white level for processing")
     ap.add_argument("--lw", default=2.2, help="Reinhard white point for the HDR path")
     ap.add_argument("--gains", nargs=2, metavar=("RED", "BLUE"), default=None,
                     help="ColourGains white balance for processing")

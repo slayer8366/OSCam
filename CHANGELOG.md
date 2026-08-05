@@ -5,7 +5,321 @@ dump — each entry names the commit(s) it corresponds to for traceability.
 See `HANDOFF.md` for what a fresh agent needs to know before working here;
 this file is the historical record of what happened and why.
 
+## 2026-08-04
+
+### Open: task9-work fast-forward to main, blocked on push permission
+
+`task9-work` (this branch) carries the build below plus the
+`claude/white-level-constant-consolidation` merge (`119cefc`). Per the
+user's explicit instruction, it lands the same way every prior
+PHILOSOPHY.md-touching branch has: a direct fast-forward push to `main`,
+no PR, no merge commit — the same form used for the PyQt6 port (see
+`CHANGELOG.md`'s and `HANDOFF.md`'s port entries). Confirmed safe:
+`git fetch origin main && git merge-base --is-ancestor origin/main
+task9-work` printed "fast-forward safe" as of this entry.
+
+The push itself (`git push origin task9-work:main`, run from
+`/home/bwann83/imx/.claude/worktrees/land-hdr-merge-verification`) is
+blocked by the session's own auto-mode permission classifier, not by
+git — it refuses `git push` to `main` regardless of the user having
+already approved it in conversation. **Default, if no one revisits
+this**: the user runs the push directly from a shell outside this
+session, since that's the one path the classifier can't intercept.
+Whoever picks this up next: check `git log origin/main -1` against
+`task9-work`'s tip (`005ff56` as of this entry) — if they already
+match, this is stale and the push already happened.
+
+Two bookkeeping items for after it lands, from the user directly:
+`claude/white-level-constant-consolidation` is already merged in via
+`119cefc` (see below) — retired, don't attempt to land it again.
+`claude/frame-average-sidecar-wiring`,
+`claude/keep-raw-images-scope-fix-cleanup`, and
+`claude/gallery-race-comment-fix` are still outstanding and don't touch
+`PHILOSOPHY.md`, so they land under the other form (PR, not direct push)
+once this push clears.
+
+### Record build: append-with-positional-note conflict resolution, landed and generalized
+
+Built to the intent recorded below, across two sessions (the second
+resuming after the first hung mid-merge). No deviation in the resolution
+method itself; one scope note below.
+
+**Part 1, landing the conflict.** `claude/white-level-constant-
+consolidation` merged as `119cefc`. `CHANGELOG.md`'s conflict resolved
+exactly as planned: the incoming branch's two entries appended verbatim
+to the end of the `## 2026-08-03` section, prefaced by the positional
+note describing where they originally sat and stating their numbered
+list's self-containment. `HANDOFF.md`'s conflict was, as predicted by
+inspection, a plain single-region append and needed no positional note.
+The two auto-merged code files were checked (`py_compile` clean,
+`MERGE_WHITE_LEVEL_DEFAULT` reads back correctly) before the merge
+commit.
+
+**Part 2, generalizing the rule.** `PHILOSOPHY.md`'s existing two-form
+conflict-resolution text (interleaving, superseding — from `claude/
+philosophy-conflict-resolution-rule`, still unlanded as a branch but
+folded forward here as the intent specified) carries forward unrestated
+once, immediately followed by a new third-form paragraph,
+append-with-positional-note, describing the method part 1 just used:
+preserves content while abandoning position, records that position as
+prose naming an anchor rather than an index, and states a list's
+self-containment rather than renumbering it to show the boundary.
+
+**Against the baseline the intent stated:** `git diff 031bbe6 HEAD --
+CHANGELOG.md | grep '^-' | grep -v '^---'` is empty — zero pre-existing
+lines lost. `PHILOSOPHY.md`'s two existing forms are present exactly
+once, byte-identical to `claude/philosophy-conflict-resolution-rule`'s
+own wording, not rewritten to accommodate the third. Full `qt_shell.py
+--render-check` sweep: exit 0, no failures.
+
+**Scope note, the one deviation from a literal reading of the intent:**
+the intent said this task's entire deliverable is "two `CHANGELOG.md`
+entries and one `PHILOSOPHY.md` addition" — that undercounted by one; a
+`CHANGELOG.md` entry describing the build (this one) is also required by
+this project's own intent/build convention, which the intent entry
+itself follows for every other piece of work in this file. Recording it
+here rather than treating it as silently implied.
+
+### Record intent: append-with-positional-note conflict resolution, landed and generalized
+
+Own work directly against `main` (not a feature branch — this task's
+entire deliverable is documentation-shaped: two `CHANGELOG.md` entries
+and one `PHILOSOPHY.md` addition, plus landing one already-built
+branch). No code changes planned outside `CHANGELOG.md` and
+`PHILOSOPHY.md`; the Pi is not touched.
+
+**Background.** Landing `claude/white-level-constant-consolidation`
+produces a `CHANGELOG.md` merge conflict that a prior session correctly
+flagged and left unresolved rather than risk corrupting it: the
+conflict splits into two disjoint regions because
+`claude/keep-raw-images-scope-fix`'s and
+`claude/white-level-constant-consolidation`'s "Record intent" entries
+coincidentally share one boilerplate heading, `**Investigation, reported
+before any code change, per direct instruction:**`. Git's 3-way merge
+locks onto that identical line as a synchronization point and
+interleaves the two entries' numbered investigation lists around it;
+naively resolving each region independently would misattribute
+`white-level`'s own numbered list to a heading that isn't its own, and
+sandwich the entire unrelated `hdr-merge-verification` entry between the
+two halves of what should be one continuous section. That is exactly
+the case `PHILOSOPHY.md`'s never-edit rule exists to catch — the
+resolution needs to be a deliberate act, not a merge strategy.
+
+**Plan, part 1 — resolve the flagged conflict.** Land
+`claude/white-level-constant-consolidation`'s `CHANGELOG.md` content by
+appending it, in full and unaltered, to the end of the existing
+`## 2026-08-03` section, prefaced by a positional note (ordinary text,
+not a merge instruction) recording where it originally sat: the top of
+the document, on its own branch, directly preceding `## 2026-08-02`'s
+"Record build: HANDOFF.md restructure, part 1" entry (the most recent
+entry that existed when that branch forked from `main`), before its two
+siblings independently opened the same date heading and landed first.
+The note also states explicitly that the entry's own numbered
+investigation list is self-contained to it — not a continuation of, and
+not continued by, any list elsewhere in the document — since relabeling
+the list to make that visually obvious would itself be an edit to
+existing entry text, which this task's own instruction rules out.
+`HANDOFF.md`'s conflict is a plain, single-region append (verified by
+inspection, not assumed) and is resolved normally, with no positional
+note — it describes the present, not a history, so there is no
+position to preserve.
+
+**Plan, part 2 — generalize the method.** `claude/philosophy-conflict-
+resolution-rule` (not yet landed, not one of the "other three outstanding
+branches" this task is told to leave alone) added a `PHILOSOPHY.md` rule
+covering two conflict-resolution forms: interleaving (preserves
+everything in place, not an edit) and superseding (replaces a claim with
+a new entry pointing at the old one). This task folds that rule's
+existing two-form text forward as-is and adds a third form,
+append-with-positional-note, matching the method used in part 1: it
+preserves content while explicitly abandoning position and recording
+that position as text, for conflicts about arrangement rather than
+content. Its pass condition is stated in the same terms as the existing
+rule (every pre-existing entry present, byte-identical, still its own
+entry) plus the two requirements part 1 above needed in practice: name
+an anchor, not an index, and state a list's self-containment rather than
+renumber it.
+
+**Verification planned:** `git diff <pre-merge-main> HEAD -- CHANGELOG.md
+| grep '^-' | grep -v '^---'` must be empty — proof that no pre-existing
+entry lost a byte. `PHILOSOPHY.md`'s two existing forms carry forward
+unrestated once and are not rewritten to accommodate the third.
+
 ## 2026-08-03
+
+### Record build: stale help text fixed, orphaned preview .jpgs cleaned up
+
+Built to the intent recorded below. No deviation.
+
+**Item 4.** `--delete-raw-on-success`'s `help=` string (the named target)
+now reads "delete this capture's own raw frames (and their preview
+.jpgs) only... never the averaged/merged intermediates
+(master_N.tif/hdr_linear.tif/single_master.tif)...". As the intent
+specified, `process()`'s own docstring, its inline comment above the
+deletion loop, and the runtime `correction_status["raw_discard_reason"]`
+string were all deliberately left untouched — they describe this
+branch's actual current behavior (deletion scope unchanged, per
+instruction), and changing them would have made them false here
+specifically. The cross-branch dependency this creates (this branch's
+docs now describe a contract only the sibling `claude/keep-raw-images-
+scope-fix` branch's code fulfills) is unchanged from what the intent
+already flagged.
+
+**Item 5.** The deletion loop's single `for f in raw_files +
+master_files` became two loops: `raw_files` (each raw's own
+`.with_suffix(".jpg")` sibling checked and unlinked alongside it) and
+`master_files` (unchanged, verbatim). Net files deleted when Keep RAW
+Images is off and no preview `.jpg`s exist (e.g. `FakeCamera`, or a
+session with no real hardware previews) is identical to before; on real
+hardware, each raw's own preview now goes with it.
+
+**Verification, as honestly as the intent asked for:** `python3 -m
+py_compile` passes. `hdr_from_session.py` has no non-stdlib dependencies
+and `--help` was actually run, confirming the corrected help text end to
+end, not just present in source. The jpg-cleanup logic was reviewed
+statically (confirmed `.with_suffix(".jpg")` correctly maps e.g.
+`1_frame_0000.dng` -> `1_frame_0000.jpg`, matching the real filename
+convention `Picamera2Camera._save_still_request` writes, and that the
+check-then-unlink is scoped strictly to `raw_files`, never
+`master_files`) — no placeholder files were created to exercise it live,
+consistent with this same session's own standard from the immediately
+preceding task. No existing user data was touched, migrated, or deleted.
+No re-run, no reported numbers — real verification is the user's, on the
+Pi.
+
+### Record intent: stale help text fixed, orphaned preview .jpgs cleaned up
+
+Own branch off `main`: `claude/keep-raw-images-scope-fix-cleanup`. Fifth
+sibling to `claude/hdr-merge-verification-w7sb22`, `claude/frame-average-
+sidecar-wiring`, `claude/white-level-constant-consolidation`, and
+`claude/keep-raw-images-scope-fix` (all pushed, none merged) — not
+stacked on any of them. Repo-only: the Pi is unreachable, no verification
+runs, no synthetic data, no existing user data touched.
+
+**Branch-sequencing note, surfaced before any change was made:** the
+stale `--delete-raw-on-success` help text this task names was already
+fixed on the sibling `claude/keep-raw-images-scope-fix` branch, as part
+of that task's own deletion-scope narrowing. Because every task branches
+fresh off `main` and none of these branches are merged yet, this branch
+does not have that fix either, so the help text genuinely is stale here
+too. Fixing only the help text on THIS branch, without that branch's
+actual code change, means: if this branch merges alone, the docs would
+promise raws-only deletion while the code here still deletes
+`master_files` too — a worse mismatch than today's (today both are at
+least consistently wrong). These two branches need to land together, not
+this one alone. Proceeding per direct instruction, with this flagged.
+
+
+**Investigation, reported before any code change, per direct
+instruction:**
+
+1. **Audit for other behaviour-derived records.** Checked every real
+   (non-`render_check`-scratch) deletion site against its own contract:
+   `provenance.Session.clear()`/`close()` match their docstrings exactly;
+   `archive_session_raws` mirrors `hdr_from_session.py`'s own
+   `archive_raws()` correctly; the flat-library replace-on-capture
+   matches its documented "one standing set, replaced outright" design;
+   `plane_cache.clean_cache()` is contract-first, already backed by real
+   hardware measurement. No other `help=` string in the repo shows the
+   same drift as `--delete-raw-on-success` did. **One further, real
+   finding**: `qt_shell.py:_open_gallery_browser`'s own comment claims
+   "it is modal... so it cannot race a capture in progress either way" —
+   this conflates a modal GUI dialog (blocks other Qt actions) with a
+   background worker thread (auto-process's deletion, which is
+   deliberately NOT blocked by the Qt event loop, that being the whole
+   point of running it on a worker thread). `_open_processing_wizard`,
+   right next to it, correctly guards with `if self._capturing: return`;
+   `_open_gallery_browser` doesn't, and its comment asserts a safety
+   property the code doesn't actually deliver — same category as the two
+   named in this task: written to match a belief about the code, not
+   checked against the real concurrency contract. Beyond this, **no**
+   broader pattern found — not manufactured, and the audit was scoped to
+   deletion/retention-adjacent code, not an exhaustive line-by-line pass.
+2. **Why the deliverable can't self-report retention (design only).**
+   Design A (defer the embed until retention is settled): reorder
+   `process()` so deletion runs before `debayer.py`, which then embeds a
+   confirmed fact. Real conflict: DNG export's non-merge path needs an
+   actual raw file (`raw_files[0]`) present at export time, so deletion
+   can't simply move earlier without restructuring that feature too;
+   also requires teaching `debayer.py` (a second real caller,
+   `process_wizard.py`, which never deletes anything) a new retention
+   concept. Design B (write the decision before deletion, deletion
+   honours it): cheap, no reordering — `a.delete_raw_on_success` is
+   already known before any subprocess runs. But it embeds intent, not a
+   confirmed outcome — if deletion later fails or is skipped, the file's
+   own claim would be wrong, a smaller instance of the exact "recorded
+   from expectation, not fact" pattern item 1 audits for. A naming
+   refinement (`raw_deletion_planned` vs. a `_confirmed` field reserved
+   for `session.json`) reduces but doesn't remove that risk. Decision is
+   explicitly the user's, not made here.
+3. **The read-during-deletion race (design only).** Concrete sequence:
+   auto-process starts on a worker thread, `self._capturing` stays
+   `True` for its whole duration; `_open_processing_wizard` is correctly
+   gated and can't race it; `_open_gallery_browser` is not gated at all,
+   so opening Gallery mid-process can list a file and then fail to open
+   it moments later (TOCTOU) if the worker thread's deletion lands in
+   between — extends to preview `.jpg`s after item 5. Guard sketched, not
+   built: simplest is the same `if self._capturing: return` check
+   `_open_processing_wizard` already uses (coarse — blocks browsing any
+   session while any capture anywhere is processing); a finer guard
+   would compare against the already-tracked
+   `self._last_process_session_dir`/`_last_process_index` and only
+   block/warn on the specific in-flight item.
+
+**Plan for items 4-5 (the only code change in this task):**
+4. Fix `--delete-raw-on-success`'s `help=` string (the exact location
+   named) to describe the corrected contract (raws + their preview
+   `.jpg`s only, never the averaged/merged intermediates). Deliberately
+   NOT touched: `process()`'s own docstring and its inline comment above
+   the deletion loop, and the runtime `correction_status["raw_discard_
+   reason"]` string — all three describe what this branch's code
+   *actually does right now* (still `raw_files + master_files`, deletion
+   scope untouched per instruction), so changing them would make them
+   false on this branch specifically, which is worse than leaving them
+   accurate-but-pending-the-other-fix.
+5. `frames_for()` only globs the raw extension, so each raw frame's own
+   preview `.jpg` (written only by `Picamera2Camera`; `FakeCamera` never
+   produces one) is never cleaned up by any existing path and
+   accumulates on every real-hardware capture regardless of the setting.
+   The deletion loop's `raw_files` iteration gains a same-stem
+   `.with_suffix(".jpg")` check-and-unlink, scoped exactly to the raw
+   files this run selected (not a second glob) — removed when the raw
+   is, kept when the raw is kept, matching the setting's own name.
+   `master_files`' own deletion loop is untouched (split into its own
+   loop so the jpg-cleanup can't accidentally apply to non-raw files).
+
+**Baseline:** `hdr_from_session.py` (this branch, off `main`) is 431
+lines; `--delete-raw-on-success`'s help string still reads "raw frames +
+linear master"; no preview-`.jpg` cleanup exists anywhere in the repo.
+
+**Verification, stated honestly:** no real bracket/session data exists
+in this checkout, none fabricated, no existing user data touched.
+`python3 -m py_compile` plus real argument-parsing (`--help`) will be
+used to confirm the help text change, since `hdr_from_session.py` has no
+non-stdlib dependencies. The jpg-cleanup logic itself will be verified by
+static/source-level review only (confirming the code derives the sibling
+path and unlinks it conditionally) — consistent with this same session's
+own prior call, on the immediately preceding task, not to create even
+placeholder on-disk files to exercise deletion-safety code; no reason to
+apply a different standard here. `qt_shell.py`'s own `_open_gallery_
+browser` finding is reported only — no code changed there, per
+instruction (design only for items 2-3). No re-run, no reported numbers
+— real verification is the user's, on the Pi.
+
+
+**Positional note.** The entries directly below (`Record build: Gallery
+race comment corrected to a stated contract` and `Record intent: Gallery
+race comment corrected to a stated contract`) are appended here, in full
+and unaltered, from `claude/gallery-race-comment-fix`. On that branch
+they sat at the top of this same `## 2026-08-03` section, directly above
+`claude/keep-raw-images-scope-fix-cleanup`'s entries (already landed,
+above) — both branches' "Record intent" entries happen to share the
+identical boilerplate heading `**Investigation, reported before any code
+change, per direct instruction:**`, the same collision this section's
+own earlier positional note (above `### Record build: Keep RAW Images
+narrowed to raws only`) already describes and resolves the same way.
+Each entry's own numbered investigation list is self-contained to it —
+not a continuation of, and not continued by, the other.
 
 ### Record build: Gallery race comment corrected to a stated contract
 
@@ -42,6 +356,7 @@ resolution, including how the `CHANGELOG.md`/`HANDOFF.md`/`hdr_from_
 session.py` conflicts were combined rather than picked from one side.
 Repo-only: the Pi is unreachable, no verification runs, no synthetic
 data, no existing user data touched.
+
 
 **Investigation, reported before any code change, per direct
 instruction:**
@@ -142,6 +457,8 @@ this checkout, none fabricated, no existing user data touched.
 sandbox has no PyQt6/numpy for a live Qt exercise, same constraint every
 task on this repo has hit. No re-run, no reported numbers — real
 verification is the user's, on the Pi.
+
+
 
 ### Record build: Keep RAW Images narrowed to raws only
 
@@ -297,6 +614,441 @@ deleted); science/snap = single_master.tif (1 fewer file deleted).
 this checkout, none fabricated, no existing user data touched. No
 re-run, no reported numbers — real verification is the user's, on the
 Pi.
+
+### Record build: hdr_merge.py provenance-integrity fixes (six defects)
+
+Built to the intent recorded below. No deviation in scope or approach;
+one open question the intent left explicit is now answered by reading
+code rather than assumed, recorded as `DISCOVERED:` below.
+
+**Against the counted baseline (382 lines, `__version__ "1.0"`):**
+`hdr_merge.py` is now 488 lines (+106), `__version__ "1.1"`. Merge math
+(`E = sum_i w_i*(v_i/white - black)/t_i / sum_i w_i`) is byte-for-byte
+unchanged — checked against the diff, not just asserted.
+
+1. **white_level**: no code default changed (the script's own fallback
+   was always the honest `dtype_max`, never `65520` — that number only
+   ever arrived from a caller's `--white-level` flag). The fix here is
+   documentary: new `--white-level-source` records how a value was
+   determined (`null` if omitted), and a new `white_level_gain_dependency`
+   field states, whenever `analogue_gain` is `null`, that the value is
+   only valid for this bracket's gain. Setting `--white-level 64200` for
+   the real bracket is an invocation-time action on the Pi, not a code
+   change, matching what the intent already said it would be.
+2. `metadata=None` added to the `imwrite` call. `_assert_single_
+   description_tag()` re-opens the just-written file and hard-fails if
+   TIFF tag 270 isn't exactly one — proves the fix against the actual
+   bytes on disk, not just against the code that wrote them.
+3. `args.output` is now resolved to an absolute path
+   (`Path(args.output).resolve()`) before being recorded, rather than the
+   raw CLI string (which defaults to `"hdr_linear.tif"` if `-o` is
+   omitted and doesn't track where the file is later moved to).
+4. New `--channel-layout {mosaic,mono}` / `--cfa-pattern` flags feed
+   `geometry.channel_layout` / `geometry.cfa_pattern`, both `null` unless
+   the caller states them — deliberately not defaulted to `"mosaic"` even
+   though that's this tool's typical input, since the file's own tags
+   structurally can't prove which one it is; that was the defect.
+5. New `--black-note` flag feeds a `black_note` field, `null` unless
+   supplied.
+6. **DISCOVERED**: the intent entry left open whether defect 6's
+   propagation gap belongs to a script inside this repo or a Pi-only
+   acquisition script outside it. Answered by reading the actual code:
+   `camera_backend.py` and `provenance.py` (both in this repo) already
+   capture and persist `AnalogueGain`/`ExposureTime` per frame into each
+   capture's own `.meta.json` sidecar (`record_capture`/`record_burst`/
+   `record_hdr`) — the acquisition side is real, in-repo, and already
+   working. The actual gap is `frame_average.py` (also in this repo): its
+   own provenance dict (`frame_average.py` ~321-412) has no gain/sensor-
+   mode/capture-time fields at all and never reads those sidecars. So the
+   propagation fix is a real, buildable, in-repo change — but per
+   instruction it stays the user's to make, not built in this pass. New
+   `try_read_embedded_capture_meta()` gives `hdr_merge.py` the read side
+   ready now: it looks for `analogue_gain`/`sensor_mode`/
+   `capture_time_utc` in a master's own embedded JSON and records `null`
+   per-key when absent, never omitted — the day `frame_average.py` starts
+   writing those three keys, every exposure record here picks them up
+   automatically with no further change to this file.
+
+**Verification, as honestly as the intent asked for:** `python3 -m
+py_compile hdr_merge.py` passes — the only check possible here, since
+`numpy`/`tifffile` aren't installed in this checkout (a runtime smoke
+test wasn't attempted regardless; the intent already ruled out
+fabricating bracket data to exercise this). Real verification — the
+merge actually running, the saturation-rejected count going nonzero, the
+real embedded JSON, tag 270 confirmed against a real file — is left
+entirely to the user's own run on the Pi, not attempted or reported here.
+
+### Record intent: hdr_merge.py provenance-integrity fixes (six defects)
+
+Own branch off `main`: `claude/hdr-merge-verification-w7sb22`. Prompted by
+a hand audit of a real 5-frame exposure bracket run (`master_1..5.tif`,
+uint16, 12.49ms doubling to 199.85ms) merged on the Pi to
+`~/captures/final.tif`, cross-checked against the embedded provenance JSON
+and against a companion `camera_backend.py` audit running concurrently on
+a separate, deliberately read-only branch in this same repo. That audit
+raised two process points, both accepted: (1) no synthetic bracket is
+being fabricated to exercise this fix — the real masters exist only on
+the Pi, and a synthetic run would only prove the code agrees with the
+numbers used to derive the fix, which is not evidence; a passing synthetic
+merge dropped into a captures-shaped path would also be a provenance
+contamination risk in its own right. (2) this stays off the audit branch
+— same repo, different task — so the audit branch doesn't accumulate
+unrelated changes.
+
+**Six defects, in priority order, each against a measured baseline —**
+merge math (`E = sum_i w_i*(v_i/white - black)/t_i / sum_i w_i`) is
+explicitly unchanged by all six:
+
+1. **`white_level` wrong; saturation rejection never fires.** This run
+   used `white_level=65520.0`, `sat_frac=0.95` → cutoff 62244. Measured
+   directly off the bracket: the frame5/frame4 median ratio holds at 2.00
+   through a frame4 value of 30500, then breaks — 1.932 over
+   30500-32500, falling monotonically to 1.37 by 46500. The true ceiling
+   is ~61000 in frame5, below the 62244 cutoff, so no sample is ever
+   rejected and roughly 48% of the frame merges biased-low samples at
+   real weight. Fix is an invocation-time value (`--white-level 64200`,
+   landing the cutoff at 61000) — not a new hardcoded default, since it's
+   only valid for this bracket's analogue gain, which capture metadata
+   can't currently recover (see defect 6).
+2. **Two ImageDescription tags (TIFF code 270) written to one IFD.**
+   `tifffile.imwrite` writes both the explicit `description=` provenance
+   JSON and its own default `metadata={}` shape JSON into tag 270 —
+   two tags, undefined resolution order per reader, provenance silently
+   droppable.
+3. **`prov["output"]["path"]` isn't normalized.** It records whatever
+   string `-o` happened to be at write time (default `"hdr_linear.tif"`
+   if omitted) with no resolution to where the bytes actually landed —
+   this run's file sits at `~/captures/final.tif` but its own embedded
+   record still names `hdr_linear.tif`.
+4. **`geometry.channels: 1` doesn't say mosaic vs. mono.**
+   `PhotometricInterpretation` is MINISBLACK with no CFA tag, so nothing
+   in the file distinguishes a raw Bayer mosaic from a true mono/already-
+   extracted plane.
+5. **`black: 0.0` can't distinguish "verified no pedestal" from "pedestal
+   handling never implemented."** 0.0 is correct for this run (frame1 min
+   is 297, far below where a surviving 12-bit pedestal would leave a
+   floor) but the field reads identically either way.
+6. **Capture settings don't propagate.** Exposure records carry
+   `t_source` but never gain, sensor mode, or real per-frame capture
+   time — upstream masters (`frame_average.py` output) don't embed
+   capture metadata yet, so `hdr_merge.py` has structurally no way to
+   record what gain a bracket was shot at, even in principle. **Scope
+   check in progress**: whether the propagation fix belongs in this repo
+   (`frame_average.py`) or points at a Pi-only acquisition script outside
+   it is being confirmed before this defect's plan is finalized below.
+
+**Baseline:** `hdr_merge.py` is 382 lines, `__version__ = "1.0"`, zero
+code changes yet on this branch.
+
+**Plan:** bump `__version__` to `"1.1"` so a file produced by the patched
+script is structurally distinguishable from the `v1.0` master already on
+disk (worth confirming separately, outside this fix, whether the checked-
+in copy this session inherited is actually the same version that produced
+today's `final.tif` — flagged back to the camera_backend audit rather than
+assumed). Add `try_read_embedded_capture_meta()` alongside the existing
+`try_read_embedded_exposure()`; five new optional CLI flags
+(`--white-level-source`, `--analogue-gain`, `--black-note`,
+`--channel-layout {mosaic,mono}`, `--cfa-pattern`) that record
+operator-supplied context, explicit `null` when omitted, never a silent
+guess; `metadata=None` on the `imwrite` call plus a post-write assertion
+that exactly one tag 270 exists; resolve `-o` to an absolute path before
+recording it. Only `hdr_merge.py` is touched by this pass — defect 6's
+write side (wherever it turns out to live) is not built here regardless
+of where the scope check above lands; at most this pass documents exactly
+what fields/shape `hdr_merge.py` is ready to read.
+
+**Verification, stated honestly up front:** no real bracket exists in
+this checkout — the five masters live only on the Pi — so this pass can
+only be self-check/code-review verified here (`py_compile` plus a
+throwaway smoke test against synthetic arrays in the session scratchpad,
+never written under any captures-shaped path, offered only as evidence
+the code runs, not that the fix is numerically correct). Real numbers
+(above-norm-point count, saturation-rejected count, the real embedded
+JSON, tag-270 count) come from a real run on the Pi, done separately by
+the user — not attempted or reported from this session.
+
+**Positional note.** The two entries directly below (`Record build:
+white_level defaults consolidated to one constant` and `Record intent:
+white_level defaults consolidated to one constant`) are appended here,
+in full and unaltered, from `claude/white-level-constant-consolidation`.
+On that branch they sat at the top of the document, directly preceding
+`## 2026-08-02`'s "Record build: HANDOFF.md restructure, part 1" entry
+— the most recent entry that existed when the branch forked from
+`main`, before its siblings `claude/hdr-merge-verification-w7sb22` and
+`claude/keep-raw-images-scope-fix` independently opened this same
+`## 2026-08-03` date heading and landed first. The entries' own numbered
+investigation list, below, is self-contained to the "Record intent"
+entry it appears in — not a continuation of, and not continued by, any
+other numbered list in this section.
+
+### Record build: white_level defaults consolidated to one constant
+
+Built to the intent recorded below. No deviation.
+
+**Against the counted baseline** (two independent literals, two Python
+types — string `"65520"` in `hdr_from_session.py`, bare int `65520` in
+`qt_shell.py`): `hdr_from_session.py` gains `MERGE_WHITE_LEVEL_DEFAULT =
+65520` (plain int) right after `__version__`, with the comment the intent
+specified (container-range assumption; the August 2026 bracket's real
+~61000 ceiling at an unrecorded gain; why that number isn't promoted to
+a new default). Its own `--wl` argparse now defaults to the constant
+instead of the string literal. `qt_shell.py` gains a guarded import of
+`hdr_from_session` (mirroring the existing `_process_wizard`/
+`_plane_cache` pattern exactly: nested `try/except ImportError`,
+`None` if the sibling file is missing), and its own `--wl` default
+becomes `_hdr_from_session.MERGE_WHITE_LEVEL_DEFAULT if _hdr_from_session
+else 65520` — the `else 65520` is the documented "sibling script
+physically absent" fallback the intent called for, not a second source
+of truth for the normal case. `process_wizard.py` untouched, as planned.
+
+**A future grep for `65520` now shows exactly what the intent asked
+for**: one real definition (`hdr_from_session.py`'s
+`MERGE_WHITE_LEVEL_DEFAULT`), one reference to it, one degrade-path
+fallback that's commented as exactly that, and `process_wizard.py`'s own
+`DEFAULT_WHITE_LEVEL = 65520.0` sitting apart, unrelated, undisturbed.
+
+**Verification, as honestly as the intent asked for:** `python3 -m
+py_compile` passes for both files. `hdr_from_session.py` has zero non-
+stdlib dependencies, so — unlike `qt_shell.py`, which needs PyQt6/numpy
+this sandbox doesn't have — it could actually be imported and exercised
+for real: `import hdr_from_session; hdr_from_session.
+MERGE_WHITE_LEVEL_DEFAULT` reads back `65520` (int), `str()` of it is
+`"65520"` (byte-identical to the old literal, confirming no downstream
+formatting change), and `python3 hdr_from_session.py --help` shows the
+`--wl` flag wired correctly end to end. No real bracket/session data
+exists in this checkout, none fabricated; no re-run, no reported numbers
+— real pipeline verification is the user's to run on the Pi.
+
+### Record intent: white_level defaults consolidated to one constant
+
+Own branch off `main`: `claude/white-level-constant-consolidation`.
+Sibling to `claude/hdr-merge-verification-w7sb22` and `claude/frame-
+average-sidecar-wiring` (both pushed and done) — not stacked on either.
+No bracket/captures data is reachable from this session; none was
+fabricated. `frame_average.py`'s averaging behavior is untouched.
+
+**Investigation, reported before any code change, per direct
+instruction:**
+
+1. **Can `--sigma-clip` discard unsaturated samples in favor of
+   saturated ones?** Yes, structurally possible, confirmed against the
+   actual formula (`frame_average.py:242-277`): `mean`/`sd` are computed
+   once over ALL frames (single iteration, never refined — matches the
+   docstring), so a majority-clipped pixel (identical, zero-spread
+   clipped values pulling the pooled mean toward them) can make the
+   minority unclipped samples the higher-deviation ones and get them
+   rejected instead. Verified numerically (illustrative arithmetic only,
+   3 identical 64200s + 58000/59000, not synthetic capture data, no
+   files written): at `K=1` the two genuine unclipped samples are
+   rejected and the clipped cluster survives; at `K=2`/`K=3` nothing is
+   rejected in this scenario. Parameter- and pixel-mix-dependent, not
+   guaranteed. **`--sigma-clip` defaults to `None` (off)**, and no
+   caller in this repo (`hdr_from_session.py:process()`, the only real
+   invocation site) ever passes it — inactive in the actual pipeline
+   today, reachable only via a manual direct CLI call.
+2. **Are pre-average raws retained?** Yes by default, conditionally.
+   Per-level frames: `<level>_frame_NNNN.<ext>` (prefix_template `""`,
+   confirmed at `qt_shell.py:4893-4894`), count set by the GUI's own
+   `armed["n"]` at capture time (not a fixed constant). `frame_average.py`
+   never deletes its inputs. But `hdr_from_session.py:process()` (lines
+   283-303) does, when "Keep RAW Images" is off
+   (`a.delete_raw_on_success`): every raw frame AND every `master_N.tif`
+   plus `hdr_linear.tif` are unlinked once processing succeeds — only
+   `final.tif`/`final_display.*`/exports survive. Whether the real
+   bracket's masters/raws still exist depends on that session's own
+   Keep-RAW setting, which is Pi-side state not visible from this repo.
+3. **Monotonic→UTC anchor design** (not implemented): take a paired
+   `datetime.now(timezone.utc)` + monotonic (believed `CLOCK_BOOTTIME`,
+   to be confirmed on-rig) reading close to where the camera actually
+   starts; carry it forward as new top-level `session.json` fields; do
+   the `SensorTimestamp` conversion once, upstream, in `provenance.py` at
+   sidecar-write time, stamping a real `capture_time_utc` directly into
+   each `.meta.json`. `frame_average.py`'s existing `--sidecar-dir`
+   wiring would then pick it up automatically via
+   `aggregate_capture_field()` with no further change there.
+
+**Plan for item 4 (the only code change in this task):** a new
+`MERGE_WHITE_LEVEL_DEFAULT` constant, defined once in `hdr_from_session.py`
+(the actual owner of `--wl` and the direct caller of `hdr_merge.py
+--white-level`), carrying a comment recording both that `65520` is a
+container-range assumption (not a measured sensor value) and that the
+one real measurement on record — the August 2026 bracket's frame5/frame4
+ratio-break finding — put the true ceiling at ~61000, at an analogue gain
+that went unrecorded (`hdr_merge.py`'s own `white_level_gain_dependency`
+field). `qt_shell.py:5744` imports it via this file's own established
+guarded-import pattern (matching `_process_wizard`/`_plane_cache`:
+nested `try/except ImportError`, degrading to a literal fallback — the
+existing "sibling script physically missing" case, already otherwise
+handled by `_run_process_cmd`'s own `PROCESSOR.exists()` check).
+`hdr_from_session.py`'s own `--wl` argparse default switches from the
+string literal `"65520"` to this constant; the constant's value (a plain
+int, `65520`) stringifies identically (`str(65520) == "65520"`), so
+every downstream consumer (the `hdr_merge.py`/`debayer.py` subprocess
+calls, the printed stage-summary lines) is byte-for-byte unaffected.
+**Not touched**: `process_wizard.py`'s own `DEFAULT_WHITE_LEVEL = 65520.0`
+— explicitly out of scope (different codepath, feeds `debayer.py
+--assume-linear` only) — and the value itself is not changed to `61000`
+anywhere; that number is only valid for one bracket's unrecorded gain,
+and hardcoding it as a new blanket default would repeat the exact
+mistake this constant's own history already is one instance of.
+
+**Baseline:** `hdr_from_session.py` is 431 lines, `qt_shell.py`'s `--wl`
+default is a bare int `65520`, `hdr_from_session.py`'s is the string
+`"65520"` — two independent literals, two different Python types, same
+numeric value, zero shared source today.
+
+**Verification, stated honestly:** no real bracket/session data exists
+in this checkout, none fabricated. `hdr_from_session.py` has no
+non-stdlib dependencies, so it can actually be imported and exercised
+directly in this sandbox (unlike `qt_shell.py`, which needs PyQt6/numpy
+this environment doesn't have) — `python3 -c "import hdr_from_session"`
+plus reading back the constant is real verification, not just
+`py_compile`. `qt_shell.py` gets `py_compile` only. No re-run, no
+reported numbers — real pipeline verification happens on the Pi.
+
+**Positional note.** The two entries directly below (`Record build:
+frame_average.py capture-metadata sidecar wiring` and `Record intent:
+frame_average.py capture-metadata sidecar wiring`) are appended here, in
+full and unaltered, from `claude/frame-average-sidecar-wiring`. On that
+branch they sat at the top of the document, directly following this same
+`## 2026-08-03` heading — the branch was cut before
+`claude/hdr-merge-verification-w7sb22` and `claude/keep-raw-images-
+scope-fix` independently opened it and landed first, and before
+`claude/white-level-constant-consolidation` (itself already appended
+above under its own positional note) landed after them. The entries'
+own numbered investigation list, below, is self-contained to the
+"Record intent" entry it appears in — not a continuation of, and not
+continued by, any other numbered list in this section.
+
+### Record build: frame_average.py capture-metadata sidecar wiring
+
+Built to the intent recorded below. No deviation.
+
+**Against the counted baseline (431 lines, `__version__ "2.1"`):**
+`frame_average.py` is now 525 lines (+94), `__version__ "2.2"`.
+
+New: `read_sidecar_meta(sidecar_dir, frame_path)` (locates and parses a
+frame's `.meta.json` sidecar by name only, `{}` on anything missing/
+unreadable, never raises); `aggregate_capture_field(sidecars, raw_key,
+caster)` (single agreed value, or `None` + a note listing every value
+seen when the burst disagrees, or `None` + a not-present note when no
+sidecar carries the key — three genuinely different outcomes, three
+different notes, never collapsed into one generic null); `capture_meta_
+for_science()` (wires the two above against the science burst
+specifically, returns the three `hdr_merge.py`-shaped keys plus a `note`
+sub-object explaining every one). New `--sidecar-dir` flag, `None` by
+default (matching every existing invocation's behavior exactly —
+`analogue_gain`/`sensor_mode`/`capture_time_utc` all `null` with `"not
+present in any input frame's sidecar"` unless a caller opts in). Wired
+into `main()` right after `prov["science"]`/`prov["geometry"]` are set,
+so the new top-level `analogue_gain`, `sensor_mode`, `capture_time_utc`,
+`capture_metadata_note` keys sit next to the run's other top-level
+context, matching where `hdr_merge.py` puts its own equivalent fields.
+
+**Verification, as honestly as the intent asked for:** `python3 -m
+py_compile frame_average.py` passes. `numpy`/`tifffile` aren't installed
+in this checkout, so no full run was possible regardless; a standalone,
+file-free re-implementation of `aggregate_capture_field`'s three branches
+(agree / disagree / absent) was exercised against hand-built dicts held
+only in a throwaway Python process — not sidecar files, not bracket data,
+nothing written to disk — to confirm the aggregation rule itself before
+trusting it in the real function. Real verification (does a real sidecar
+directory actually resolve, does a real disagreeing burst get reported
+right) is the user's to run on the Pi, not attempted or reported here.
+
+### Record intent: frame_average.py capture-metadata sidecar wiring
+
+Own branch off `main`: `claude/frame-average-sidecar-wiring`. Separate
+from, and not stacked on, `claude/hdr-merge-verification-w7sb22` (pushed
+and done) — same repo, different task. No bracket data or captures
+directory is reachable from this session (they live on the Pi only); no
+synthetic data was fabricated. `hdr_merge.py` is explicitly NOT modified
+by this task.
+
+**Investigation, done and reported before any code change, per direct
+instruction:**
+
+1. **The `--white-level 65520` caller.** Two, both duplicated, independent
+   argparse defaults: `qt_shell.py:5744` (`--wl` default `65520`, the
+   GUI's own `main()`) and `hdr_from_session.py:362` (`--wl` default
+   `"65520"`, its own standalone default). Both forward through
+   `hdr_from_session.py:178` (`hm += ["--white-level", a.wl, ...]`) into
+   `hdr_merge.py`. `process_wizard.py:61`'s `DEFAULT_WHITE_LEVEL = 65520.0`
+   is the same number but an unrelated codepath (feeds `debayer.py
+   --assume-linear` only — confirmed via grep, zero references to
+   `hdr_merge`/`hdr_from_session` in that file). No Makefile/shell
+   script/config anywhere in the repo carries this constant.
+2. **Whether `frame_average.py` averages saturated samples.** By default,
+   yes, unconditionally — `average_burst()` with no `--sigma-clip` sums
+   every frame's raw value with no proximity-to-ceiling check;
+   `dtype_max()` only knows the container max (65535 for uint16), with no
+   concept of the sensor's real white level. `--sigma-clip` rejects
+   statistical outliers relative to the burst's own mean, which is not
+   the same thing as saturation rejection and only incidentally catches
+   a clipped frame. No per-frame maximum or saturation count is recorded
+   anywhere; the only clip field (`prov["clipping"]`) is computed on the
+   post-average, post-correction result against the *container* ceiling
+   (65535), not the sensor's true one, so it would essentially never fire
+   on real data regardless of per-frame clipping. This is **consistent
+   with** (not proof of) the smearing mechanism described in the prior
+   task's finding (a 2.00x ratio holding to frame4=30500, breaking to
+   1.932, falling to 1.37 by 46500, no pileup, ~48% above the break) —
+   averaging a clipped sample with unclipped ones lands the mean between
+   them, a soft rolloff rather than a hard cutoff. Not asserted as the
+   confirmed cause; no real bracket was available to check directly.
+3. **Sidecar wiring gap.** Filename pattern `<prov_dir>/<raw_stem>.
+   meta.json` (`provenance.record_capture`/`record_burst`/`record_hdr`).
+   JSON keys confirmed identical on both backends (`camera_backend.py`
+   `request.get_metadata()` at line 1205, `_fake_metadata()` at
+   498-508, both via `_dump_meta`): `ExposureTime`, `AnalogueGain`,
+   `DigitalGain`, `ColourGains`, `SensorTimestamp` — real libcamera
+   casing. Two gaps that are NOT this task's to fix: `sensor_mode` does
+   not exist in this metadata on either backend at all (a
+   `camera_backend.py` gap); `SensorTimestamp` is a monotonic hardware
+   clock with no recorded epoch, not wall-clock UTC — mapping it directly
+   to a field named `capture_time_utc` would be a fabricated value, not a
+   real one. `frame_average.py` itself has zero sidecar awareness today
+   (confirmed by reading it in full) and, per its own docstring, is a
+   generic tool that doesn't import `provenance.py`.
+
+**Plan for the wiring (item 4 only — item 5, saturation rejection, is
+explicitly NOT built in this task; see below):** a new `--sidecar-dir DIR`
+flag on `frame_average.py`, applied to the science burst's own frames
+(the burst that becomes the HDR-level master `hdr_merge.py` reads).
+`frame_average.py` stays decoupled from `provenance.py` (no import) but
+replicates its known `<stem>.meta.json` naming as a documented contract.
+A new aggregation helper reads `AnalogueGain` across the science burst's
+sidecars: if every frame that has a sidecar agrees, record that single
+value; if they disagree, record the disagreement itself (every observed
+value), never silently the first one seen. `sensor_mode` and
+`capture_time_utc` are recorded `null` with an explanatory note for the
+structural reasons above — not a wiring bug, a real absence. Output key
+names match `hdr_merge.py`'s existing `try_read_embedded_capture_meta()`
+exactly (`analogue_gain`, `sensor_mode`, `capture_time_utc`, top-level in
+the provenance dict) so nothing else has to change once this lands.
+
+**Explicitly deferred, per direct instruction:** item 5 (saturation
+rejection in `frame_average.py`) is not built here even though item 2's
+finding shows the current code is consistent with averaging saturated
+samples. Changing the averaging stage would invalidate the knee
+measurement the current `hdr_merge.py` white_level fix was derived from;
+that sequencing decision belongs to the user, not this session. This
+pass only reports what such a fix would look like (reject/clamp/weight
+samples relative to a real white level, ideally the same operator-
+supplied one `hdr_merge.py` now accepts, rather than the container max
+`dtype_max()` uses today) and what it would change about the existing
+masters (a full recompute — the current masters embed the unconditional-
+average smear, not a decision point stored separately from the pixels).
+
+**Baseline:** `frame_average.py` is 431 lines, `__version__ = "2.1"`, zero
+code changes yet on this branch.
+
+**Verification, stated honestly up front:** no real bracket or sidecar
+data exists in this checkout (the Pi is unreachable), so this pass is
+self-check/code-review only. No synthetic sidecar or bracket data will be
+fabricated to exercise the new flag. No re-run, no reported numbers —
+verification happens on the Pi, by the user, separately.
+
 
 ## 2026-08-02
 
