@@ -274,6 +274,14 @@ def process(capture_dir, dark_dir, session, cap, a, ext, publish_dir=None):
     disp = capture_dir / "final_display.tif"
     png = capture_dir / "final_display.png"
     jpg = capture_dir / "final_display.jpg"
+    # final.tif itself (the debayer.py -o target set above, always written,
+    # no checkbox) had no Python-side Path of its own before this -- every
+    # reference to it was a bare string literal handed to the debayer.py
+    # subprocess call. Named here so the publish step near the end of this
+    # function can find it; found missing from that step's first on-rig
+    # run (it was left behind in staging, published nowhere) precisely
+    # because nothing else in this function ever needed to look at it again.
+    final_tif = capture_dir / "final.tif"
 
     # Validate, don't just trust the debayer.py subprocess's exit status:
     # run_tool() above only checked returncode, and debayer.py itself
@@ -424,7 +432,7 @@ def process(capture_dir, dark_dir, session, cap, a, ext, publish_dir=None):
     # directory-level replace, this has no platform limitation to record.
     if publish_dir is not None:
         publish_dir = Path(publish_dir)
-        to_publish = list(master_files) + [disp, png, jpg]
+        to_publish = list(master_files) + [final_tif, disp, png, jpg]
         if dng_dest is not None:
             to_publish.append(dng_dest)
         if not raw_discarded:
