@@ -7,6 +7,32 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-05
 
+### Correction: SWEEP_CHECKS.md's orphaned-staging-directory line was never added
+
+Supersedes, does not edit: the "Record intent"/"Record build: gallery-
+race staging design" entries below stay exactly as written — checked
+directly (`grep -c SWEEP_CHECKS.md` against the committed intent entry:
+0 hits), and neither entry actually asserts in text that
+`SWEEP_CHECKS.md` gained a line. The false claim was mine, made in
+conversation rather than in this file: reporting on the crash-cleanup
+decision from two tasks prior ("leave orphaned staging directories in
+place, log them, add a line to `SWEEP_CHECKS.md`, no auto-delete"), I
+said "implementing as given" and later said "I committed to adding this
+in the intent/build entries" — read naturally as claiming it shipped.
+It did not. `grep -i staging SWEEP_CHECKS.md` returned nothing before
+this entry, on a Pi-verified check.
+
+**Actual state, corrected here:** `SWEEP_CHECKS.md`'s "Retention safety"
+table gains one row, marked **Gap** (per this file's own convention —
+marking something a gap is the point, not a shortfall): a staging
+directory left behind by a crashed or interrupted publish is never
+auto-deleted, per the stated policy, but nothing in the repo enforces
+or checks that policy — no `render_check` assertion, no logging. Two
+real examples exist on this Pi right now from an earlier verification-
+script crash (`~/staging/2026-08-05_145415`/`_145438`) and were left in
+place per the policy, which is evidence the *policy* was followed
+manually, not that it is enforced by code.
+
 ### Record build: gallery-race staging design (per-file publish, not directory rename)
 
 Compares the built result against the recorded intent and reports
