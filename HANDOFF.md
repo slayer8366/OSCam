@@ -244,6 +244,46 @@ What's actually open, none of it written down anywhere until now:
    (an error message on empty-selection OK? disable/gray those tiles?
    the gallery race guard in item 3 above, once built, may be the more
    natural place to fix this from) — not guessed at here.
+9b. **Saturation-detection rework: scoped (2026-08-06), three decisions
+    accepted, nothing built in `frame_average.py`/`hdr_merge.py` yet.**
+    Full investigation (Q1-Q6, cost/provenance analysis, a proposal) and
+    the decisions below: `CHANGELOG.md`'s 2026-08-06 "Investigation and
+    design proposal" and "Record intent: saturation-mask design
+    decisions" entries. Numbered `9b` rather than `9` on landing — both
+    this item and the "Gallery pick-mode" item above were independently
+    numbered `9` by two branches that diverged from the same base;
+    resolved as a collision, not a content update to the same item (see
+    this file's own numbering, renumbered once after every branch in
+    today's landing sequence is in).
+    - **The mask is retained unconditionally, independent of Keep RAW
+      Images**, once it exists. A packed per-frame mask costs ≤3.2% of
+      one bracket's own raw-DNG storage; discarding it saves a trivial
+      amount of disk and permanently forecloses the only unambiguous
+      saturation record, since averaging is irreversible. Keep RAW
+      Images governs raws; it does not govern a record derived from
+      them.
+    - **The merge-weighting policy for the partially-clipped population
+      (clipped in *some* but not all raw frames at a given level) is
+      deliberately deferred**, not decided. Building the raw-domain
+      record and deciding what `hdr_merge.py` does with it at merge
+      time are separate jobs; the policy is meant to be chosen against
+      real masks, not fixed ahead of having any.
+    - **`sat_frac` is scaffolding with no recorded reasoning**, unchanged
+      since the initial commit, never overridden by any caller in this
+      repo's history. Scheduled for collapse once the raw-domain record
+      exists to replace what it currently approximates — still live and
+      unchanged today.
+    - **Backfill validation data exists for the three brackets this
+      investigation has been using** (`2026-08-03_050600`,
+      `2026-08-03_230856`, `2026-08-04_013732`) — packed per-frame,
+      per-level saturation masks, all 5 levels, produced from surviving
+      raws and verified against previously-recorded clip fractions.
+      Lives at `~/scratch/masks/` (outside the repo, outside
+      `~/provenance/`) — deliberately not a committed format yet; adding
+      an artifact to `~/provenance/` is the record-format change and
+      gets its own intent entry when it happens. Full per-bracket
+      numbers: `CHANGELOG.md`'s 2026-08-06 "Record build: saturation-mask
+      backfill" entry.
 
 One number worth a line since the constant alone doesn't explain it:
 `hdr_from_session.MERGE_WHITE_LEVEL_DEFAULT` stays `65520`, but the real
