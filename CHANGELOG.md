@@ -7,6 +7,34 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-06
 
+### Record intent: add GLOSSARY.md
+
+`GLOSSARY.md` does not currently exist in this repository — confirmed
+in the immediately preceding entries by directory listing, not
+assumed. The task's premise is that `CLAUDE.md`'s read order already
+points at it; this session confirmed **`CLAUDE.md` also does not exist
+anywhere in this repository** (no file by that name at the root or
+below, and no `.md` file in the repo — `README.md`, `PHILOSOPHY.md`,
+`HANDOFF.md`, `CHANGELOG.md` — references it by name). That divergence
+is reported in the build entry below rather than blocking this intent:
+adding `GLOSSARY.md` is independently well-scoped regardless of whether
+`CLAUDE.md` exists to reference it.
+
+**Baseline (the scope this build is measured against):** one new file,
+`GLOSSARY.md`, added at the repo root, content supplied by the user (an
+upload from earlier in this session, read in full then and reconfirmed
+unchanged now). No source file touched. No existing document (including
+`PHILOSOPHY.md`, `HANDOFF.md`, or any other `.md` file) modified. The
+file's own final section, titled "Unverified, to be closed," is added
+verbatim as supplied and is explicitly **not** verified or closed in
+this pass — that is separate, later work, deliberately deferred so the
+record shows what was unverified at the moment the file landed, per the
+task's own instruction.
+
+Three-phase commit: this entry (intent, its own commit, nothing else),
+then the file add, then a build entry recording what actually landed
+and the `CLAUDE.md`/reference-resolution check.
+
 ### Measurement: why the master-domain smear band is narrower than global dark variation predicts
 
 Branch `claude/qt-platformtheme-plugin-check`, HEAD `950ba7f` throughout
