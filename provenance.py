@@ -282,7 +282,10 @@ class Session:
             "capture_dir": str(self.dir),
             "captures": self.captures,
         }
-        (self.prov_dir / "session.json").write_text(json.dumps(payload, indent=2))
+        sj_path = self.prov_dir / "session.json"
+        tmp = sj_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(payload, indent=2))
+        os.replace(tmp, sj_path)
 
     def existing(self, prefixes):
         """Files already present for any of these prefixes. Dark frames

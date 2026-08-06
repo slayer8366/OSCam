@@ -5804,7 +5804,9 @@ if _HAVE_QT:
                 if cap is None:
                     return "capture #{} not found in {}".format(index, sj_path)
                 cap.update(correction_status)
-                sj_path.write_text(json.dumps(data, indent=2))
+                tmp = sj_path.with_suffix(".tmp")
+                tmp.write_text(json.dumps(data, indent=2))
+                os.replace(tmp, sj_path)
             except Exception as exc:
                 return "could not record correction status: {}".format(exc)
             return None
