@@ -7,6 +7,34 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-06
 
+### Record build: add CLAUDE.md
+
+Built to the intent recorded below. `CLAUDE.md` added at the repo root
+(`836bb67`), 376 lines, byte-identical to the content supplied by the
+user (diffed directly against the upload before committing — exit 0).
+No source file touched; no existing document modified — confirmed by
+the intent commit and this file-add commit each touching exactly one
+file.
+
+**Reference-resolution check, run after the add:** every file
+`CLAUDE.md` itself names — `PHILOSOPHY.md`, `HANDOFF.md`,
+`CHANGELOG.md`, `README.md`, `GLOSSARY.md` (its "Read before your first
+change" order), `SWEEP_CHECKS.md` (its "Guards" section) —
+**all exist**, confirmed individually rather than assumed from the
+earlier GLOSSARY.md entry. `CLAUDE.md`'s own named guard command,
+`python camera_backend.py --render-check`, re-run directly: exit 0, all
+assertions PASS, including the two it names specifically
+(`assert_only_camera_backend_imports_picamera2`,
+`assert_only_camera_backend_imports_sensor_profiles`). No broken
+reference found anywhere in the file as added.
+
+No file inside the repo was modified by this build beyond the two
+commits it names (intent: `771a207`; file add: `836bb67`) and this
+entry's own commit. `profile.json`/`calib/` excluded as always; not
+pushed. Branch left exactly as found:
+`claude/qt-platformtheme-plugin-check` — this is where the working
+tree is left for B to run the instrument from.
+
 ### Record intent: add CLAUDE.md
 
 `CLAUDE.md` does not currently exist in this repository — confirmed in
