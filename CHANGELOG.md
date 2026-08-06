@@ -7,6 +7,119 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-06
 
+### Measurement: level-5 science raws, bracket 2026-08-03_050600 — hard-clip check, n=8
+
+Branch `claude/qt-platformtheme-plugin-check` at `b057237` throughout —
+unchanged by this work (measurement only, no repo code touched, no
+branch switched, left in this exact state when the session ended).
+Script: `~/scratch/measure_level5_clip.py` (outside the repo, not
+committed, per instruction — no intent commit for a pure measurement).
+
+**DISCOVERED:** the "160 pre-average raws" figure in `HANDOFF.md`'s open
+item 1 (and repeated in this measurement's own task prompt as "80
+science and 80 dark") was a miscount, now corrected in place in
+`HANDOFF.md`. Actual: 40 science DNGs + 40 dark DNGs = 80 raws total
+across all 5 levels (8 frames/level). The "160" arose from counting each
+`.dng`'s paired `.jpg` preview as if it were a second raw: 40 science
+`.dng` + 40 science `.jpg` = 80 "science files"; same shape for dark =
+80 "dark files"; 80+80 = 160 total files, but only half of that (80) is
+real raw sensor data. Identity verified clean before measuring: live
+`~/captures/2026-08-03_050600/` vs. archived
+`~/archive/bracket_2026-08-03_050600/`, byte-identical (`cmp`,
+sha256-confirmed) for the first/middle/last level-5 science raw. Level-5
+science raws: **n=8**, not 80, not 160 — every number below is against
+that real n, reported explicitly rather than silently substituted.
+
+**Step 2 — gain.** `ISOSpeedRatings` (the DNG tag; the only per-frame
+gain proxy available, since no `.meta.json` sidecars exist for this
+bracket — `frame_average.py --sidecar-dir` is opt-in and wasn't used for
+this capture) is exactly 329 across all 40 science DNGs in the bracket:
+min=max=mean=329, variance=0. `session.json`'s single session-level
+`locked_settings.analogue_gain` = 3.2926; 329/100 = 3.29, consistent
+with (not more precise than) that value. Gain is stable across the
+whole bracket.
+
+**CFA pattern**, read from the DNG's own `CFAPattern`/
+`CFARepeatPatternDim` tags (TIFF/EP color codes: 0=Red 1=Green 2=Blue),
+not assumed: raw bytes `\x02\x01\x01\x00` → 2×2 grid `[[B, G], [G, R]]`
+— BGGR, confirmed from metadata.
+
+**Step 3a — per-frame max, level-5 science, n=8, whole image:** all 8
+frames: **65535** (every one). Identical across all 8, spread = 0.
+
+**Step 3b — per frame, top 2000 ADU, 10 most frequent values, whole
+image (all CFA positions pooled):** every frame's #1 value is 65535
+with count ≈3.02–3.03M; the next 9 values (65024, 64512, 65280, 64000,
+64768, 65408, 65152, 64896, 64640 — same set every frame, ranking
+jitters slightly) each land at roughly 15,000–17,000. Full per-frame
+tables are in the script's stdout, not reproduced in full here.
+
+**Step 3c — pooled across n=8, whole image, 1-ADU histogram of top 2000
+ADU, window [63536,65535]:** 26,041,353 pixels in window (of
+98,641,920 total pixels pooled across all 8 frames, whole image, no
+window restriction). Top value 65535: count 24,208,476 (93.0% of the
+windowed population). Next: 65024 (131,265), 64512 (128,918), 64000
+(125,887), 65280 (125,096) — each under 0.5% of the windowed
+population.
+
+**Step 3d — per CFA position** (pooled pixel count per position: 8 ×
+1520 × 2028 = **24,660,480** pixels/position — stated so the
+discriminator's statistical power is visible independent of n=8):
+
+| position | per-frame max (n=8) | pooled top-2000-window pixel count | top value | top value count |
+|---|---|---|---|---|
+| B@(0,0) | 60288, 60288, 59520, 60160, 60288, 60288, 60800, 60416 | 337 | 60800 | 1 |
+| G@(0,1) | 65535 ×8 | 12,977,985 | 65535 | 12,056,313 |
+| G@(1,0) | 65535 ×8 | 13,063,368 | 65535 | 12,152,163 |
+| R@(1,1) | 57216, 57344, 57344, 58496, 58112, 57856, 58368, 56960 | 95 | 58496 | 1 |
+
+**Step 3e — dark master (mean of n=8 level-5 dark raws), black-level
+reference:** overall mean **4117.95** (per-pixel min 3754.0, max 4724.0
+across the averaged master). Per CFA position: B 4117.25, G@(0,1)
+4121.42, G@(1,0) 4121.49, R 4111.63. Declared `BlackLevel` DNG tag: 4096
+(all four positions) — the measured dark-master mean is ~0.5% above the
+declared constant.
+
+**Step 4 — discriminator.**
+- Whole image, pooled: value 65535 (0xFFFF, the literal uint16 ceiling)
+  carries count 24,208,476 — the next-highest value (65408) carries
+  124,990, and the values 10/50/200 ADU below 65535, 65408, and 65280
+  (65525/65485/65335, 65398/65358/65208, 65270/65230/65080) each carry
+  count **0** — those exact codes never occur at all, not merely less
+  often. This is a spike sitting on an otherwise-quantized-but-smooth
+  tail, not a gradual falloff.
+- Per CFA position: **G@(0,1) and G@(1,0)** reproduce the same spike —
+  top value 65535 at ~93% of their respective windows, count 0 at every
+  probed offset below it. **B@(0,0) and R@(1,1)** show no such anomaly:
+  every one of their top-3 values has count exactly 1, and every -10/
+  -50/-200 ADU probe is 0 — because their entire top-2000-ADU window
+  contains only 95–337 pixels total out of 24,660,480 pooled, a sparse
+  noise tail with nothing resembling a pile-up.
+- Per-frame maxima, whole image: identical across all 8 frames (65535,
+  spread 0). Per CFA position: B and R maxima are **not** identical
+  across the 8 frames (B: 59520–60800, spread 1280; R: 56960–58496,
+  spread 1536) — only the two G positions are pinned to the same value
+  in every one of the 8 frames.
+
+**Noted, not concluded (per instruction — this is B's call, not
+measured here):** `master_5.tif` (the existing averaged science master
+the whole "soft knee near 61000" question is about) has max 61781 at
+G@(0,1) and 61671 at G@(1,0) — well below the raw per-frame dominant
+value of 65535 at those same positions, even though ~93% of each
+individual raw frame's top-window pixels at those positions sit exactly
+at 65535. Whether an 8-frame pixel-wise average of frames that are each
+~93%-saturated-at-one-code in their brightest region is sufficient on
+its own to produce a knee at ~61000–61800, or whether the shape would
+differ with more frames, is not evaluated here — noted because the knee
+width has to be explicable by this exact n=8 average, not a hypothetical
+n=80 one.
+
+No file inside the repo was modified by the measurement itself —
+`frame_average.py` untouched, `--sigma-clip` not enabled, `white_level`
+not changed anywhere. This entry and the `HANDOFF.md` correction above
+are the only repo changes. `profile.json`/`calib/` excluded as always;
+not pushed.
+
 ### Fix: `QT_QPA_PLATFORMTHEME` clear-only fix replaced with verified-set — BUILT, CONFIRMED on-rig
 
 Branch `claude/qt-platformtheme-plugin-check`. The 2026-08-05 fix on this

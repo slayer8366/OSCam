@@ -26,20 +26,18 @@ What's actually open, none of it written down anywhere until now:
    2026-08-03 entries; summarized above under "frame_average.py
    capture-metadata sidecar wiring") already established that the default
    averaging path sums saturated samples unconditionally with no rejection.
-   What changed: 160 pre-average raws from the August 3 bracket turned out
-   to have survived rather than been discarded, so whether the level-5
-   raws actually hard-clip at a single value can now be checked directly
-   against real data instead of only reasoned about from the merged
-   masters. Not yet checked; whether/how to build saturation rejection is
-   still the user's sequencing decision to make (see item 2 in that same
-   backlog list above). **Still not checked as of the 2026-08-05 session
-   that closed item 7 below** — that session also ran directly on the Pi
-   (confirmed via `hostname`, same access as the session that opened this
-   item), but stopped at the item-7 commit (`ddb845c`) on the user's
-   explicit instruction, not because Pi access was unavailable. Whoever
-   picks this up next: access isn't the blocker, sequencing/scope is —
-   this is the one item in this list suited to a Pi-connected session
-   specifically (real bracket data), the other open items below are not.
+   What changed: 80 pre-average raws from the August 3 bracket (40 science,
+   40 dark — corrected 2026-08-06, see that date's CHANGELOG entry for how
+   the earlier "160" figure arose) turned out to have survived rather than
+   been discarded, so whether the level-5 raws actually hard-clip at a
+   single value can now be checked directly against real data instead of
+   only reasoned about from the merged masters. **Checked, 2026-08-06**:
+   level-5 science raws (n=8) do show a hard clip signature at the raw
+   sensor value level — full numbers in that date's CHANGELOG entry.
+   Whether/how to build saturation rejection is still the user's
+   sequencing decision to make (see item 2 in that same backlog list
+   above) — the measurement answers the "is there a hard clip" question,
+   not the "what to do about it" question.
 2. **Closed (gallery-race staging design).** `correction_status`
    (`raw_discarded`/`raw_discard_reason`/the derived-outputs fields) is
    built strictly after the retention-deletion loop, inside the one
@@ -69,6 +67,10 @@ What's actually open, none of it written down anywhere until now:
    never have caught it. Full detail, including two verification-script
    failures along the way (neither in this task's own code): `CHANGELOG.
    md`'s 2026-08-05 "Record build: gallery-race staging design" entry.
+   This also resolves what used to be its own open item, "retention-embed
+   design" (parked, pending the user's decision, in an earlier version of
+   this file) — the staging design above answers it: retention runs
+   before the embed unconditionally, for every caller.
 3. **Gallery race guard** — parked, pending the user's decision. The gap
    itself is already documented (see "Keep RAW Images narrowed to raws
    only" below): nothing guards a separately-launched `process_wizard.py`
