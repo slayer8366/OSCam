@@ -7,6 +7,102 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-06
 
+### Measurement: clipped-vs-excluded overlap, bracket 2026-08-03_050600 level 5
+
+Branch `claude/qt-platformtheme-plugin-check`, HEAD `1a7a122` throughout
+— unchanged by this work (measurement only; no repo code touched, no
+branch switched). Script:
+`~/scratch/measure_clip_vs_exclusion_overlap.py` (outside the repo, not
+committed). Follow-up to the previous two entries: does the 58995
+effective exclusion threshold exclude exactly the raw-clipped
+population, or more?
+
+**Q1 — clipped population in the raws, per CFA position** (n_px=3,082,560
+each):
+
+| position | clipped in ANY of 8 | clipped in ALL 8 |
+|---|---|---|
+| B@(0,0) | 0 (0.000000%) | 0 (0.000000%) |
+| G@(0,1) | 1,608,578 (52.183185%) | 1,399,224 (45.391623%) |
+| G@(1,0) | 1,619,388 (52.533868%) | 1,412,168 (45.811533%) |
+| R@(1,1) | 0 (0.000000%) | 0 (0.000000%) |
+
+**Q2 — excluded population in `master_5.tif`, confirmed directly (not
+assumed from the prior entry):**
+
+| position | px ≥ 58995 |
+|---|---|
+| B@(0,0) | 0 (0.000000%) |
+| G@(0,1) | 1,649,152 (53.499429%) |
+| G@(1,0) | 1,659,582 (53.837784%) |
+| R@(1,1) | 0 (0.000000%) |
+
+Matches the previously reported 53.499429%/53.837784% exactly — confirmed,
+not re-derived.
+
+**Q3 — confusion matrix, clipped-in-ALL-8 (the unambiguous-saturation
+definition) vs. excluded-by-threshold:**
+
+| position | clipped(all 8) AND excluded | clipped(all 8) AND NOT excluded | NOT clipped(any) AND excluded | neither |
+|---|---|---|---|---|
+| B@(0,0) | 0 | 0 | 0 | 3,082,560 (100%) |
+| G@(0,1) | 1,399,224 (45.391623%) | 0 (0%) | **249,928 (8.107806%)** | 1,433,408 (46.500571%) |
+| G@(1,0) | 1,412,168 (45.811533%) | 0 (0%) | **247,414 (8.026251%)** | 1,422,978 (46.162216%) |
+| R@(1,1) | 0 | 0 | 0 | 3,082,560 (100%) |
+
+Same confusion matrix using the looser clipped-in-ANY-of-8 definition
+instead, for completeness:
+
+| position | clipped(any) AND excluded | clipped(any) AND NOT excluded | NOT clipped(any) AND excluded | neither |
+|---|---|---|---|---|
+| G@(0,1) | 1,605,807 (52.093293%) | 2,771 (0.089893%) | 43,345 (1.406136%) | 1,430,637 (46.410678%) |
+| G@(1,0) | 1,616,752 (52.448355%) | 2,636 (0.085513%) | 42,830 (1.389430%) | 1,420,342 (46.076702%) |
+
+Both bases agree on direction and both `clipped(all 8) AND NOT excluded`
+rows are exactly 0 at every position — every pixel clipped in *every*
+raw frame is excluded, no exceptions. The row that answers the WHY
+question is `NOT clipped(any) AND excluded`: on the strict (all-8, this
+being the "unambiguously saturated" definition per the task) basis,
+**8.107806%/8.026251% of all green pixels — never clipped in a single
+one of the 8 raw frames — are excluded from the merge anyway.** On the
+looser (any-of-8) basis this drops to 1.406136%/1.389430%, still
+nonzero.
+
+**Q4 — for pixels never clipped in any raw, the maximum master value
+they reach:**
+
+| position | n never-clipped px | max master value among them |
+|---|---|---|
+| B@(0,0) | 3,082,560 (all of them) | 55196 |
+| G@(0,1) | 1,473,982 | **61066** |
+| G@(1,0) | 1,463,172 | **61012** |
+| R@(1,1) | 3,082,560 (all of them) | 52300 |
+
+Pixels that were never clipped in any of the 8 raw frames reach as high
+as 61066/61012 in the master — both above the 58995 threshold, by 2071
+and 2017 ADU respectively.
+
+**Q5 — B/R, confirmed directly:**
+
+| position | px excluded by threshold | px clipped in ALL 8 raws | px clipped in ANY raw | master value range |
+|---|---|---|---|---|
+| B@(0,0) | 0 | 0 | 0 | 452–55196 |
+| R@(1,1) | 0 | 0 | 0 | 260–52300 |
+
+B and R exclude nothing at this threshold (confirmed directly, not
+assumed) and contain zero pixels clipped at 65535 in the raws, in
+either 8 or any-of-8 frames — so there are zero all-8-clipped or
+any-clipped B/R pixels to check for surviving unexcluded; the question
+"do saturated red/blue pixels survive into the master unexcluded" has
+no instances to report in this bracket, at this level.
+
+No file inside the repo was modified except this entry.
+`frame_average.py`/`hdr_merge.py` untouched, no `--sigma-clip`, no
+`white_level`/`--sat` change anywhere. `profile.json`/`calib/` excluded
+as always; not pushed. Branch left exactly as found:
+`claude/qt-platformtheme-plugin-check`, unchanged HEAD until this
+entry's own commit.
+
 ### Measurement: hdr_merge.py's actual input, bracket 2026-08-03_050600 level 5 — where 62100 really sits
 
 Branch `claude/qt-platformtheme-plugin-check`, HEAD `d4d3d56` throughout
