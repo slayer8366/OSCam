@@ -1673,6 +1673,56 @@ stripping `QT_QPA_PLATFORMTHEME`/`XDG_CURRENT_DESKTOP`/
 
 ## 2026-08-05
 
+### Record build: stop a second capture from stripping the first capture's correction-status fields
+
+Built to the intent recorded below. No deviation: `_record_correction_
+status` gains `live_session=None`; when the caller identifies one (the
+`self._session.dir.resolve() == Path(self._last_process_session_dir).
+resolve()` comparison in `_on_process_finished`), its matching in-memory
+capture entry is updated with the same `correction_status` dict, in the
+same call, right after the disk write. Disk-read unchanged, still
+unconditional. `# CAVEAT:` present at the new in-memory-sync code,
+naming `measure.py`'s `_on_exclude_toggled` as an uncovered sibling.
+
+**`python3 qt_shell.py --render-check`: exit 0, every assertion PASS**,
+foreground.
+
+**On-rig reproduction, real `Picamera2Camera`, exactly as specified:**
+one launch, two Snaps in the same session (`2026-08-05_192914`), no
+restart between them.
+
+After Snap #1, capture index 0's `session.json` entry: `flat_correction
+= "skipped (no flat_ frames in the flat library)"`, `dark_correction =
+"skipped (no standalone dark_ frames)"`, `raw_discarded = false`,
+`derived_outputs_discarded = false`, `derived_outputs_note` = the full
+retention-scope sentence (`raw_discard_reason` absent — correct,
+`Keep RAW Images` was on).
+
+After Snap #2 (the reproduction), capture index 0's entry carries the
+same six fields, values unchanged, none dropped — the defect does not
+reproduce with the fix in place. Capture index 1 carries its own
+correct fields (own `flat_correction`/`dark_correction`/`raw_discarded=
+false`/etc.). No `.tmp` file left behind. Full verbatim `session.json`
+for both states is in this session's own chat report, not reproduced
+here.
+
+**Manual wizard reprocess path, confirmed unaffected.** Called `_run_
+process_cmd` directly against the same on-disk session from a *fresh*
+window (`self._session is None`, exactly the manual wizard's own
+scenario, per `ProcessSessionDialog`'s "browse ANY session" contract) —
+correction status fields were recorded exactly as before, `live_session`
+correctly evaluating to `None` and changing nothing about this path's
+behavior. Hit one real-but-unrelated snag getting there, worth recording
+honestly: the first two attempts hung, root-caused to a test-script
+oversight, not this change — `_on_process_finished` calls `_offer_
+archive_raws` on success, which shows a real modal `QMessageBox` via
+`_flat_question().exec()`; every other verification script in this
+session's history stubs that method, this one initially didn't, so the
+dialog sat blocking, unattended, on the real display. Confirmed via a
+direct `hdr_from_session.py` CLI run (exit 0, correct
+`CORRECTION_STATUS_JSON`) that the underlying processing was never the
+problem before finding the missing stub and re-running clean.
+
 ### Record intent: stop a second capture from stripping the first capture's correction-status fields
 
 Own branch off `claude/session-json-atomic-write` (not `main` — this
