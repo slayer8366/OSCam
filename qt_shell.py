@@ -5783,7 +5783,8 @@ if _HAVE_QT:
                 "archived {} raw file(s) into {} ({:.1f} MB); loose files removed."
                 .format(result["archived"], result["tar_path"].name, result["mb"]))
 
-        def _record_correction_status(self, capture_dir, index, correction_status):
+        def _record_correction_status(self, capture_dir, index, correction_status,
+                                      live_session=None):
             """Write flat_correction/dark_correction onto capture #index's
             OWN entry in session.json -- the named technique that ran or
             was skipped, never folded into a generic "processing complete"
@@ -5794,7 +5795,22 @@ if _HAVE_QT:
             self._session. Best-effort -- the image itself already
             processed successfully by the time this runs, so a bookkeeping
             failure here is surfaced in the status detail, not raised into
-            the completion handler."""
+            the completion handler. The disk-read stays unconditional --
+            it is what lets this one function serve both the manual
+            wizard's non-live sessions and the live self._session case
+            without two separate code paths; do not gate it on
+            live_session being given.
+
+            live_session, when the caller identifies one, is the SAME
+            Session object this capture actually belongs to (see
+            _on_process_finished's own directory comparison) -- its
+            in-memory captures entry is updated with the identical
+            correction_status dict, in this same call, right after the
+            disk write succeeds. This is what stops a LATER Session.write
+            (a second capture in the same session, say) from overwriting
+            the disk patch just made here with its own stale in-memory
+            copy, which never otherwise learns this patch happened at
+            all (HANDOFF.md items 8a/8c)."""
             prov_dir = _provenance_dir_for(Path(capture_dir))
             sj_path = prov_dir / "session.json"
             try:
@@ -5807,6 +5823,22 @@ if _HAVE_QT:
                 tmp = sj_path.with_suffix(".tmp")
                 tmp.write_text(json.dumps(data, indent=2))
                 os.replace(tmp, sj_path)
+                # CAVEAT: this only keeps a LIVE Session object in sync
+                # when the caller identifies one for this exact directory
+                # (qt_shell.py's own self._session, via _on_process_
+                # finished). measure.py's _on_exclude_toggled is a
+                # SEPARATE disk-patch writer with the identical clobber
+                # mechanism and no access to a live Session object at all
+                # -- covering it would need a cross-module registry that
+                # does not exist. That class of defect is NOT closed by
+                # this, only the one call site above that can actually
+                # name a live Session to update. See HANDOFF.md items
+                # 8a/8c.
+                if live_session is not None:
+                    live_cap = next((c for c in live_session.captures
+                                     if c.get("index") == index), None)
+                    if live_cap is not None:
+                        live_cap.update(correction_status)
             except Exception as exc:
                 return "could not record correction status: {}".format(exc)
             return None
@@ -5830,9 +5862,25 @@ if _HAVE_QT:
                             break
                         if (self._last_process_session_dir is not None
                                 and self._last_process_index is not None):
+                            # Resolved-path comparison, not string: tells
+                            # us whether self._session is the SAME
+                            # directory this correction status belongs to
+                            # (the auto-process/staged case) or some other
+                            # session entirely (the manual processing
+                            # wizard, which can reprocess ANY session, not
+                            # just the live one) -- only in the former case
+                            # is there an in-memory Session to keep in
+                            # sync alongside the disk write.
+                            live_session = (
+                                self._session
+                                if (self._session is not None
+                                    and self._session.dir.resolve() ==
+                                        Path(self._last_process_session_dir).resolve())
+                                else None)
                             err = self._record_correction_status(
                                 self._last_process_session_dir,
-                                self._last_process_index, status)
+                                self._last_process_index, status,
+                                live_session=live_session)
                             if err:
                                 detail += "\n\n(correction status not recorded: {})".format(err)
                         break
