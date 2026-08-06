@@ -130,26 +130,85 @@ What's actually open, none of it written down anywhere until now:
 8a. **`session.json` correction-status field loss on a second capture in
     one session — found verifying the gallery-race staging design's
     multi-capture publish case, not fixed, documentation only.**
-    Symptom: a second capture in one session strips the first capture's
-    `raw_discarded`/`flat_correction`/`dark_correction` fields from
-    `session.json`. The first capture's raw files remain present and
-    untouched on disk — only the record of them is gone. Mechanism:
-    `_record_correction_status` (`qt_shell.py:5584-5608`) reads
-    `session.json` fresh from disk and patches it in place, by design,
-    so it also serves the manual processing wizard's non-live sessions
-    (its own docstring says so explicitly). `Session.record()`
-    (`provenance.py:321-328`), called by the second capture's
-    `record_capture`, appends to `self.captures` in memory — which never
-    learned about that disk-side patch — then calls `Session.write()`
-    (`provenance.py:269-285`), which overwrites the whole file from that
-    stale in-memory list. Scope: pre-existing, untouched by the staging
-    work (neither function above was touched by it), fires on the
-    ordinary two-Snap workflow with no staging involved at all. Observed
-    in session `2026-08-05_163014`. Ranked above item 9: this is silent
-    loss from the provenance record itself, not a UI-level drop —
-    `final.tif` still carries its own embed (see item 8b below), so once
-    this fires, the TIFF states a retention outcome that `session.json`
-    neither corroborates nor contradicts for that earlier capture.
+    Symptom: a second capture in one session strips ALL SIX fields
+    `_record_correction_status`'s own `cap.update(correction_status)`
+    writes from the first capture's entry in `session.json` —
+    `flat_correction`, `dark_correction`, `raw_discarded`,
+    `derived_outputs_discarded`, `derived_outputs_note`, and (present
+    only when `raw_discarded` is true) `raw_discard_reason`. Not just the
+    three that happened to be visible in the observed case — all six go
+    the same way, since one `cap.update()` call writes them together.
+    The first capture's raw files remain present and untouched on disk —
+    only the record of them is gone. Mechanism: `_record_correction_
+    status` reads `session.json` fresh from disk and patches it in
+    place, by design, so it also serves the manual processing wizard's
+    non-live sessions (its own docstring says so explicitly).
+    `Session.record()`, called by the second capture's `record_capture`,
+    appends to `self.captures` in memory — which never learned about
+    that disk-side patch — then calls `Session.write()`, which overwrites
+    the whole file from that stale in-memory list. Scope: pre-existing,
+    untouched by the staging work (none of the three functions below was
+    touched by it), fires on the ordinary two-Snap workflow with no
+    staging involved at all. Observed in session `2026-08-05_163014`.
+    Ranked above item 9: this is silent loss from the provenance record
+    itself, not a UI-level drop — `final.tif` still carries its own
+    embed (see item 8b below), so once this fires, the TIFF states a
+    retention outcome that `session.json` neither corroborates nor
+    contradicts for that earlier capture.
+
+    **Line numbers resolve only against this branch
+    (`claude/gallery-race-staging-design`) — the staging work shifted
+    all three below it, `Session.write` and `_record_correction_status`
+    included. Whoever picks this up must know which base they are
+    patching against:**
+
+    | Function | This branch (`858260d`) | `main` (`1a2eb45`) |
+    |---|---|---|
+    | `_record_correction_status` | `qt_shell.py:5584-5608` | `qt_shell.py:5529-5551` |
+    | `Session.write` | `provenance.py:269-285` | `provenance.py:219-234` |
+    | `Session.record` | `provenance.py:321-328` | `provenance.py:321-328` (coincides on both — offsetting shifts elsewhere in the file, not a signal that this function is unaffected) |
+
+    **A second disk-patch writer exists with the identical clobber
+    mechanism: `measure.py`'s `_on_exclude_toggled`.** It reads
+    `session.json` fresh from disk and patches one field (`stacks.
+    set_exclude`'s exclude flag on a z-stack plane's capture entry) in
+    place, by its own docstring explicitly never depending on
+    `qt_shell.Session` — same shape as `_record_correction_status`,
+    same vulnerability to a later live-Session `write()` that never
+    learned of the patch. This is reasoned from the mechanism, not
+    reproduced: the z-stack review flow this runs under typically starts
+    after a stack's per-plane `Session` objects have already gone out of
+    scope, so the realistic collision here looks more like a cross-
+    process race (a second window or process still holding that
+    directory's `Session` live while `measure.py` patches it) than the
+    same-process, same-object sequence observed for the two-Snap case
+    above. Not confirmed on the rig or otherwise.
+8c. **Design, not scheduled: conflict-detecting `session.json` write —
+    the structural fix item 8a's investigation converged on, not
+    committed to.** Shape: `Session.write` fingerprints what this object
+    last wrote (a hash or mtime of its own prior write); before writing
+    again, it compares that fingerprint against what is actually on disk
+    now; on a mismatch, it re-reads, re-applies only THIS write's own
+    delta against the current disk content, and raises only when that
+    delta actually touches a field that changed underneath it (i.e., a
+    genuine conflict, not just "disk moved since I last looked"). Why it
+    is worth having: it is the only shape under consideration that does
+    not depend on enumerating every present and future disk-patch writer
+    correctly — `_record_correction_status` and `_on_exclude_toggled`
+    today, anything written tomorrow, all covered the same way, because
+    the protection lives in the one function everything ultimately
+    writes through, not in each caller separately. What blocks it: no
+    decided story for what a caller does with the raise. A raise inside
+    a capture path is worse than the defect it fixes, because losing a
+    whole capture entry (a failed `record()`) outweighs losing a
+    correction field (today's actual defect) — that decision, not the
+    fingerprinting mechanism itself, is the gate. Note: the narrower,
+    cheaper fix considered alongside this one (`_record_correction_
+    status` also updating a live in-memory `Session` when one exists for
+    the directory being patched) would narrow how often this ever
+    triggers, not remove the need for it — it covers only the one known
+    call site, in this one process, and does nothing for
+    `_on_exclude_toggled` or any writer not yet invented.
 8b. **Derived outputs are not per-capture — found in the same
     verification, not fixed, documentation only.** Raw frames are
     indexed per capture (`snap_frame_0000.dng`, `snap_frame_0001.dng`,

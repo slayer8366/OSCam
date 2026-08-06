@@ -7,6 +7,61 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-05
 
+### Record: item A amended, conflict-detecting session.json write filed as a design item
+
+Documentation only, no source touched — on branch `claude/gallery-race-
+staging-design` (rig-verified), which this session's own instruction
+was to keep that way. Work-is-the-outcome form, not intent/build: the
+investigation this records was done in a separate session on its own
+branch off `main`, not repeated here. `HANDOFF.md` edited in place (it
+is not append-only); `CHANGELOG.md` here is append-only as always
+(verified: `git diff` against the base commit shows no removed lines).
+
+**Item A amended, in place, three corrections.** (1) The losable-field
+count is six, not three: `_record_correction_status`'s own
+`cap.update(correction_status)` writes `flat_correction`,
+`dark_correction`, `raw_discarded`, `derived_outputs_discarded`,
+`derived_outputs_note`, and `raw_discard_reason` (present only when
+`raw_discarded` is true) in one call — the three named when item A was
+first filed were only the ones visible in that particular observed
+capture, not the full set at risk. (2) The item's own line references
+(`qt_shell.py:5584-5608`, `provenance.py:269-285`/`:321-328`) resolve
+only against this branch — the staging work shifted `Session.write` and
+`_record_correction_status` both. `main`'s numbers recorded alongside:
+`_record_correction_status` at `qt_shell.py:5529-5551`, `Session.write`
+at `provenance.py:219-234`, `Session.record` at `provenance.py:321-328`
+(coincides on both branches — offsetting shifts elsewhere in the file,
+not evidence this function is unaffected by either). Stated plainly in
+the item: whoever picks this up needs to know which base they are
+patching against. (3) `measure.py`'s `_on_exclude_toggled` is named as
+a second disk-patch writer with the identical clobber mechanism — read
+`session.json` fresh from disk, patch one field in place, by its own
+docstring never depending on `qt_shell.Session` — reasoned from the
+mechanism, not reproduced; its own docstring and the z-stack review
+flow's timing make the realistic collision here look cross-process
+rather than same-object-sequential like the observed two-Snap case, but
+that has not been confirmed on the rig or otherwise, and the item says
+so in those terms.
+
+**New item 8c filed: conflict-detecting session.json write, design
+only, not scheduled.** `Session.write` would fingerprint what it last
+wrote, compare against disk before writing again, and on a mismatch
+re-read, re-apply only its own write's delta, and raise only when that
+delta actually collides with a field that changed underneath it. Why
+it's worth having: the only shape under consideration that doesn't
+depend on correctly enumerating every present and future disk-patch
+writer — the protection lives in the one function everything ultimately
+writes through. What blocks it, stated as the gate rather than a detail:
+no decided story for what a caller does with the raise, and a raise
+inside a capture path risks being worse than the defect it fixes, since
+losing a whole capture entry outweighs losing a correction field. Noted
+explicitly: the cheaper, narrower option from the same investigation
+(`_record_correction_status` also updating a live in-memory `Session`
+when one exists for the directory being patched) would narrow how often
+this ever triggers, not remove the need for it — it only covers the one
+known call site, in one process, and does nothing for
+`_on_exclude_toggled` or any writer not yet invented.
+
 ### Record: two findings filed from the multi-capture verification (session.json correction-status field loss, derived outputs not per-capture)
 
 Documentation only, no code touched — the branch is verified on the rig
