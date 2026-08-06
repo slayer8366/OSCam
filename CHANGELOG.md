@@ -7,6 +7,101 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-06
 
+### Record build: saturation-mask backfill — all three brackets verified against prior measurements
+
+Built to the intent recorded below (`43ba4b6`). `HANDOFF.md` gained item
+9 under "Open right now" (`a1ee294`, 35 lines, in place, no other section
+touched) — the three decisions, verbatim as accepted: unconditional mask
+retention independent of Keep RAW Images, merge-weighting policy for the
+partially-clipped population deliberately deferred, `sat_frac` scheduled
+for collapse but unchanged this session.
+
+**Backfill.** Script: `~/scratch/backfill_saturation_masks.py` (outside
+the repo, not committed). Detection is raw-domain `== 65535` only — no
+threshold, no dark subtraction, no inference — replicating
+`frame_average.py:250-251`'s own per-frame load read-only, exactly the
+"last point without inference" the prior entry's Q2 identified. Per
+level, 8 raw science frames pack into one `uint8` array in the frame's
+own native geometry (`3040×4056`, not split by CFA position): bit `i`
+of each pixel's byte is set iff that pixel was `65535` in raw frame `i`
+of that level's burst. All 5 levels, all 3 brackets — 15 masks. Written
+to `~/scratch/masks/<bracket>/<bracket>_level<N>_satmask.npy`, outside
+the repo and outside `~/provenance/`, per instruction — no new artifact
+added to the provenance tree this session.
+
+**Verification gate — checked before this entry was written, per the
+intent's own instruction. All figures matched exactly; nothing
+disagreed, nothing was investigated as a discrepancy:**
+
+| figure | recorded (prior measurement) | backfill (this entry) |
+|---|---|---|
+| `050600` L5 G@(0,1) clipped-in-ANY | 52.18% | **52.183185%** |
+| `050600` L5 G@(1,0) clipped-in-ANY | 52.53% | **52.533868%** |
+| `050600` L5 G@(0,1) clipped-in-ALL | 45.39% | **45.391623%** |
+| `050600` L5 G@(1,0) clipped-in-ALL | 45.81% | **45.811533%** |
+| `050600` L5 B@(0,0)/R@(1,1) | 0% | **0.000000% / 0.000000%** |
+| `230856` L5 G@(1,0) clipped-in-ANY | 69.52% | **69.520139%** |
+| `013732` L5 G@(1,0) clipped-in-ANY | 71.15% | **71.147553%** |
+
+Every figure the intent named as a gate matches the earlier
+threshold-based measurement to within rounding, computed here by an
+entirely different method (raw-domain bit-packing and popcount, not a
+master-domain threshold) — cross-confirms both the backfill and the
+original measurement rather than either one alone.
+
+**Per-bracket, per-level, per-CFA-position — full results, all 20
+(bracket, level) combinations:**
+
+| bracket | level | B@(0,0) ANY/ALL | G@(0,1) ANY/ALL | G@(1,0) ANY/ALL | R@(1,1) ANY/ALL |
+|---|---|---|---|---|---|
+| `050600` | 1 | 0% / 0% | 0% / 0% | 0% / 0% | 0% / 0% |
+| `050600` | 2 | 0% / 0% | 0% / 0% | 0% / 0% | 0% / 0% |
+| `050600` | 3 | 0% / 0% | 0% / 0% | 0% / 0% | 0% / 0% |
+| `050600` | 4 | 0% / 0% | 0.000422% / 0% | 0.000843% / 0% | 0% / 0% |
+| `050600` | 5 | 0% / 0% | 52.183185% / 45.391623% | 52.533868% / 45.811533% | 0% / 0% |
+| `230856` | 1 | 0% / 0% | 0% / 0% | 0% / 0% | 0% / 0% |
+| `230856` | 2 | 0% / 0% | 0% / 0% | 0% / 0% | 0% / 0% |
+| `230856` | 3 | 0% / 0% | 0% / 0% | 0% / 0% | 0% / 0% |
+| `230856` | 4 | 0% / 0% | 2.289331% / 0.504029% | 2.483520% / 0.577442% | 0% / 0% |
+| `230856` | 5 | 2.842702% / 0.359312% | 69.375681% / 66.248118% | 69.520139% / 66.435203% | 0.039123% / 0.000162% |
+| `013732` | 1 | 0% / 0% | 0% / 0% | 0% / 0% | 0% / 0% |
+| `013732` | 2 | 0% / 0% | 0% / 0% | 0% / 0% | 0% / 0% |
+| `013732` | 3 | 0% / 0% | 0% / 0% | 0% / 0% | 0% / 0% |
+| `013732` | 4 | 0% / 0% | 2.480309% / 0.566347% | 2.697401% / 0.644107% | 0% / 0% |
+| `013732` | 5 | 3.276692% / 0.498287% | 70.997645% / 67.761211% | 71.147553% / 67.958969% | 0.045028% / 0.000227% |
+
+**Control check requested in the task: levels 1-3 show zero clipping at
+every CFA position, in all three brackets, with no exception.** Level 4
+shows small but real green clipping (0.0004%-2.7%, B/R still exactly
+zero) — consistent with it being the second-brightest exposure level,
+not a bug. Nothing at level 1 or 2 clipped anywhere, which is what
+"something is wrong" would have looked like if it had happened.
+
+**Mask size and production time, per bracket** (5 levels each; per-mask
+size is identical across every level/bracket, `.npy`'s own small header
+included: 12,330,368 bytes = 11.759 MiB, vs. the raw payload alone,
+12,330,240 bytes — 128 bytes of `.npy` header overhead):
+
+| bracket | total mask size (5 levels) | production time (5 levels, wall clock) |
+|---|---|---|
+| `2026-08-03_050600` | 61,651,840 bytes (58.796 MiB) | 1.791 s |
+| `2026-08-03_230856` | 61,651,840 bytes (58.796 MiB) | 1.646 s |
+| `2026-08-04_013732` | 61,651,840 bytes (58.796 MiB) | 1.720 s |
+
+Matches the prior entry's Q3 costing exactly (58.8 MiB/bracket for the
+packed 5-level science-only case). For scale: this is 3.1% of one
+bracket's own raw-DNG storage (1881.5 MiB, prior entry), and production
+is dominated by disk read, not compute (8 frames × ~24.6 MB read per
+level, XOR-free single-pass OR-into-shifted-bit accumulation).
+
+**No deviation from the intent.** `frame_average.py`/`hdr_merge.py`
+untouched; `white_level`/`sat_frac` untouched; no merge policy decided;
+nothing added to `~/provenance/`. `profile.json`/`calib/` excluded as
+always; not pushed. Branch left exactly as found:
+`claude/qt-platformtheme-plugin-check`, unchanged HEAD until this
+entry's own commit — this is where the working tree is left for B to
+run the instrument from.
+
 ### Record intent: saturation-mask design decisions + backfill for three existing brackets
 
 Branch `claude/qt-platformtheme-plugin-check`, HEAD `b91187f`. Follow-up
