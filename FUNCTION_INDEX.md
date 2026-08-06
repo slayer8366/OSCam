@@ -287,6 +287,9 @@ facts worth reading in full.
 
 > CAVEAT: unguarded against self._capturing, unlike _open_processing_wizard right above -- this can race the auto-process worker thread's own deletion loop (Keep RAW Images off deletes this capture's raw frames + their preview .jpgs as process()'s last step). Being modal only blocks other GUI actions; it does not block a background worker thread, which is deliberately NOT blocked by the Qt event loop (that's the whole reason processing runs on one). A user opening this mid-process can list a file here and then fail to open it moments later (TOCTOU) if the worker thread's deletion lands in between. See CHANGELOG.md's 2026-08-03 "Gallery race" investigation for the concurrency contract this function doesn't yet satisfy; no guard added here.
 
+- `def _qt6_plugin_keys(so_path):`
+- `def _qt6_platformthemes_dirs():`
+- `def _ensure_loadable_platformtheme():`
 - `def discover_themes(themes_root=None):`
 - `def resolve_theme_qss_path(theme_name, themes_root=None):`
 - `def load_theme_stylesheet(qss_path):`

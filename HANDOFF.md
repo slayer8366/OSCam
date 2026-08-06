@@ -2741,6 +2741,71 @@ fills in the rest on Linux — worth knowing before the macOS/Windows
 work, where no platform theme gets set at all and the app's appearance
 will be the QSS over whatever those platforms supply underneath.
 
+**Superseded, 2026-08-06: the plain `setdefault` above stopped working
+once `/usr/bin/setup_env` (package `raspberrypi-ui-mods`, sourced
+unconditionally at session start) started exporting
+`QT_QPA_PLATFORMTHEME=qt5ct` ambiently — `setdefault` never overrides an
+already-set value, so it silently became a no-op, and `qt5ct` has no Qt6
+build on this rig, so Qt6 fell back to its own built-in default font
+again with no warning. Two more fixes followed on branch `claude/qt-
+platformtheme-plugin-check`, in order:**
+
+1. **2026-08-05, since corrected: clear-only.** `qt_shell.py` gained
+   `_qt6_plugin_keys`/`_qt6_platformthemes_dirs` (parse a Qt6
+   platformtheme plugin's `.so` for its registered CBOR-encoded "Keys"
+   metadata, without importing PyQt6 before `QApplication` — an earlier
+   sub-version of `_qt6_platformthemes_dirs` used
+   `QLibraryInfo.path()`, but merely importing `PyQt6.QtCore` before
+   `QApplication` exists was enough for Qt to snapshot
+   `QT_QPA_PLATFORMTHEME` internally, so a later `os.environ` write had
+   nothing left to affect — fixed by finding the plugin directory via a
+   glob instead) and `_clear_unloadable_platformtheme` (verify the
+   ambient value names an installed, loadable plugin; if not, clear it
+   so Qt would auto-detect the one that does exist, on the theory that
+   clearing alone would trigger that auto-detection). **That theory was
+   wrong.** It shipped with an on-rig measurement in the code comment
+   (unset = 18.0pt PibotoLt, matching the desktop) that a fresh 2026-08-06
+   on-rig re-run could not reproduce (see step 2) — see the
+   "unexplained divergence" paragraph below before trusting either
+   reading blindly.
+2. **2026-08-06: verified-set, confirmed on-rig.** A plain launch (no
+   environment manipulation), ambient `QT_QPA_PLATFORMTHEME=qt5ct`
+   confirmed present in the shell beforehand, still rendered the broken
+   9.0pt "Sans Serif" fallback with the var cleared/unset —
+   `QT_DEBUG_PLUGINS=1` showed why: Qt's factory loader finds
+   `libqgtk3.so` on disk (`"Got keys from plugin meta data ... gtk3"`)
+   but never calls `create()` on it, because Qt only auto-instantiates
+   an available-but-unnamed theme plugin when `XDG_CURRENT_DESKTOP`
+   matches a short internal list Qt ships
+   (`QGenericUnixTheme`'s desktop-name heuristics), and this rig's value
+   (`labwc:wlroots`, from `XDG_SESSION_DESKTOP=LXDE-pi-labwc`,
+   `XDG_SESSION_TYPE=wayland`, session wrapper `lightdm` → `labwc`) is
+   not on it. `_clear_unloadable_platformtheme` was rewritten as
+   `_ensure_loadable_platformtheme`: same verified-plugin-existence
+   check as before, but now it explicitly **sets**
+   `QT_QPA_PLATFORMTHEME=gtk3` when the current value is missing or
+   unloadable — never a blind hardcode, only ever after independently
+   confirming (same CBOR parsing) that a plugin actually registers the
+   `gtk3` key. **Confirmed on-rig, 2026-08-06, plain launch, no
+   environment manipulation**: `PibotoLt 18.0`, matching the rest of the
+   desktop — the acceptance test this whole fix is judged against.
+   `qt_shell.py --render-check` re-run clean, no regressions.
+
+**Unexplained divergence, recorded rather than resolved:** the
+2026-08-05 code comment's own on-rig measurement claimed
+`QT_QPA_PLATFORMTHEME` unset = 18.0pt PibotoLt, visually confirmed by B.
+The 2026-08-06 session's fresh re-measurement of that exact condition
+(reboot immediately prior, ambient `qt5ct` confirmed present in the new
+shell first) got 9.0pt Sans Serif instead — the opposite result. Nothing
+about the earlier run's `XDG_CURRENT_DESKTOP`/`XDG_SESSION_DESKTOP`/
+`XDG_SESSION_TYPE`/session-wrapper was recorded anywhere in the repo, so
+there is nothing to diff the 2026-08-06 values above against, and no
+explanation could be established. This is recorded as open, not resolved
+— don't assume the earlier reading was simply wrong; if a future session
+can explain the divergence (a desktop-session config change, a Qt/plugin
+package update, something else), replace this paragraph rather than
+delete it.
+
 ### Keep RAW Images narrowed to raws only — BUILT (data-loss fix), self-check only
 
 Own branch: `claude/keep-raw-images-scope-fix`, off `main` (fourth

@@ -5,6 +5,60 @@ dump — each entry names the commit(s) it corresponds to for traceability.
 See `HANDOFF.md` for what a fresh agent needs to know before working here;
 this file is the historical record of what happened and why.
 
+## 2026-08-06
+
+### Fix: `QT_QPA_PLATFORMTHEME` clear-only fix replaced with verified-set — BUILT, CONFIRMED on-rig
+
+Branch `claude/qt-platformtheme-plugin-check`. The 2026-08-05 fix on this
+branch (`_clear_unloadable_platformtheme`: verify the ambient
+`QT_QPA_PLATFORMTHEME` names an installed, loadable Qt6 platformtheme
+plugin, clear it if not, on the theory that Qt would then auto-detect
+the one plugin that does exist) shipped with an on-rig code-comment
+measurement claiming this worked (unset = 18.0pt PibotoLt). A fresh
+2026-08-06 on-rig re-verification (session rebooted first; ambient
+`QT_QPA_PLATFORMTHEME=qt5ct` confirmed present in the new shell before
+testing) reproduced the opposite result: clearing/unsetting the var
+still rendered the broken 9.0pt "Sans Serif" fallback, identical to
+leaving `qt5ct` in place.
+
+**Root cause of the clear-only theory being wrong**: `QT_DEBUG_PLUGINS=1`
+showed Qt's factory loader finds `libqgtk3.so` on disk when the var is
+unset (`"Got keys from plugin meta data ... gtk3"`) but never
+instantiates it — Qt only auto-picks an available-but-unnamed
+platformtheme plugin when `XDG_CURRENT_DESKTOP` matches a short internal
+list Qt ships, and this rig's `labwc:wlroots`
+(`XDG_SESSION_DESKTOP=LXDE-pi-labwc`, `XDG_SESSION_TYPE=wayland`,
+session wrapper `lightdm` → `labwc`) is not on it. Only an explicit
+`QT_QPA_PLATFORMTHEME=gtk3` produced the correct font.
+
+**Fix**: `_clear_unloadable_platformtheme` rewritten as
+`_ensure_loadable_platformtheme` (`qt_shell.py`). Same verified-plugin-
+existence check (parses each Qt6 platformtheme plugin's embedded CBOR
+metadata for its registered keys, no PyQt6 import before
+`QApplication`), but now explicitly sets `QT_QPA_PLATFORMTHEME=gtk3`
+when the current value is missing or names an unloadable plugin — only
+ever after independently confirming a plugin actually registers the
+`gtk3` key, never a blind hardcode. A value already naming a real,
+loadable plugin is still left untouched; inconclusive plugin discovery
+still leaves the value untouched with a stderr warning, same as before.
+
+**Confirmed on-rig, 2026-08-06, plain launch (`python3 -c "import
+qt_shell; ..."`), no environment manipulation**, ambient
+`QT_QPA_PLATFORMTHEME=qt5ct` confirmed present beforehand: font renders
+`PibotoLt 18.0`, matching the rest of the desktop — this is the
+acceptance test the fix is judged against, not a cleaned/exported
+environment. `qt_shell.py --render-check` re-run clean, no regressions.
+
+**Unexplained divergence, recorded not resolved**: the 2026-08-05
+measurement (unset = 18.0pt PibotoLt, visually confirmed by B) and the
+2026-08-06 re-measurement of the same condition (9.0pt Sans Serif)
+directly contradict each other. Nothing about the earlier run's
+`XDG_CURRENT_DESKTOP`/`XDG_SESSION_DESKTOP`/`XDG_SESSION_TYPE`/session
+wrapper was recorded anywhere in the repo, so the 2026-08-06 session
+could not diff against it and could not establish what changed. Not
+assumed to mean the earlier reading was wrong — recorded as open in
+`HANDOFF.md`'s matching section.
+
 ## 2026-08-05
 
 ### Record: item A amended, conflict-detecting session.json write filed as a design item

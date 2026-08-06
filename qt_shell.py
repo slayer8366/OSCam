@@ -66,10 +66,9 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
-# Both of these are Linux-only -- setdefault so an explicit value in the
-# environment still wins either way, and both would be meaningless (or
-# wrong) on Mac and Windows, where Qt should be left to pick its own
-# platform and theme.
+# Both of the env-defaults below are Linux-only, and both would be
+# meaningless (or wrong) on Mac and Windows, where Qt should be left to
+# pick its own platform and theme.
 #
 # Force XWayland (xcb) over Qt's native "wayland" QPA platform, before
 # PyQt6 resolves one at QApplication construction time. self.preview (the
@@ -84,19 +83,222 @@ from pathlib import Path
 # native surface stays stuck at its old small size/position regardless).
 # X11 child subwindows (available here via the already-running XWayland,
 # confirmed with QApplication().platformName()) do not have this
-# limitation -- decades-old, fully dynamic subwindow support.
+# limitation -- decades-old, fully dynamic subwindow support. setdefault
+# here (unlike QT_QPA_PLATFORMTHEME below) is correct: an explicit value
+# in the environment should still win, and it does.
 #
-# Default QT_QPA_PLATFORMTHEME to gtk3. labwc doesn't advertise itself in
-# a way Qt maps to gtk3 on its own, so without this Qt falls back to its
-# own built-in default font rather than the desktop's -- and since Qt
-# lays out from font metrics, the whole app then renders smaller than the
-# rest of the desktop. A desktop that cares (KDE, for instance) already
-# exports QT_QPA_PLATFORMTHEME itself, so this only fills the gap where
-# nothing set it. See CHANGELOG.md's "Qt environment defaults" entry for
-# the measured before/after.
+# QT_QPA_PLATFORMTHEME is NOT a setdefault, deliberately -- a setdefault
+# was tried first and never worked on this rig. os.environ.setdefault
+# never overrides a value that is already set, and
+# /usr/bin/setup_env:18 (package raspberrypi-ui-mods, sourced
+# unconditionally by /usr/bin/labwc-pi at session start, before any app
+# ever runs) exports QT_QPA_PLATFORMTHEME=qt5ct -- so the setdefault was
+# a no-op on this machine from the day it landed. Worse, qt5ct has no Qt6
+# build anywhere on this rig (confirmed: only libqgtk3.so exists under
+# the Qt6 platformthemes plugin directory), so Qt6 silently fell back to
+# its own built-in default font, no warning printed anywhere.
+#
+# An earlier version of this fix (2026-08-05) only ever CLEARED an
+# unloadable QT_QPA_PLATFORMTHEME, on the theory that Qt would then
+# auto-detect the one plugin that actually exists. That theory does NOT
+# hold on this desktop -- confirmed on-rig, 2026-08-06, from a plain
+# launch with no environment manipulation, ambient QT_QPA_PLATFORMTHEME=
+# qt5ct confirmed present beforehand: with the var unset, Qt's own
+# factory loader finds libqgtk3.so on disk (visible with
+# QT_DEBUG_PLUGINS=1 -- "Got keys from plugin meta data ... gtk3") but
+# never calls create() on it, and the font stays at the same broken
+# 9.0pt "Sans Serif" fallback as leaving qt5ct in place. Auto-
+# instantiation of an available-but-unnamed theme plugin only happens
+# when XDG_CURRENT_DESKTOP matches a short internal list Qt ships
+# (QGenericUnixTheme's desktop-name heuristics), and this rig's value
+# (labwc:wlroots, from XDG_SESSION_DESKTOP=LXDE-pi-labwc,
+# XDG_SESSION_TYPE=wayland, session wrapper lightdm -> labwc) is not on
+# it. Only an explicit QT_QPA_PLATFORMTHEME=gtk3 measured 18.0pt
+# PibotoLt, the correct desktop-matching font.
+#
+# This contradicts an earlier on-rig reading (recorded only in this
+# comment, not in CHANGELOG.md) of QT_QPA_PLATFORMTHEME unset = 18.0pt
+# PibotoLt, visually confirmed by B, with nothing else about that
+# session's environment recorded anywhere in the repo to compare
+# against. The 2026-08-06 reboot-fresh session that measured the
+# contradiction above could not establish what differed -- no
+# XDG_CURRENT_DESKTOP/XDG_SESSION_DESKTOP/XDG_SESSION_TYPE/session-
+# wrapper values were recorded for the earlier run, so there is nothing
+# to diff against. Recorded here as an unexplained divergence, not
+# resolved, and not assumed to mean the earlier reading was simply
+# wrong -- if a future session can explain it, replace this paragraph.
+#
+# Given clearing alone is confirmed insufficient here,
+# _ensure_loadable_platformtheme below now explicitly SETS
+# QT_QPA_PLATFORMTHEME when the current value is missing or names a
+# plugin this Qt installation cannot load -- but only ever to "gtk3",
+# and only when a plugin actually registering that key was independently
+# verified present (same CBOR parsing this file already does to check
+# the current value). This is a verified substitution, not a blind
+# hardcode: on a machine where libqgtk3 is absent, this function will
+# not invent a name for it. A value naming a plugin that DOES exist is
+# left alone -- a user who set a working theme keeps it. Whenever plugin
+# existence can't be determined, the value is also left alone, with a
+# warning to stderr -- inconclusive is not the same as broken or fixed.
+# See CHANGELOG.md's "Qt environment defaults" entries for the full
+# measured history, including the sandbox-vs-rig correction and this
+# fix's own on-rig confirmation.
+def _qt6_plugin_keys(so_path):
+    """Best-effort extraction of a Qt6 plugin's registered keys (the
+    names QT_QPA_PLATFORMTHEME is matched against), parsed directly from
+    the plugin's embedded CBOR metadata (Qt 6's qt_plugin_query_metadata_v2
+    format). PyQt6's own QPluginLoader does not expose metaData() the way
+    PyQt5's did -- confirmed by inspecting dir(QPluginLoader) on this
+    install -- so there is no supported binding call to ask Qt directly;
+    this reads the same bytes Qt itself would. Handles only the shape
+    every platformtheme plugin on this machine actually uses: a "Keys"
+    map entry (CBOR short text string, prefix 0x64) followed by a
+    definite-length CBOR array (prefix 0x80-0x97, i.e. 0-23 elements) of
+    short text strings (prefix 0x60-0x77, i.e. 0-23 bytes each) -- real
+    theme-plugin key lists are one or two short names, never longer.
+    Returns None, not an empty list, whenever this shape isn't found, so
+    a caller can tell "confirmed no keys" apart from "could not parse"
+    and treat the latter as inconclusive, never as "does not exist"."""
+    try:
+        data = so_path.read_bytes()
+    except OSError:
+        return None
+    idx = data.find(b"\x64Keys")
+    if idx < 0:
+        return None
+    pos = idx + 5
+    if pos >= len(data):
+        return None
+    header = data[pos]
+    if not (0x80 <= header <= 0x97):
+        return None
+    count = header - 0x80
+    pos += 1
+    keys = []
+    for _ in range(count):
+        if pos >= len(data):
+            return None
+        b = data[pos]
+        if not (0x60 <= b <= 0x77):
+            return None
+        n = b - 0x60
+        pos += 1
+        if pos + n > len(data):
+            return None
+        keys.append(data[pos:pos + n].decode("utf-8", "replace"))
+        pos += n
+    return keys
+
+
+def _qt6_platformthemes_dirs():
+    """Where this machine's Qt6 platformtheme plugins might live --
+    WITHOUT importing anything from PyQt6. That was the first version of
+    this function, using QLibraryInfo.path() to find the directory, and
+    it looked right (the stderr line printed, naming the correct
+    directory) but the font stayed wrong: merely importing PyQt6.QtCore,
+    before QApplication exists, turned out to be enough for Qt to
+    snapshot QT_QPA_PLATFORMTHEME internally, so the later os.environ
+    write in _ensure_loadable_platformtheme had nothing left to affect.
+    Confirmed on-rig by fixing exactly this and re-measuring (see
+    CHANGELOG.md). Respects QT_PLUGIN_PATH if the environment already
+    names one (a genuine Qt convention for relocated installs); otherwise
+    globs the standard Debian/Ubuntu/Raspberry Pi OS multiarch layout
+    (/usr/lib/<triplet>/qt6/plugins/platformthemes) without assuming a
+    specific triplet. Returns whatever directories actually exist --
+    callers must still treat "found nothing" as inconclusive, not as
+    "confirmed no plugins": an install layout this function doesn't know
+    about is a real possibility, not proof of absence."""
+    dirs = []
+    qt_plugin_path = os.environ.get("QT_PLUGIN_PATH")
+    if qt_plugin_path:
+        for p in qt_plugin_path.split(os.pathsep):
+            d = Path(p) / "platformthemes"
+            if d.is_dir():
+                dirs.append(d)
+    dirs += sorted(Path("/usr/lib").glob("*/qt6/plugins/platformthemes"))
+    return dirs
+
+
+def _ensure_loadable_platformtheme():
+    """Make QT_QPA_PLATFORMTHEME name a platformtheme plugin this Qt
+    installation can actually load, correcting it if not. See the module
+    comment above this function for the full on-rig story, including why
+    an earlier version of this function only ever cleared the value --
+    confirmed on-rig, 2026-08-06, that clearing alone is not enough on
+    this desktop.
+
+    1. If the current value already names a verified-loadable plugin,
+       leave it alone -- a user/desktop that set a working theme keeps
+       it.
+    2. Otherwise (missing, or names a plugin confirmed NOT loadable),
+       set it to "gtk3" -- but only if a plugin actually registering
+       that exact key was independently confirmed present via the same
+       CBOR parsing case 1 uses. This is a verified substitution, not a
+       blind hardcode: on a machine where libqgtk3 is absent, this never
+       invents a name for it.
+    3. If plugin existence can't be confidently determined (no
+       platformthemes directory found, or a plugin file could not be
+       parsed), leave the value exactly as found and warn to stderr --
+       inconclusive is not the same as broken or fixed.
+
+    Never raises: this runs at import time, long before QApplication
+    exists to report anything, so any failure here degrades to "leave
+    the value alone" rather than blocking the whole module."""
+    name = os.environ.get("QT_QPA_PLATFORMTHEME")
+    try:
+        plugin_dirs = _qt6_platformthemes_dirs()
+        if not plugin_dirs:
+            raise RuntimeError("no Qt6 platformthemes plugin directory found")
+        all_parsed = True
+        matched_key = None   # exact-cased key matching `name`, if any
+        gtk3_key = None      # exact-cased key matching "gtk3", if any
+        for plugins_dir in plugin_dirs:
+            for so in sorted(plugins_dir.glob("*.so")):
+                keys = _qt6_plugin_keys(so)
+                if keys is None:
+                    all_parsed = False
+                    continue
+                for k in keys:
+                    if name and k.lower() == name.lower():
+                        matched_key = k
+                    if k.lower() == "gtk3":
+                        gtk3_key = k
+    except Exception as exc:
+        print("QT_QPA_PLATFORMTHEME={!r}: could not determine whether a "
+              "matching platformtheme plugin exists ({}); leaving it as "
+              "found.".format(name, exc), file=sys.stderr)
+        return
+    if name and matched_key:
+        return   # already names a real, loadable plugin
+    if not all_parsed:
+        print("QT_QPA_PLATFORMTHEME={!r}: at least one platformtheme plugin "
+              "under {} could not be parsed, so its own key is unknown; "
+              "leaving the value as found rather than guess."
+              .format(name, plugin_dirs), file=sys.stderr)
+        return
+    if gtk3_key:
+        os.environ["QT_QPA_PLATFORMTHEME"] = gtk3_key
+        print("QT_QPA_PLATFORMTHEME={!r} named no installed Qt6 "
+              "platformtheme plugin (checked {}); set to {!r}, the one "
+              "verified-installed plugin this function knows to prefer. "
+              "Clearing alone does not work on this desktop -- Qt only "
+              "auto-instantiates a platformtheme plugin when "
+              "XDG_CURRENT_DESKTOP matches a small internal list, and "
+              "this desktop's labwc:wlroots is not on it."
+              .format(name, plugin_dirs, gtk3_key), file=sys.stderr)
+        return
+    if name:
+        del os.environ["QT_QPA_PLATFORMTHEME"]
+        print("QT_QPA_PLATFORMTHEME={!r} named no installed Qt6 "
+              "platformtheme plugin (checked {}), and no gtk3 plugin was "
+              "found to substitute either; cleared it since leaving an "
+              "unloadable name in place is no better."
+              .format(name, plugin_dirs), file=sys.stderr)
+
+
 if sys.platform.startswith("linux"):
     os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
-    os.environ.setdefault("QT_QPA_PLATFORMTHEME", "gtk3")
+    _ensure_loadable_platformtheme()
 
 import numpy as np
 
