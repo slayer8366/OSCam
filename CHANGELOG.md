@@ -7,6 +7,198 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-06
 
+### Measurement: full Q1-Q6 chain, brackets 2026-08-03_230856 and 2026-08-04_013732, level 5, run independently
+
+Branch `claude/qt-platformtheme-plugin-check`, HEAD `6297efa` throughout —
+unchanged by this work (measurement only; no repo code touched, no branch
+switched, no push). Script: `~/scratch/measure_bracket_full_q1q6.py`
+(outside the repo, not committed), written fresh this session — the task's
+initial premise ("the script is written") did not hold: neither this
+script nor any script matching a Q1-gain/Q6-channel shape existed
+anywhere on disk (`~/scratch`'s 11 existing scripts, all read before
+writing this one as worked examples per the task's own instruction, all
+target the older `2026-08-03_050600` bracket specifically and were not
+reused). Corrected in-conversation before any measurement ran, not
+discovered mid-build.
+
+Both brackets confirmed to exist in full on this Pi before running:
+`~/captures/<bracket>/` (8 level-5 science raws, 8 level-5 dark raws,
+`master_5.tif`) and `~/provenance/<bracket>/` (8 level-5 `.meta.json`
+sidecars, `session.json`) present for both. Both brackets' own
+`session.json` confirms `flat_correction: skipped (no flat_ frames in
+the flat library)` and `dark_correction: applied (5 levels)` — the
+dark-subtraction-only path, no flat, matching what Q2 below re-derives.
+`frame_average.py`/`hdr_from_session.py` re-read at this HEAD before
+writing the script, to confirm two load-bearing, non-bracket-specific
+facts still hold and haven't drifted since the `050600` investigation:
+`hdr_from_session.py` never passes `--gamma` (confirmed: the string
+`gamma` does not appear in the file at all), and `frame_average.py`'s
+own `--gamma`/`--sigma-clip` argparse defaults are both `None`.
+
+**Q1 and Q6 first, both brackets, per the task's own instruction — this
+is the independence check, read before the rest:**
+
+| bracket | true AnalogueGain (all 8 level-5 `.meta.json` sidecars) | variance | channel that saturates first |
+|---|---|---|---|
+| `2026-08-03_230856` | **4.0** | 0.0 | **G@(1,0)** (69.520139% clipped in ANY of 8; G@(0,1) close behind at 69.375681%) |
+| `2026-08-04_013732` | **4.0** | 0.0 | **G@(1,0)** (71.147553% clipped in ANY of 8; G@(0,1) close behind at 70.997645%) |
+
+**Neither bracket matches `3.2820513248443604`** (the `2026-08-03_050600`
+bracket's own true `AnalogueGain`, established in an earlier entry in
+this file). Both new brackets read exactly `4.0`, identical to each
+other, zero variance across each burst — a different, rounder gain than
+the reference bracket, and the same value as one another. **Q6 also
+agrees between the two**: `G@(1,0)` saturates first (highest
+clipped-in-ANY fraction) in both, `B@(0,0)`/`R@(1,1)` barely clip in
+either (order of magnitude smaller), consistent with the reference
+bracket's own finding that only the two green positions clip
+meaningfully at this exposure level. **On these two axes the brackets
+behave as two independent conditions, not one condition sampled
+twice** — same gain as each other, but a materially different gain from
+the reference bracket, so this pair does not, by itself, establish
+whether gain varies the earlier-established clip/exclusion geometry;
+it establishes that these two are a matched pair at one (different)
+gain, cross-checked against each other rather than against `050600`.
+
+**Q1 (identity, frame counts, CFA, gain) — full detail:**
+
+Both brackets: 8 level-5 science raws, 8 level-5 dark raws, 8 level-5
+`.meta.json` sidecars — all present, counts asserted in-script. CFA grid
+read from each bracket's own DNG `CFAPattern`/`CFARepeatPatternDim` tags
+(not assumed): both `[['B','G'],['G','R']]`, `CFAPattern` raw bytes
+`b'\x02\x01\x01\x00'`, `BlackLevel` `(4096,4096,4096,4096)`, `WhiteLevel`
+`65535` — identical to the reference bracket. `AnalogueGain`: `4.0` for
+all 16 sidecars across both brackets (8 each), variance `0.0` in both.
+
+**Q2 (independent re-derivation of `master_5.tif` vs the file on disk):**
+exact residual **zero at all 12,330,240 pixels, both brackets** —
+matching the reference bracket's own exact-zero result.
+
+**DISCOVERED, methodological, worth keeping:** a first attempt at Q2
+used direct arithmetic (`mean_sci - mean_dark`, then `rint`/clip) and
+reported 19-20 nonzero-residual pixels per bracket, every one off by
+exactly 1 ADU at an exact `x.5` rounding tie. That was an artifact of
+this script's own float ordering, not a property of either bracket's
+data: `frame_average.py`'s `average_burst()` scales by a **precomputed
+reciprocal** (`final_scale = 1.0/dmax`, then `mean * final_scale`), not
+a direct division (`mean / dmax`) — those round differently at exact
+IEEE754 ties. Rewriting the script to match that exact operation order
+(multiply by the precomputed reciprocal, not divide) reproduced exact
+zero-residual at every pixel in both brackets. Recorded here rather than
+silently fixed, because the wrong order produced a plausible, nonzero,
+structured-looking result (always off by 1, always at the same kind of
+tie) that a less careful read could have reported as a real finding
+about these two brackets rather than a bug in the measuring script.
+
+**Q3 (predicted floor `65535 - max(dark_master)` over all-8-clipped
+pixels, vs that population's actual `min(master)`), per CFA position —
+exact match, both brackets, zero difference at all four positions:**
+
+| position | `230856` predicted / actual | `013732` predicted / actual |
+|---|---|---|
+| B@(0,0) | 61245 / 61245 | 61233 / 61233 |
+| G@(0,1) | 60997 / 60997 | 61013 / 61013 |
+| G@(1,0) | 60953 / 60953 | 60955 / 60955 |
+| R@(1,1) | 61365 / 61365 | 61349 / 61349 |
+
+Same exact-derivability relationship the reference bracket's own Q6
+established (`master(p) = 65535 - dark_master(p)` for any pixel clipped
+in all 8 raws) — reconfirmed here on two different brackets, not
+assumed to carry over.
+
+**Q4 (never-clipped max vs Q3's floor, sign stated plainly):**
+
+| position | `230856` | `013732` |
+|---|---|---|
+| B@(0,0) | SEPARATED, 257 ADU below floor | SEPARATED, 357 ADU below floor |
+| G@(0,1) | SEPARATED, 113 ADU below floor | **OVERLAP, 33 ADU above floor** |
+| G@(1,0) | **OVERLAP, 123 ADU above floor** | SEPARATED, 35 ADU below floor |
+| R@(1,1) | SEPARATED, 815 ADU below floor | SEPARATED, 601 ADU below floor |
+
+**This is the one place the two brackets disagree in kind, not just in
+number.** `230856` overlaps at G@(1,0) and separates at G@(0,1);
+`013732` does the reverse — overlaps at G@(0,1), separates at G@(1,0).
+B@(0,0) and R@(1,1) separate cleanly (never-clipped max well below the
+floor) in both. Reported as measured; the reference bracket's own Q6
+already noted that the never-clipped maximum is scene-dependent rather
+than arithmetic-derived, so a small, sign-flipping disagreement between
+two brackets at both green positions is consistent with that, not a
+contradiction of it — not investigated further here, per the task's
+scope.
+
+**Q5 (what `58995` excludes, and how much of that was never clipped in
+any raw), per CFA position:**
+
+| position | `230856` excluded / never-clipped-among-excluded | `013732` excluded / never-clipped-among-excluded |
+|---|---|---|
+| B@(0,0) | 3.472893% / 20.045958% of excluded | 3.969460% / 19.212004% of excluded |
+| G@(0,1) | 69.764384% / 0.665464% of excluded | 71.401303% / 0.670608% of excluded |
+| G@(1,0) | 69.898234% / 0.644419% of excluded | 71.547837% / 0.658761% of excluded |
+| R@(1,1) | 0.066244% / 50.587659% of excluded | 0.077436% / 51.026393% of excluded |
+
+Same qualitative shape in both brackets: at the two green positions,
+almost everything the threshold excludes was genuinely clipped in at
+least one raw frame (well under 1% never-clipped); at B/R, where very
+little is excluded in absolute terms, roughly a fifth to a half of that
+small excluded population was never clipped in any raw — consistent
+with a low-population edge effect at both positions in both brackets,
+not a new pattern specific to one.
+
+**Q6 (clipping fractions, all four CFA positions) — full table:**
+
+| position | `230856` ANY / ALL | `013732` ANY / ALL |
+|---|---|---|
+| B@(0,0) | 2.842702% / 0.359312% | 3.276692% / 0.498287% |
+| G@(0,1) | 69.375681% / 66.248118% | 70.997645% / 67.761211% |
+| G@(1,0) | 69.520139% / 66.435203% | 71.147553% / 67.958969% |
+| R@(1,1) | 0.039123% / 0.000162% | 0.045028% / 0.000227% |
+
+`013732` clips consistently more than `230856` at every position (both
+green positions roughly 1.5-2 percentage points higher ANY-clip, B/R
+also both higher) — same channel ordering, same rough shape, but not
+identical magnitudes; the two brackets are close in time (2h28m36s
+apart, both same night) but not the same capture.
+
+**DISCOVERED, re: the task's "second bracket a month older" instruction
+— HANDOFF's claim does not resolve to anything on disk, reconfirmed
+directly, not taken on the task's word:**
+
+`HANDOFF.md`'s current text (the "One number worth a line" paragraph
+near the end of "Open right now") says the ~61000 ceiling was
+"reproduced on a second, older bracket" without naming it or a
+timeframe — the task's framing of that as "a month older" was the
+task-writer's own recollection, not a quote from the file, and it does
+not resolve to anything on this Pi. Checked directly: every capture
+folder under `~/captures/` was enumerated
+(`2026-07-23_131013`, `2026-07-25_171402`, `2026-07-25_175820`,
+`2026-07-28_135209`, `2026-07-28_141902`, `2026-08-03_042053`,
+`2026-08-03_050600`, `2026-08-03_230856`, `2026-08-04_013732`, plus six
+more from `2026-08-05`) and every one that isn't one of this
+investigation's own three brackets was checked for the shape an HDR
+bracket actually has (a `dark/` subdirectory and a `master_5.tif`) —
+**none of them have either.** The July-dated folders and
+`2026-08-03_042053` are single-shot snap captures (`single_master.tif`
+or `snap_frame_*.dng`/`.jpg`, no `dark/`, no `master_N.tif`), not HDR
+brackets at all, let alone a "month older" one — the closest, July 28,
+is 6 days before `2026-08-03_050600`, not a month. **The only three
+HDR-bracket-shaped sessions that exist anywhere in this archive are
+`2026-08-03_050600`, `2026-08-03_230856`, and `2026-08-04_013732`** —
+exact deltas from `050600`, computed directly rather than estimated:
+`230856` is 18:02:56 later, `013732` is 20:31:32 later (the task's own
+"18 and 19 hours" figure is close but not exact — recorded here to the
+second rather than repeating the rounded estimate). `HANDOFF.md` is not
+edited by this entry, per instruction — the correction lives here, in
+the record, first.
+
+No file inside the repo was modified except this entry. Script,
+raw/master/provenance data, and all measurement output are outside the
+repo (`~/scratch/`, `~/captures/`, `~/provenance/`) and untouched by
+this entry beyond being read. `profile.json`/`calib/` excluded as
+always; not pushed. Branch left exactly as found:
+`claude/qt-platformtheme-plugin-check`, unchanged HEAD until this
+entry's own commit — this is where the working tree is left for B to
+run the instrument from.
+
 ### Record build: add CLAUDE.md
 
 Built to the intent recorded below. `CLAUDE.md` added at the repo root
