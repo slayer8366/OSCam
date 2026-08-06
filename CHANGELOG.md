@@ -7,6 +7,29 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-06
 
+### Record intent: add CLAUDE.md
+
+`CLAUDE.md` does not currently exist in this repository — confirmed in
+the prior GLOSSARY.md build entry (`2297d41`) by `find`, empty result.
+The user has now supplied its content directly (an upload, "a recent
+claude.md copy"), and confirmed in plain text that adding it to the
+repo is wanted, per this project's own no-interactive-widgets
+convention (asked, stated the default, got a plain-text yes).
+
+**Baseline (the scope this build is measured against):** one new file,
+`CLAUDE.md`, added at the repo root, content supplied by the user,
+added verbatim. No source file touched. No existing document
+(`PHILOSOPHY.md`, `HANDOFF.md`, `README.md`, `GLOSSARY.md`,
+`CHANGELOG.md`) modified. `CLAUDE.md`'s own text references all five of
+those by name (its "Read before your first change" order plus its
+write-permissions table) — the build entry checks whether those
+references now resolve, since all five already exist in this repo as
+of this commit.
+
+Three-phase commit: this entry (intent, its own commit, nothing else),
+then the file add, then a build entry recording what actually landed
+and the reference-resolution check.
+
 ### Record build: add GLOSSARY.md
 
 Built to the intent recorded below. `GLOSSARY.md` added at the repo
