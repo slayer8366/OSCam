@@ -7,6 +7,48 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-06
 
+### Record build: add GLOSSARY.md
+
+Built to the intent recorded below. `GLOSSARY.md` added at the repo
+root (`415ccde`), 247 lines, byte-identical to the content supplied by
+the user (diffed directly against the upload before committing — exit
+0). No source file touched; no existing document modified — confirmed
+by the intent commit and this file-add commit each touching exactly
+one file. The "Unverified, to be closed" section landed verbatim, not
+verified or closed in this pass, per the intent's explicit deferral.
+
+**Reference-resolution check, run after the add:**
+
+- Every occurrence of `GLOSSARY` in the repo's tracked `.md` files:
+  `GLOSSARY.md` itself (its own title) and five lines in this file's
+  own recent entries (this intent/build pair plus three prior
+  measurement entries that noted the file's prior absence). **No other
+  document in this repository — `README.md`, `PHILOSOPHY.md`,
+  `HANDOFF.md`, `SWEEP_CHECKS.md`, `FUNCTION_INDEX.md` — references
+  `GLOSSARY.md` anywhere.** There was no broken reference to fix by
+  adding the file; the task's premise that a reference needed
+  resolving does not hold for anything actually committed to this
+  repo.
+- `CLAUDE.md`: **does not exist anywhere in this repository** —
+  confirmed by `find . -iname "CLAUDE.md"`, empty result, both before
+  and after this add. No `.md` file in the repo references it by name
+  either, with one exception: this entry and the intent entry above
+  it, which describe its absence — that's documentation of a gap, not
+  a live navigational reference expecting a target. The task's premise
+  ("`CLAUDE.md`'s read order already points at [GLOSSARY.md]") does not
+  match this repository's actual state; reported here rather than
+  silently assumed or worked around. If `CLAUDE.md` is meant to exist,
+  creating it is separate, unstarted work — not attempted here, since
+  it was not part of this build's stated scope (one new file,
+  `GLOSSARY.md`, nothing else).
+
+No file inside the repo was modified by this build beyond the two
+commits it names (intent: `98946a7`; file add: `415ccde`) and this
+entry's own commit. `profile.json`/`calib/` excluded as always; not
+pushed. Branch left exactly as found:
+`claude/qt-platformtheme-plugin-check` — this is where the working
+tree is left for B to run the instrument from.
+
 ### Record intent: add GLOSSARY.md
 
 `GLOSSARY.md` does not currently exist in this repository — confirmed
