@@ -7,6 +7,132 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-06
 
+### Measurement: why the master-domain smear band is narrower than global dark variation predicts
+
+Branch `claude/qt-platformtheme-plugin-check`, HEAD `950ba7f` throughout
+— unchanged by this work (measurement/analysis only; no repo code
+touched, no branch switched). Script:
+`~/scratch/measure_smear_band_origin.py` (outside the repo, not
+committed; `scipy.ndimage.label`, confirmed available at 1.10.1, used
+for connected-component counting instead of a hand-rolled flood fill).
+
+**Q1 — prediction (65535 − dark_master(p)) for pixels clipped in all 8
+level-5 science frames:**
+
+| position | dark_master at these px: min/max/mean/std | predicted master: min/max/mean/std |
+|---|---|---|
+| G@(0,1) | 3754.000 / 4434.000 / 4118.208 / 22.835 | **61101.000** / 61781.000 / 61416.792 / 22.835 |
+| G@(1,0) | 3864.000 / 4390.000 / 4118.332 / 22.805 | **61145.000** / 61671.000 / 61416.668 / 22.805 |
+| B@(0,0), R@(1,1) | n=0 (no clipped-all-8 pixels at these positions) | — |
+
+Predicted min/max match the actual clipped-all-8 min/max reported in
+the prior two entries exactly (61101/61781 and 61145/61671).
+
+**Q2 — residual (actual master value − Q1 prediction), per pixel:**
+**exactly zero for all 1,399,224 (G@(0,1)) and 1,412,168 (G@(1,0))
+clipped-all-8 pixels** — min, max, mean, std, median all `0.000000`;
+every single residual value falls in one bin (`+0.000`, count = the
+full population). Not "near zero" — exactly zero, `int32` difference
+after casting both sides consistently. Extended to confirm it isn't an
+artifact of the clipped subset: re-derived the entire `master_5.tif`
+independently (all 12,330,240 pixels, all four CFA positions, same
+mean-of-8 arithmetic) and diffed against the real file on disk —
+**residual min/max/mean: 0 / 0 / 0.0, zero nonzero pixels out of
+12,330,240.** No spatial structure to report because there is no
+residual to have structure — row/column correlation is `nan` (constant
+input to `corrcoef`, correctly undefined, not silently reported as 0).
+
+**Q3 — dark master spatial variation restricted to the clipped-all-8
+population, vs. the global figure:**
+
+| position | global range (min–max) | restricted-to-clipped-all-8 range (min–max) | reduction |
+|---|---|---|---|
+| G@(0,1) | 970 ADU (3754–4724) | **680 ADU (3754–4434)** | 290 ADU (~30%) |
+| G@(1,0) | 856 ADU (3864–4720) | **526 ADU (3864–4390)** | 330 ADU (~39%) |
+
+Restricting to the clipped population's own locations does narrow the
+predictor, by roughly 30-39%. **It does not explain the measured
+35/133 ADU gap on its own** — 680 and 526 ADU are still, respectively,
+~19x and ~4x the measured gap width. Reported as a partial, not a
+full, explanation, per instruction.
+
+**Q4 — spatial layout:**
+
+| population | position | n | fraction of area | bbox (rmin,rmax,cmin,cmax) | connected components (4-conn) | top component sizes |
+|---|---|---|---|---|---|---|
+| clipped-all-8 | G@(0,1) | 1,399,224 | 0.453916 | (0, 1519, 2, 2027) | 5908 | 526040, 351085, 338063, 37352, 14888, ... |
+| clipped-all-8 | G@(1,0) | 1,412,168 | 0.458115 | (0, 1519, 0, 2027) | 5715 | 530468, 351513, 343672, 52355, 20198, ... |
+| never-clipped, master > 60000 | G@(0,1) | 5,536 | 0.001796 | (0, 1519, 0, 2027) | 5265 | mostly size 3, thousands of components |
+| never-clipped, master > 60000 | G@(1,0) | 5,658 | 0.001835 | (0, 1519, 4, 2026) | 5381 | mostly size 3, thousands of components |
+
+The clipped-all-8 population's bounding box spans essentially the
+entire frame at both positions (nearly all 1520 rows, nearly all 2028
+columns) — **not confined to a small region**, despite covering "only"
+45.4%/45.8% of area. It does form a small number of large connected
+blobs (the top 3 components account for roughly 1.2M of the ~1.4M
+clipped pixels at each position) plus a long tail of thousands of tiny
+components. The never-clipped->60000 population is the opposite shape:
+sparse (0.18% of area), thousands of components, nearly all size 3 —
+consistent with isolated noise-boundary pixels sitting at the edge of
+the bright region rather than a distinct bright feature of their own.
+
+**Q5 — re-traced arithmetic, dtype and value range at every stage
+(level 5, whole frame, both science and dark bursts), quoting the same
+code cited in the earlier pipeline-trace entry:**
+
+| stage | code | dtype | science range | dark range |
+|---|---|---|---|---|
+| 1. raw DNG, per frame | `_checked_load`, `frame_average.py:197` | `uint16` | [3904, 65535] | [2880, 5504] |
+| 2. `to_work` cast | `a.astype(np.float64)`, `frame_average.py:241` (gamma is `None`) | `float64` | [3904.0, 65535.0] | [2880.0, 5504.0] |
+| 3. `acc` (sum over 8) | `frame_average.py:249-251` | `float64` | [34992.0, 524280.0] | [30032.0, 37792.0] |
+| 4. `mean = acc / n` | `frame_average.py:252` | `float64` | [4374.0000, 65535.0000] | [3754.0000, 4724.0000] |
+| 5. `× final_scale (1/65535)` | `frame_average.py:242`, `:291` | `float64` | [0.06674296, 1.00000000] | [0.05728237, 0.07208362] |
+| 6. `corrected = sci01 − dark01` | `frame_average.py:321` | `float64` | [0.00396735, 0.94271763] (combined) | — |
+| 7. final cast | `np.clip(np.rint(corrected*65535.0),0,65535).astype(np.uint16)`, `frame_average.py:498` | `uint16` | [260, 61781] | — |
+
+Stage 6's clip-accounting (`frame_average.py:461-462`, counted the same
+way the real code counts it): 0 pixels `< 0.0`, 0 pixels `> 1.0`, of
+12,330,240 — this bracket never exercises `frame_average.py`'s own
+over/under-range clipping at level 5 at all; every pixel's `corrected`
+value already lands inside `[0, 1]` before the final cast.
+
+**Confirmed, not assumed: the dark master used is the one measured in
+the prior entries, and it is subtracted per-pixel, not as a scalar.**
+Proof is the Q2 result itself — a scalar (single-number) dark
+subtraction could not reproduce `master_5.tif` exactly at every one of
+12,330,240 pixels whose individual dark values range over hundreds of
+ADU; only a true per-pixel subtraction, using exactly the per-pixel
+dark master this and the prior entries computed, reproduces the file
+byte-for-byte.
+
+**Q6 — is the boundary derivable from the arithmetic, or empirical?**
+What the numbers support: the clipped-all-8 population's master values
+are **exactly and deterministically derivable** from the arithmetic —
+`master(p) = 65535 − dark_master(p)` for any pixel clipped in all 8
+raw frames, zero residual, confirmed pixel-for-pixel across the entire
+frame, not just that subset. What the numbers do **not** establish:
+the specific 35/133 ADU gap between the clipped-all-8 minimum and the
+never-clipped maximum is not shown to be derivable from dark-master
+statistics alone — restricting the dark variance to the clipped
+population's own pixels only partially narrows the predicted spread
+(970→680 / 856→526 ADU), leaving a predicted range still far wider than
+the measured gap. The never-clipped population's own maximum value is
+`mean_sci(p) − dark_master(p)` for a pixel that happens never to reach
+full saturation in any of 8 frames — a real, scene-dependent quantity,
+not of the "65535 minus dark" form the clipped side has. Whether the
+gap's specific width is a general property of this measurement chain or
+a fact particular to this bracket's own scene content is not
+established here — that would require comparing against a second
+bracket, not attempted in this entry.
+
+No file inside the repo was modified except this entry.
+`frame_average.py`/`hdr_merge.py` untouched, no `--sigma-clip`, no
+`white_level`/`--sat` change anywhere, no threshold proposed.
+`profile.json`/`calib/` excluded as always; not pushed. Branch left
+exactly as found: `claude/qt-platformtheme-plugin-check`, unchanged
+HEAD until this entry's own commit — this is where the working tree is
+left for B to run the instrument from.
+
 ### Measurement: independent reconfirmation of clip/unclip separation, plus --sat history
 
 Fresh-context task: read `PHILOSOPHY.md` in full, `HANDOFF.md`, and a
