@@ -7,6 +7,361 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-06
 
+### Investigation and design proposal: scoping the saturation-detection rework
+
+Branch `claude/qt-platformtheme-plugin-check`, HEAD `6095c9e` throughout —
+unchanged by this work. Investigation only, per instruction: no code
+changes, no numeric threshold chosen, nothing implemented. Environment:
+`raspberrypi`, real `numpy`/`picamera2`, `DISPLAY=:0` — the Pi, confirmed
+before starting, not inferred. This entry is the whole task's outcome
+(investigation + one requested `SWEEP_CHECKS.md` line); work-is-the-outcome
+form, no intent phase, per instruction.
+
+**What was already established** (prior entries, not re-derived here):
+`master = round(clip(mean_sci - mean_dark, 0, 65535))`, exact, zero
+residual on all three brackets; raw-domain saturation is unambiguous
+(`== 65535`, identical test every CFA position); the clipped-population's
+floor in the master domain is exactly derivable (`65535 - dark_master`)
+but its position relative to unclipped signal is scene-dependent and
+flips sign between brackets; `sat_frac` has defaulted to `0.95` since the
+initial commit and has never been overridden by any caller in this repo's
+history; at the operative cutoff (58995 for the `62100`-white-level
+brackets), roughly 8% of never-raw-clipped green pixels are excluded.
+
+---
+
+**Q1 — the gain discrepancy.** Not a different capture path, not a
+manual setting, not a different sidecar field. **Genuinely the same
+mechanism landing on a round number.**
+
+All three brackets share identical `session.json` shape — same `mode`
+(`4056:3040:12:U`), same `tool` (`picamera2`), same `kind` (`hdr`) — and
+all three run through the same code path: `qt_shell.py`'s
+`_enforce_exposure_lock` (`qt_shell.py:4276-4301`) reads the AGC-metered
+exposure via `camera.read_exposure()`, which rounds `AnalogueGain` to 4
+decimal places (`camera_backend.py:1130`, `round(float(md.get
+("AnalogueGain", 1.0)), 4)`) — this rounded snapshot becomes
+`session.json`'s `locked_settings.analogue_gain`. `apply_exposure_lock`
+(`camera_backend.py:1112-1122`) then sets that rounded value as an
+explicit fixed control, `controls["AnalogueGain"] = float(locked
+["analogue_gain"])`. The per-frame `.meta.json` sidecar's `AnalogueGain`
+is never derived from `locked_settings` — it comes straight from that
+frame's own capture request metadata (`provenance.py:307`,
+`_dump_meta(sidecar, result.metadata or {})`), i.e. whatever the sensor's
+analog-gain register actually achieved for the *requested* value, which
+is quantized to discrete hardware steps.
+
+| bracket | `locked_settings.analogue_gain` (requested, rounded 4dp) | sidecar `AnalogueGain` (achieved, all 8 frames) | gain-register value (`gain = 1024/(1024-reg)`), confirmed by exact `float32→float64` bit match |
+|---|---|---|---|
+| `2026-08-03_050600` | 3.2926 | **3.2820513248443604** | `reg=712` → `1024/312 = 3.282051282051282`, float32-widened = `3.2820513248443604` (exact match) |
+| `2026-08-03_230856` | 3.9844 | **4.0** | `reg=768` → `1024/256 = 4.0` (exact) |
+| `2026-08-04_013732` | 4.0000 | **4.0** | `reg=768` → `1024/256 = 4.0` (exact) |
+
+The `1024/(1024-reg)` form is a standard Sony-sensor analog-gain-register
+formula, not read from this repo's own source (this project's driver
+layer, `camera_backend.py`/`imx477.py`, never exposes register-level
+detail — `AnalogueGain` crosses the seam as libcamera's own computed
+float, per the driver-boundary rule). Treated as a hypothesis and
+checked, not assumed: brute-forced every `reg` in `[0, 1024)`, widened
+each candidate through `float32` (matching how libcamera reports the
+value and how Python's `json.dumps`/`float()` would widen it losslessly),
+and found an **exact** bit-for-bit match at `reg=712` for `050600`'s
+figure — a 1-in-~1024 coincidence if the formula were wrong, and it also
+correctly reproduces `230856`/`013732`'s `4.0` at `reg=768`, and (checked
+for extra corroboration, not part of the three brackets under
+investigation) the unrelated `calib/allenii100x/2026-07-01_111751`
+session's locked gain `7.8168` at `reg=893` (`1024/131 =
+7.816793918609619`, rounds to `7.8168` exactly). Three independent
+sessions, one formula, zero misses.
+
+**Conclusion: `4.0` is a real, exactly-achievable hardware gain step**
+(confirmed independently by `013732` requesting exactly `4.0` and
+achieving exactly `4.0` — no rounding needed, because it was already on
+the grid), and `230856`'s AGC-metered request (`3.9844`, a real but
+off-grid value) snapped to that same nearest achievable step. `050600`'s
+request (`3.2926`) snapped to a different, odder-looking but equally
+real step. **This means gain 4.0 for `230856`/`013732` is not evidence
+of a different capture path — it is the ordinary AGC-plus-hardware-
+quantization mechanism landing on a value that happens to look round in
+decimal.** It does, however, confirm what the prior entry already flagged
+by a different route: `230856`/`013732` share a gain that differs from
+`050600`'s, so they are not a third independent gain sample — they are a
+second one.
+
+---
+
+**Q2 — where saturation is still knowable, raw-to-merge, file:line.**
+
+1. `camera_backend.py:1201-1204` — `request = self._picam2.capture_request()`
+   / `request.save_dng(str(dng))`. The sensor's raw readout is exact here,
+   in the libcamera request buffer, but this codebase never inspects it
+   pixel-wise before serializing it — it goes straight to DNG.
+2. **Raw DNG on disk** (`N_frame_NNNN.dng`, one per captured frame). Exact,
+   unprocessed, `uint16`. `value == 65535` is ground truth, identical test
+   at every CFA position, no dark-subtraction smear yet. First point this
+   codebase (or a scratch script) can actually inspect per-pixel.
+3. `frame_average.py:250-251`, inside `average_burst()`'s streaming loop:
+   `for f in files: acc += to_work(_checked_load(f, ...))`. Each raw
+   frame is loaded ONE AT A TIME (memory-bounded by design, per the
+   function's own docstring at lines 212-215) and is still exact,
+   per-frame, in memory at the moment `_checked_load` returns it —
+   `to_work`'s `float64` cast (line 241, `gamma is None` path) loses no
+   precision for integers ≤65535. **This is the last point a given raw
+   frame's own saturation is knowable without inference.** The very next
+   operation, `acc +=`, sums it into a running accumulator with no
+   per-frame identity preserved.
+4. `frame_average.py:252` (`mean = acc / n`) onward, `:321` (dark
+   subtraction), `:498` (final `master_N.tif` cast) — no saturation
+   information survives past step 3. The mean cannot be inverted to
+   recover which (or how many) of the 8 frames were saturated at a given
+   pixel.
+5. `hdr_merge.py:225` (`a = load_frame(ex["path"])`) reads the MASTER
+   back — already averaged, already smeared. `hdr_merge.py:236`
+   (`clipped = vn >= sat_frac`) is the **current** mechanism's only
+   saturation test, and it runs here, on the smeared value — this is
+   inference from a proxy, not a fact, which is the whole premise of this
+   investigation.
+
+**Last stage without inference: `frame_average.py:250-251`, inside
+`average_burst()`'s existing per-frame streaming loop, before the first
+`acc +=`.** Note this is not necessarily gone forever in every case — if
+the raw DNGs still exist on disk (Keep RAW Images on, not yet archived),
+a second read pass over them recovers the same exact information later.
+That connects directly to Q4 below.
+
+---
+
+**Q3 — cost of carrying it, per viable point. Exact numbers, not
+estimates** (frame geometry `3040×4056` = 12,330,240 px/frame, confirmed
+from `master_5.tif`'s own shape; both brackets' real `master_5.tif`
+sizes on disk checked directly: `230856` 22,161,729 bytes, `013732`
+22,101,925 bytes, deflate-compressed; a raw DNG is 24,661,216 bytes;
+total raw-DNG storage for one full bracket, science+dark, all 5 levels,
+80 frames, measured directly with `du`: 1,972,897,280 bytes ≈ 1881.5
+MiB):
+
+| artifact | granularity | bytes/level | bytes/bracket (5 levels, science only) | where it would live | who reads it |
+|---|---|---|---|---|---|
+| packed 1-bit "clipped in ANY of N raw frames" mask | 1 bit/px | 1,541,280 (1.47 MiB) | 7,706,400 (7.35 MiB) | sibling file next to `master_N.tif` | `hdr_merge.py`'s `merge()`, replacing its `clipped=vn>=sat_frac` inference at line 236 |
+| `uint8` count of frames clipped, 0-N | 1 byte/px | 12,330,240 (11.76 MiB) | 61,651,200 (58.8 MiB) | sibling file next to `master_N.tif` | same, plus preserves the ALL-vs-SOME-vs-NONE distinction this whole investigation's own Q3/Q4 relied on |
+| packed per-frame bitmask, all 8 raw frames, which frame each px clipped in | 1 byte/px (8 bits packed) | 12,330,240 (11.76 MiB) | 61,651,200 (58.8 MiB) | sibling file next to `master_N.tif` | same as the count option, **strictly more informative at identical cost** — a popcount recovers the count, the reverse is not true |
+| unpacked per-frame masks, all 8 raw frames | 8 bytes/px | 98,641,920 (94.1 MiB) | 493,209,600 (470.4 MiB) | sibling file(s) | not recommended — 8x the packed option for the same information |
+
+The packed-per-frame-bitmask row dominates the plain count row: same
+58.8 MiB/bracket, strictly more information (which frame, not just how
+many). Either is ≤3.2% of one bracket's own raw-DNG storage (58.8 /
+1881.5 MiB) — small relative to what's already being kept, if Keep RAW
+Images is on. The dark burst is not included in these totals: dark
+frames run ~4100 ADU, nowhere near 65535, so a symmetric dark-side mask
+would cost the same again for essentially no signal — noted as an
+assumption carried into Q4/Q6, not measured directly here (out of this
+investigation's scope; darks were not clipped in any of the three
+brackets' Q1-Q6 results run today).
+
+---
+
+**Q4 — the provenance question. This is a record-format change, not a
+threshold change, and that has one hard, one-way consequence.**
+
+`session.json`'s `raw_discarded`/`derived_outputs_discarded` fields
+(`qt_shell.py:7690-7756`) confirm: **Keep RAW Images off deletes only
+this capture's own raw frames; `master_N.tif`/`hdr_linear.tif` are always
+retained regardless of the setting** (`qt_shell.py:7735-7738`, asserted
+directly by the existing self-check, not inferred). This is the entire
+shape of the problem: a saturation mask derived from raw frames is,
+structurally, exactly as vulnerable as the raws themselves — it can only
+be computed while they still exist, and (per Q2) **cannot be
+reconstructed from `master_N.tif` alone once they're gone**, because
+averaging is the irreversible step.
+
+Consequences, stated plainly:
+- For a session with raws still on disk (all three of this
+  investigation's own brackets, today, confirmed) — a mask could be
+  **backfilled** retroactively by a one-time script reading the existing
+  raw DNGs. This is possible only because Keep RAW Images happened to be
+  on (or the session hasn't been archived) for these specific sessions,
+  not a general guarantee.
+- For any session with `raw_discarded: true` (Keep RAW Images was off,
+  processing already ran) — a mask is **permanently unrecoverable**.
+  There is no computation that derives it from `master_N.tif` alone; Q2
+  established that fact directly (the streaming mean has no per-frame
+  inverse). This is a genuinely new, one-way loss that does not exist
+  today, because today there is no mask concept to lose — it would only
+  start mattering the moment this feature exists.
+- The asymmetry is uncomfortable: the users most likely to have Keep RAW
+  Images off (saving disk space) are the ones who would most permanently
+  lose the ability to ever get an exact mask for their own past sessions.
+- Whether a mask "becomes part of the provenance record" is a real
+  design question, not just a storage one: this project's own test for
+  provenance inclusion (`PHILOSOPHY.md`'s "Recorded conditions" — could
+  someone later need this to judge whether the number is trustworthy?)
+  answers yes. The existing pattern for large per-pixel artifacts in this
+  codebase is a sibling file next to the image it describes (`.meta.json`
+  next to a raw frame), not an inline JSON blob — `master_N.tif` already
+  carries a small provenance JSON in its `ImageDescription` tag
+  (`hdr_merge.py`'s `try_read_embedded_capture_meta`, `hdr_merge.py:140-157`),
+  which is the wrong shape for a multi-megabyte per-pixel array but the
+  right place for a *summary* (counts per CFA position, whether a mask
+  exists and where).
+
+**This is exactly the fork the task asked about.** Any option that needs
+a *new* raw-derived artifact (the mask options from Q2/Q3) inherits this
+whole provenance/backfill problem for free. Q6's per-session
+dark-derived-threshold option, below, does not — the dark master it
+would read is already computed by every session's existing processing,
+whether or not this rework is ever built, so it carries none of this
+one-way risk.
+
+---
+
+**Q5 — the parameter-collapse blast radius. Reported, not done.**
+
+Every live call site of `sat_frac`/`white_level` (`hdr_merge.py` only —
+`sat_frac` never crosses into any other file):
+
+- `hdr_merge.py:189` — `merge()` signature, both parameters.
+- `hdr_merge.py:199` — docstring pseudocode citing `sat_frac`.
+- `hdr_merge.py:212` — `wl = float(white_level) if white_level is not None else dtype_max(in_dtype)`.
+- `hdr_merge.py:229` — `vn = a.astype(np.float64) / wl`.
+- `hdr_merge.py:236` — `clipped = vn >= sat_frac`, the actual hard-exclusion test.
+- `hdr_merge.py:284,286` — provenance dict fields `white_level`, `sat_frac`. No reader anywhere in this repo consumes `sat_frac` back out of a written file's provenance — confirmed by grep; only this investigation's own scratch scripts and CHANGELOG prose ever read it back, never application code.
+- `hdr_merge.py:322,330,344-347` — `--white-level`/`--sat`/`--white-level-source` argparse, defaults `None`/`0.95`/`None`.
+- `hdr_merge.py:374` — `if not (0 < args.sat <= 1): sys.exit(...)`.
+- `hdr_merge.py:380` — `main()`'s call into `merge()`.
+- `hdr_merge.py:407-417` — output provenance, incl. the documentary `white_level_gain_dependency` note (no equivalent `sat_frac`-reasoning field exists anywhere).
+- `hdr_from_session.py:62` — `MERGE_WHITE_LEVEL_DEFAULT = 65520`.
+- `hdr_from_session.py:201` — the one real caller: `hm += ["--white-level", a.wl, "-o", "hdr_linear.tif"]` — **never appends `--sat`**, so the live default (`0.95`) is what has always actually run, confirmed exhaustively in an earlier entry (`git log --all -S'--sat'` — the string has never been passed non-default in this repo's history).
+- `hdr_from_session.py:421` — `--wl` argparse default = the constant above.
+- `qt_shell.py:402,5972` — comment + `--wl` argparse default, `_hdr_from_session.MERGE_WHITE_LEVEL_DEFAULT if _hdr_from_session else 65520` (a second, literal fallback copy of the same number).
+- `process_wizard.py:61` — `DEFAULT_WHITE_LEVEL = 65520.0`, its own **third** independent copy, feeding `debayer.py --assume-linear` (`process_wizard.py:137,144`) — this is a **different code path** (display-branch normalisation, `debayer.py:580-587`, unrelated to `hdr_merge.py`'s saturation exclusion) that happens to reuse the same number by design. Named here because it shares the *term* `white_level` and would show up in any grep-based blast-radius search, not because it shares `sat_frac`'s actual dependency graph — changing `hdr_merge.py`'s `sat_frac` has zero effect on this constant or vice versa.
+
+**What would change if `sat_frac` were removed and its margin folded
+into `white_level`** (i.e. a new `white_level` chosen as `old_white_level
+× old_sat_frac`, comparison becomes `vn >= 1.0`): for the real brackets
+run today, that means replacing `62100`/`0.95` with a `white_level` of
+`58995` outright. Since no caller has ever passed a non-default `--sat`,
+this specific fold is **numerically a no-op** for every invocation this
+repo has ever actually run — same 58995 cutoff, one fewer parameter, one
+fewer place `hdr_from_session.py` could (but never has) diverge from the
+default. The real cost is conceptual, not behavioral: it collapses two
+independently-reasoned quantities ("the sensor's physical ceiling" and
+"how much margin below it accounts for the raw-to-master smear") into
+one number, and there is no `sat_frac_source`-equivalent field today to
+carry the margin's own reasoning forward once it disappears into
+`white_level`.
+
+**What would change if `sat_frac` were simply set to `1.0`** (parameter
+kept, value changed, nothing folded): `clipped` becomes `vn >= 1.0`, i.e.
+`a >= wl` — exclusion only at or above `white_level` itself (`62100`),
+not at `58995`. This is **not** equivalent to the fold above, and it is
+not a no-op: both brackets' own Q3 floors measured today (`60953-61365`
+ADU across all four CFA positions, both brackets) sit **below 62100** —
+meaning almost the entire population that `58995` currently excludes
+would flow back into the merge with real (if small) weight, silently
+undoing the hard-exclusion this pipeline currently relies on for every
+CFA position that clips at all. Quantified directly from today's own
+Q5 numbers: `230856`'s G@(0,1) alone currently excludes 2,150,529 pixels
+at `58995`; essentially none of those reach `62100`, since the measured
+max master value at that position is well under it. Reported as the
+blast radius; not changed.
+
+---
+
+**Q6 — the smaller option: per-session threshold derived from that
+session's own dark master, not a mask.**
+
+The dark master is not a new artifact — every session with dark
+correction applied (all three brackets, confirmed: `dark_correction:
+applied (5 levels)` in each `session.json`) already computes it inside
+`frame_average.py`'s existing processing, whether or not this rework
+exists. `hdr_merge.py` currently never sees it — `merge()` only receives
+already-dark-subtracted masters and exposure times (`hdr_merge.py:225`,
+`load_frame(ex["path"])` on `master_N.tif` only). Making this option work
+would mean passing the dark master (or a derived per-position summary,
+e.g. its max) into `hdr_merge.py` as a new input — a real interface
+change, but not a new raw-derived artifact, and therefore **none of
+Q4's backfill/irrecoverability problem** — the dark master a future
+backfill would need is either still computable (raws present) or was
+never needed in the first place (it's a byproduct of processing that
+already ran).
+
+**What it would fix:** the current mechanism's blindness to
+session-to-session drift. `58995` was chosen once, in the context of one
+bracket's own gain/dark level, and applied as a flat constant to every
+bracket since — including these two, at a different gain (Q1). A
+per-session threshold derived as `65535 - max(dark_master)` (this
+investigation's own established Q3 form) would track each session's real
+dark level and gain instead of reusing a number calibrated for a
+different one.
+
+**What it would not fix — specific, not general:** the sign-flip already
+measured today is not a dark-frame property; it's the *never-clipped*
+population's own maximum, which is real scene content, colliding with
+whatever floor is chosen. A per-session dark-derived threshold still gets
+this **exact case wrong**: bracket `013732`'s G@(0,1) position has a
+never-clipped (genuinely unsaturated) pixel at master value `61046` — 33
+ADU **above** that same session's own dark-derived floor (`61013`). A
+threshold set at or even below that session's true floor still excludes
+this real, valid pixel as if it were saturated, because the master-domain
+value of "real bright signal" and "smeared saturation" occupy the same
+numeric neighborhood at that specific position in that specific bracket
+— nothing about deriving the floor from the *dark* master touches the
+*science* signal's own brightness. `230856`'s G@(1,0) (never-clipped max
+123 ADU above its own floor) is the same failure mode, mirrored to the
+other green position. A per-session threshold is a real improvement over
+a stale global constant; it does not and structurally cannot resolve
+this case, because it never looks at the raw domain where the two kinds
+of "high value" are actually distinguishable.
+
+---
+
+**Proposal.** Compared on the one axis specified — whether a pixel
+excluded from the merge is one that was actually saturated:
+
+| option | precision on that axis | cost | what it leaves unfixed |
+|---|---|---|---|
+| status quo (global constant) | worst — arbitrary relative to any given session, demonstrably wrong in both directions already measured | none (already built) | everything |
+| Q6, per-session dark-derived threshold | better than status quo (fixes the wrong-session-constant failure) but **still an inference from a smeared proxy** — provably wrong at the two measured overlap cases | low — no new artifact, no provenance/backfill problem, reuses data already computed | the sign-flip cases exactly, by construction, regardless of how well the threshold is chosen |
+| Q2/Q3, true raw-domain per-pixel record | exact, by construction — a pixel excluded is one that was literally `== 65535` in at least one real raw frame, not inferred from where its average happened to land | real but bounded: 7.35-58.8 MiB/bracket (packed formats), computed inside `frame_average.py`'s existing streaming pass at zero extra I/O; plus Q4's provenance/format work and its one-way historical gap | pre-rework sessions whose raws are gone (permanent); the "partially clipped" middle population (6-8% of green pixels, clipped in *some* but not all raw frames) still needs a merge-weighting policy decided at build time — exact ground truth tells you the fact, not the policy; `white_level`/`sat_frac`'s own undocumented reasoning (Q5) becomes largely moot rather than resolved, since raw-domain truth removes most of the need for a fractional-margin heuristic at all |
+
+**I would take the raw-domain option (Q2/Q3), specifically the packed
+per-frame bitmask granularity** (identical storage cost to the simpler
+count, strictly more information) **over Q6's threshold refinement.**
+Q6 is real progress and costs almost nothing, but it does not change the
+*category* of the current defect — it is still guessing from a proxy,
+just a better-calibrated guess. The stated axis is about whether an
+excluded pixel was actually saturated, and only a record built from the
+actual raw-domain saturation test can make that true by construction
+rather than by inference, for every future bracket. What it costs: a
+change to `frame_average.py`'s accumulation loop, a new sibling artifact
+per level, a new input to `hdr_merge.py`, and the Q4 provenance/format
+decisions (whether it's a store or a file, what a reader without one
+does, whether/how to backfill the three sessions this investigation
+already has raws for). What it leaves unfixed: history (any session
+whose raws are already gone stays permanently un-mask-able — this is
+irreversible and should be weighed against how much of the existing
+archive still has raws on disk before committing to the approach), and
+the middle population's weighting policy, which having exact data
+doesn't answer by itself.
+
+---
+
+**SWEEP_CHECKS.md**: one line added under "1. Measurement correctness" —
+an independent re-derivation proves the model only if it reproduces the
+code's arithmetic order, not merely its algebra, using this session's own
+division-vs-reciprocal Q2 residual (see the prior entry) as the worked
+example of a wrong-order artifact that looked like a physical finding.
+Verified as an insertion, not a rewrite of any existing row.
+
+No code changes; no threshold chosen; nothing implemented, per
+instruction. Files touched: `CHANGELOG.md` (this entry) and
+`SWEEP_CHECKS.md` (one line, requested directly). `profile.json`/`calib/`
+excluded as always (`calib/` was read from, for the Q1 cross-check
+above, never modified); not pushed. Branch left exactly as found:
+`claude/qt-platformtheme-plugin-check`, unchanged HEAD until this entry's
+own commit — this is where the working tree is left for B to run the
+instrument from.
+
 ### Measurement: full Q1-Q6 chain, brackets 2026-08-03_230856 and 2026-08-04_013732, level 5, run independently
 
 Branch `claude/qt-platformtheme-plugin-check`, HEAD `6297efa` throughout —
