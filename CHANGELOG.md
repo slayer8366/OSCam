@@ -7,6 +7,166 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-06
 
+### Measurement: hdr_merge.py's actual input, bracket 2026-08-03_050600 level 5 — where 62100 really sits
+
+Branch `claude/qt-platformtheme-plugin-check`, HEAD `d4d3d56` throughout
+— unchanged by this work (measurement only; no repo code touched, no
+branch switched). Script: `~/scratch/measure_hdr_merge_input.py`
+(outside the repo, not committed). Follow-up to the previous entry's
+raw-level measurement.
+
+**DISCOVERED:** the previous entry's Step 2 reported "no `.meta.json`
+sidecars exist for this bracket" — that was a search-path error, not a
+fact about the bracket. The sidecars exist at
+`~/provenance/2026-08-03_050600/*.meta.json` (40 science, verified);
+the previous search only checked `~/captures/2026-08-03_050600/`, which
+never held them. Corrected here.
+
+**True analogue gain (not `ISOSpeedRatings`):** read directly from all
+40 science `.meta.json` sidecars' `AnalogueGain` field:
+**3.2820513248443604**, identical across all 40 (variance 0.0). Matches
+the `3.282051` figure in `hdr_from_session.py:55`'s own comment exactly.
+The previously reported `ISOSpeedRatings=329` (DNG tag, /100≈3.29) was a
+coarse rounded proxy, not the real field, and is superseded by this
+number for this bracket.
+
+**Q1 — real quantization step.** Not 16 ADU (which the 12-bit-in-16-bit
+assumption predicts). Measured directly: the top-2000-ADU window of
+every one of the 8 level-5 green raws, both G positions, contains
+exactly 16 distinct values, spaced by **128 ADU** with one exception —
+the top value (65535) sits only 127 below its neighbor (65408) because
+65535 is the container's own literal ceiling (0xFFFF) and 65536 (what a
+clean 128-step would require) doesn't exist in a uint16. Identical
+16-value set on all 8 frames, both G positions:
+`[63616, 63744, 63872, 64000, 64128, 64256, 64384, 64512, 64640, 64768,
+64896, 65024, 65152, 65280, 65408, 65535]`.
+
+**Re-probe, retiring the prior flaw:** the previous entry's 10/50/200-ADU
+offset probes were never on this 128-ADU grid, so their reported
+`count=0` was measuring "this code isn't a multiple of 128" as much as
+"this code is absent." Re-probed at real grid-aligned steps (frame
+`5_frame_0000.dng`, both G positions): count at 65535 minus 1/2/5/10
+steps (128/256/640/1280 ADU) is **0** at every one of those exact
+grid-aligned codes too (65407, 65279, 64895, 64255) — but those aren't
+real grid codes either, because 65535 itself is 127 off-grid, not 128;
+checking the actual neighboring grid values instead (65408, 65280,
+64896, 64256) gives real, populated counts (7837, 7876, 7740, 7491 for
+G@(0,1); comparable for G@(1,0)). **The finding survives on corrected
+grounds**: 65535's own count (1,508,259–1,520,575 per frame in that
+CFA position) is roughly 190-200x any single one of those real
+neighboring grid-code counts — still a spike, but the earlier
+10/50/200-ADU evidence for it was invalid and should not be cited
+going forward. B@(0,0) and R@(1,1), re-probed the same way, show no
+such disparity — their neighboring-grid-code counts are all small,
+single digits, consistent with sparse noise, no spike, matching the
+previous entry.
+
+**Q2 — pipeline trace, file:line, with dtype at each stage.**
+1. Raw DNG on disk: `uint16`, container range 0–65535, real step 128
+   (per Q1).
+2. `frame_average.py:197` `_checked_load` reads it back as `uint16`
+   (asserts dtype matches the burst).
+3. `frame_average.py:240-241` (`gamma is None`, true for this bracket —
+   `hdr_from_session.py` never passes `--gamma`, confirmed: only
+   `--dark`/`-o` appear in its `fa` invocation at lines 181-188):
+   `to_work(a) -> a.astype(np.float64)` — cast to `float64`, **still in
+   raw ADU units, not yet normalized**.
+4. `frame_average.py:249-252`: `acc` (`float64`) sums `to_work()` over
+   the burst; `mean = acc / n` — `float64`, mean raw ADU value, 8
+   frames.
+5. `frame_average.py:291`: `return mean * final_scale` where
+   `final_scale = 1.0/dmax` (`dmax=65535`, set at line 242) — **this is
+   the only place a raw ADU value gets divided by 65535** — output now
+   `float64` in ~[0,1]. This return value is `sci01` (science) or
+   `dark01` (dark) back in `main()` (lines 404, 427) — both built by the
+   same `average_burst()` call, dark from its own 8 level-5 dark raws.
+6. `frame_average.py:321` (`flat_field`, dark-subtraction-only path
+   since this bracket has no flat frames): `return sci01 - D, info`
+   where `D = dark01` — **black-level subtraction happens here**, as a
+   full empirically-averaged dark master (mean of 8 real dark
+   captures — see the previous entry's Step 3e: overall mean 4117.95),
+   not via the DNG's declared `BlackLevel`/`SensorBlackLevels` metadata
+   constant (4096, confirmed identical in every sidecar) — that
+   constant is never read by this code path at all. Result: `corrected`,
+   `float64`, still ~[0,1]-ish, can go slightly negative or above 1.
+7. `frame_average.py:498`: `out = np.clip(np.rint(corrected * 65535.0),
+   0, 65535).astype(np.uint16)` — multiply back by 65535, round, clip
+   to [0,65535], cast to `uint16`. This is `master_5.tif` on disk.
+   Algebraically, steps 5-7 mean `master_ADU = round(clip(mean_sci_ADU -
+   mean_dark_ADU, 0, 65535))` — the ÷65535 and ×65535 cancel; this is a
+   plain ADU-space mean-subtraction, confirmed from the actual code, not
+   assumed.
+8. `hdr_merge.py:102` `tifffile.imread(path)` reads `master_5.tif` back
+   as `uint16` — **this is hdr_merge's actual input**, measured directly
+   in Q3 below, not re-derived.
+9. `hdr_merge.py:229`: `vn = a.astype(np.float64) / wl` — cast to
+   `float64`, divided by `white_level` (62100, a user/caller-supplied
+   value, NOT the container max this time). `hdr_merge.py:234` computes
+   the merge weight `p` from `vn`; `hdr_merge.py:236`:
+   `clipped = vn >= sat_frac` is the actual hard-exclusion test —
+   **against `sat_frac`, not against 1.0 or against `white_level`
+   directly**.
+
+**DISCOVERED (Q4's real mechanism):** `hdr_merge.py:330`'s `--sat`
+argparse default is **0.95**, and `hdr_from_session.py:201`'s own
+`hdr_merge.py` invocation (`hm += ["--white-level", a.wl, "-o",
+"hdr_linear.tif"]`) passes no `--sat` and no `--black` — so the real,
+currently-running hard-exclusion threshold for this bracket is
+**`0.95 × 62100 = 58995`**, not 62100 itself. The WHY section's framing
+("saturation cutoff... never fires" at 62100) is correct about the
+literal value 62100, but 62100 is never actually compared against a
+pixel for exclusion purposes in this pipeline — `sat_frac × white_level`
+is.
+
+**Q3 — hdr_merge's actual input, measured directly (`master_5.tif`,
+`tifffile.imread`, the exact call `hdr_merge.py:102` makes):**
+
+| CFA position | max | px in top-2000-ADU window | top-of-window shape |
+|---|---|---|---|
+| B@(0,0) | 55196 | 222 / 3,082,560 | top 10 counts 2-4, no spike |
+| G@(0,1) | 61781 | 1,602,059 / 3,082,560 | top 10 counts 45,303-50,409, gradual |
+| G@(1,0) | 61671 | 1,619,728 / 3,082,560 | top 10 counts 46,345-50,615, gradual |
+| R@(1,1) | 52300 | 233 / 3,082,560 | top 10 counts 2-4, no spike |
+
+Distinct values within 50 ADU of each channel's own max: exactly one
+(`[max]`) at every position — the master's own maximum value is not
+repeated even once at any CFA position; the raw spike at 65535 is gone.
+Averaging across 8 frames (per the DISCOVERED note in the previous
+entry) turned a single dominant code into a smoothly-varying set of
+closely-spaced integers — the green channel's top 10 values in-window
+are all within 0.02% of each other in count, nothing resembling the raw
+level's ~190x disparity.
+
+**Q4 — where 62100 falls, measured both ways:**
+
+| CFA position | max | px ≥ 62100 (white_level) | px ≥ 58995 (actual sat cutoff, sat=0.95) |
+|---|---|---|---|
+| B@(0,0) | 55196 | 0 (0.000000%) | 0 (0.000000%) |
+| G@(0,1) | 61781 | 0 (0.000000%) | 1,649,152 (53.499429%) |
+| G@(1,0) | 61671 | 0 (0.000000%) | 1,659,582 (53.837784%) |
+| R@(1,1) | 52300 | 0 (0.000000%) | 0 (0.000000%) |
+
+62100 is above every measured ceiling at every CFA position — the
+literal white_level comparison excludes 0 pixels anywhere, confirming
+the WHY section's premise about that specific number. But the pipeline's
+real hard-exclusion test (`vn >= sat_frac`, i.e. ADU ≥ 58995) already
+excludes just over half of both green positions' pixels at level 5 —
+measured, not assumed, from the DISCOVERED note above.
+
+**Q5 — per-channel ceiling at hdr_merge's actual input:** B@(0,0)
+55196, G@(0,1) 61781, G@(1,0) 61671, R@(1,1) 52300 — spread of 9,481 ADU
+between the lowest (R) and highest (G@(0,1)) channel ceilings, measured
+at this exact bracket/level/gain. No value is proposed here and no
+single-vs-per-channel white_level question is answered — numbers only,
+per instruction.
+
+No file inside the repo was modified except this entry.
+`frame_average.py`/`hdr_merge.py` untouched, no `--sigma-clip`, no
+`white_level` change anywhere. `profile.json`/`calib/` excluded as
+always; not pushed. Branch left exactly as found:
+`claude/qt-platformtheme-plugin-check`, unchanged HEAD until this
+entry's own commit.
+
 ### Measurement: level-5 science raws, bracket 2026-08-03_050600 — hard-clip check, n=8
 
 Branch `claude/qt-platformtheme-plugin-check` at `b057237` throughout —
