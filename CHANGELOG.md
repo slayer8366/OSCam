@@ -7,6 +7,55 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-05
 
+### Record: two findings filed from the multi-capture verification (session.json correction-status field loss, derived outputs not per-capture)
+
+Documentation only, no code touched — the branch is verified on the rig
+(the two-Snap-in-one-session test, `CHANGELOG.md`'s own "Record build:
+gallery-race staging design" entry above) and this session's own
+instruction was to keep it that way, since any source change forces a
+re-run. Work-is-the-outcome form, not intent/build: the work was the
+verification already done in the prior session; this just files what it
+found. Both items recorded in `HANDOFF.md` in place, ranked above
+existing item 9, neither existing item renumbered or edited (verified:
+`git diff` against `HANDOFF.md` shows only insertions).
+
+**Item A — `session.json` correction-status field loss.** A second
+capture in one session strips the first capture's
+`raw_discarded`/`flat_correction`/`dark_correction` fields from
+`session.json`; the first capture's raw files are untouched on disk,
+only the record of them is gone. `_record_correction_status`
+(`qt_shell.py:5584-5608`) reads `session.json` fresh from disk and
+patches it in place, by design, so it also serves the manual processing
+wizard's non-live sessions. `Session.record()` (`provenance.py:321-328`)
+appends to the in-memory `captures` list, which never learned of that
+disk-side patch, and `Session.write()` (`provenance.py:269-285`) then
+overwrites the whole file from that stale list. Pre-existing, untouched
+by the staging work — neither of the three functions above was touched
+by it — and fires on the ordinary two-Snap workflow, no staging
+involved. Observed in session `2026-08-05_163014`. Filed ahead of
+existing item 9 because this is silent loss from the provenance record
+itself, not a UI-level drop: `final.tif` still carries its own retention
+embed (item B below), so once this fires, the TIFF states an outcome
+`session.json` no longer corroborates or contradicts for that earlier
+capture.
+
+**Item B — derived outputs are not per-capture.** Raw frames are indexed
+per capture (`snap_frame_0000.dng`, `snap_frame_0001.dng`, ...), but
+`final.tif`/`single_master.tif`/`final_display.*` are rewritten in place
+under fixed names on every processed capture. A session with N processed
+captures holds N sets of raws and exactly one set of masters/display
+images, belonging to the most recently processed capture, with nothing
+in the filenames stating which. Pre-existing — the fixed output names
+predate the staging work; per-file publish just moves the same fixed
+names, unchanged. Evidence: session `2026-08-05_163014`'s `final.tif`
+went from 25,334,219 bytes at 16:30:28 (after Snap #1) to 25,480,015
+bytes at 16:30:50 (after Snap #2) — same path, rewritten in place, not
+renamed.
+
+No fix proposed for either item, per instruction. HANDOFF.md item 2
+(retention-embed design) stays closed — neither finding reopens it, both
+are separate, newly-filed gaps.
+
 ### Correction: SWEEP_CHECKS.md's orphaned-staging-directory line was never added
 
 Supersedes, does not edit: the "Record intent"/"Record build: gallery-

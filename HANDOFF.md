@@ -127,6 +127,42 @@ What's actually open, none of it written down anywhere until now:
    own live example of what happens when a check isn't. Full
    intent/build/record-build detail: `CHANGELOG.md`'s 2026-08-05 "tenth
    task Part 3" entries.
+8a. **`session.json` correction-status field loss on a second capture in
+    one session — found verifying the gallery-race staging design's
+    multi-capture publish case, not fixed, documentation only.**
+    Symptom: a second capture in one session strips the first capture's
+    `raw_discarded`/`flat_correction`/`dark_correction` fields from
+    `session.json`. The first capture's raw files remain present and
+    untouched on disk — only the record of them is gone. Mechanism:
+    `_record_correction_status` (`qt_shell.py:5584-5608`) reads
+    `session.json` fresh from disk and patches it in place, by design,
+    so it also serves the manual processing wizard's non-live sessions
+    (its own docstring says so explicitly). `Session.record()`
+    (`provenance.py:321-328`), called by the second capture's
+    `record_capture`, appends to `self.captures` in memory — which never
+    learned about that disk-side patch — then calls `Session.write()`
+    (`provenance.py:269-285`), which overwrites the whole file from that
+    stale in-memory list. Scope: pre-existing, untouched by the staging
+    work (neither function above was touched by it), fires on the
+    ordinary two-Snap workflow with no staging involved at all. Observed
+    in session `2026-08-05_163014`. Ranked above item 9: this is silent
+    loss from the provenance record itself, not a UI-level drop —
+    `final.tif` still carries its own embed (see item 8b below), so once
+    this fires, the TIFF states a retention outcome that `session.json`
+    neither corroborates nor contradicts for that earlier capture.
+8b. **Derived outputs are not per-capture — found in the same
+    verification, not fixed, documentation only.** Raw frames are
+    indexed per capture (`snap_frame_0000.dng`, `snap_frame_0001.dng`,
+    ...), but `final.tif`, `single_master.tif`, and `final_display.*`
+    are rewritten in place under fixed names every time a capture is
+    processed. A session with N processed captures holds N sets of raws
+    but exactly one set of masters/display images, belonging to the most
+    recently processed capture, with nothing in the filenames stating
+    which capture that is. Pre-existing (fixed output names predate the
+    staging work; per-file publish just moves the same fixed names,
+    unchanged). Evidence: session `2026-08-05_163014`'s `final.tif` went
+    from 25,334,219 bytes at 16:30:28 (after Snap #1) to 25,480,015 bytes
+    at 16:30:50 (after Snap #2) — same path, rewritten, not renamed.
 9. **Gallery pick-mode silently drops in-progress entries — found during
    the gallery-race staging design work (item 2 above), not fixed, out
    of scope for that task by explicit instruction.** `GalleryWidget`
