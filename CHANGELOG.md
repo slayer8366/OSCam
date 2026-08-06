@@ -7,6 +7,113 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-06
 
+### Measurement: independent reconfirmation of clip/unclip separation, plus --sat history
+
+Fresh-context task: read `PHILOSOPHY.md` in full, `HANDOFF.md`, and a
+requested `GLOSSARY.md` first. **`GLOSSARY.md` does not exist in this
+repo** — confirmed by directory listing, not assumed missing, matching
+the pattern `HANDOFF.md` already documents for other external-only
+planning docs (`BUILD_LIST.md`, `onrig-verification-checklist.md`). The
+user then supplied its content directly (not committed to the repo);
+read in full alongside `PHILOSOPHY.md` (also read in full) and
+`HANDOFF.md`'s current top section. Nothing in it changed any number
+below — it's vocabulary/context, consistent with what `PHILOSOPHY.md`
+and this investigation's own prior entries already establish.
+Environment: `raspberrypi`, real `numpy` 1.24.2, archive
+present at `~/archive/bracket_2026-08-03_050600/` — the Pi, not a
+sandbox. Branch `claude/qt-platformtheme-plugin-check`, HEAD `d9f1a23`
+at the start of this task — **not** `f4a89b0` as the task prompt
+expected. That's not a divergence to flag as a problem: `d9f1a23` is
+this same investigation's own immediately preceding entry (the
+Q1-Q4/Q5/Q6 measurement this task re-requests), made by a session with
+full context, one commit ahead of the prompt's stated `f4a89b0`. Stated
+plainly rather than silently reconciled.
+
+Script: same `~/scratch/measure_master_separation.py` from the prior
+entry, re-run fresh rather than trusting the previous commit's numbers
+(per the task's own "reconfirm... rather than taking on trust"
+instruction, and `PHILOSOPHY.md`'s verification-culture section).
+**Output is bit-for-bit identical to the prior entry** — expected, since
+both runs read the same immutable archived raws — so Q1-Q4/Q6 are
+summarized here with the confirmation stated explicitly, full detail in
+the prior entry (`d9f1a23`) rather than duplicated:
+
+- **Q1 (clipped-in-all-8 minimum):** reconfirmed identical — G@(0,1)
+  min=61101, p1=61363.0, median=61417.0; G@(1,0) min=61145, p1=61363.0,
+  median=61417.0; B/R n=0.
+- **Q2 (never-clipped max, reconfirmed rather than trusted):**
+  identical — G@(0,1) max=61066, G@(1,0) max=61012. Separation
+  reconfirmed: 35 ADU gap (G@(0,1)), 133 ADU gap (G@(1,0)) — no overlap
+  at either green position.
+- **Q3 (dark master spatial variation):** reconfirmed identical —
+  B@(0,0) 3836–4586 (mean 4117.246, std 25.732); G@(0,1) 3754–4724
+  (mean 4121.417, std 28.776); G@(1,0) 3864–4720 (mean 4121.491, std
+  28.732); R@(1,1) 3856–4514 (mean 4111.629, std 22.545). Predicted
+  band width (max−min) 750/970/856/658 ADU respectively — reconfirmed
+  that this does **not** predict the measured result (a 35–133 ADU
+  separation, not an overlap of hundreds of ADU).
+- **Q4 (intermittent population):** reconfirmed identical — G@(0,1)
+  n=209,354 (6.791563%), range 56374–61627, median 60975.0; G@(1,0)
+  n=207,220 (6.722335%), range 56830–61571, median 60975.0. Not
+  classified, per instruction.
+- **Q6 (generality):** reconfirmed from the prior entry's code reading
+  — `hdr_merge.py:104` treats every master as a single-channel `(H,W,1)`
+  array; `--channel-layout`/`--cfa-pattern` (lines 360-368) reach only
+  the output provenance dict, never the per-pixel math; neither caller
+  in the repo ever passes them. Same scalar threshold applies
+  identically to all four CFA positions.
+
+**Q5 — the file:line trace, reconfirmed identical to the prior entry**
+(`hdr_merge.py:322-323` `--white-level` default `None`; `:330-331`
+`--sat` default `0.95`; `:212` `wl` resolution; `:229` `vn = a/wl`;
+`:236` `clipped = vn >= sat_frac`; `hdr_from_session.py:66`
+`MERGE_WHITE_LEVEL_DEFAULT = 65520`; `:421-422` `--wl` argparse default;
+`:201` the actual `hdr_merge.py` invocation, no `--sat` appended;
+`qt_shell.py:5972-5973` `--wl` argparse default) — full detail in the
+prior entry.
+
+**New this entry — `git log -S`, the full history of `--sat`:**
+
+```
+git log --all -S'--sat' --oneline --
+```
+returns exactly four commits: this investigation's own three prior
+measurement entries (`d9f1a23`, `f4a89b0`, `1a7a122` — all of which only
+*discuss* `--sat` in CHANGELOG prose, never pass it to a real
+invocation) and `c488168`, the repository's **initial commit**.
+
+Checked directly, not inferred from the pickaxe result alone: `git show
+c488168:hdr_merge.py` already contains `ap.add_argument("--sat",
+type=float, default=0.95, metavar="F", ...)` at that very first commit
+— `--sat` did not get added later; it has existed with default `0.95`
+since `hdr_merge.py` was first committed. The only other commit to ever
+touch `hdr_merge.py` is `d170b5d` ("Build: hdr_merge.py
+provenance-integrity fixes (six defects)") — checked directly (`git show
+d170b5d:hdr_merge.py`): the `--sat` line is present there too, still
+`default=0.95`, unchanged; `d170b5d`'s diff touches other parts of the
+file (the argument's line number shifts from 269 to 330 purely because
+of unrelated additions earlier in the file, confirmed by diffing the
+two versions directly).
+
+**Conclusion of the history check, stated as fact not inference: no
+commit in this repository's entire history has ever passed `--sat` with
+a value other than its own default, and no commit has ever changed that
+default from 0.95.** The only text discussing a value "other than 0.95"
+anywhere in this repo's history is this investigation's own prose,
+which reports the existing default — it does not constitute a prior
+instance of reasoning about a different number.
+
+No file inside the repo was modified except this entry.
+`frame_average.py`/`hdr_merge.py` untouched, no `--sigma-clip`, no
+`white_level`/`--sat` change anywhere, no threshold proposed.
+`profile.json`/`calib/` excluded as always; not pushed. Verified
+append-only per `PHILOSOPHY.md`'s own instruction
+(`git diff HEAD~1 HEAD -- CHANGELOG.md | grep '^-' | grep -v '^---'`
+after committing this entry — see the commit for the empty result).
+Branch left exactly as found: `claude/qt-platformtheme-plugin-check`,
+unchanged HEAD until this entry's own commit — this is where the
+working tree is left for B to run the instrument from.
+
 ### Measurement: does the clipped population separate from the unclipped population in master_5.tif?
 
 Branch `claude/qt-platformtheme-plugin-check`, HEAD `f4a89b0` throughout
