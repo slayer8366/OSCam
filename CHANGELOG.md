@@ -1673,6 +1673,43 @@ stripping `QT_QPA_PLATFORMTHEME`/`XDG_CURRENT_DESKTOP`/
 
 ## 2026-08-05
 
+### Record intent: session.json onto the repo's existing crash-safe write idiom
+
+Own branch off `main`: `claude/session-json-atomic-write`. Runs directly
+on the Pi (`hostname` == `raspberrypi`).
+
+**What this is.** `Session.write` (`provenance.py`) and
+`_record_correction_status` (`qt_shell.py`) are the two writers of
+`session.json` that currently use a plain `write_text`, unlike every
+other JSON store in this repo (`save_pref`, `save_profile`,
+`save_calibration`, `save_mark`, `plane_cache`, and `measure.py`'s own
+`_on_exclude_toggled` for `session.json` itself) — all of which write a
+`.tmp` sibling first, then `os.replace` it onto the real path. A crash
+mid-write to either of these two currently leaves `session.json`
+truncated. This brings both onto the same idiom, exactly as the seven
+existing sites already do it: same parent directory (`.with_suffix
+(".tmp")`, never a different directory — the whole reason `os.replace`
+stays atomic is that it never crosses a filesystem boundary), write the
+tmp file, `os.replace` onto the real path. No shared helper introduced
+in this pass — factoring the pattern out is a separate change with a
+wider blast radius than durability alone.
+
+**Explicitly not in scope, and not touched:** the field-loss defect
+this session's own earlier work found and filed (`HANDOFF.md` items
+8a/8c — a second capture's `Session.write` overwriting the whole file
+from a stale in-memory list, dropping a disk-side patch
+`_record_correction_status` already made). Making a write atomic says
+nothing about whether two independent writers can still silently
+clobber each other's atomic writes — that defect is unchanged by this
+work and remains open. This pass changes *how* each function writes
+(durability only), never *what* it writes, *when* it writes, or *what
+it reads first* (`_record_correction_status` still reads fresh from
+disk before patching, exactly as before).
+
+Verification (render-check, foreground exit code; a real Snap on the
+rig, session.json pasted; confirmation no `.tmp` file survives) reported
+in the matching "Build"/"Record build" entries.
+
 ### Record: item A amended, conflict-detecting session.json write filed as a design item
 
 Documentation only, no source touched — on branch `claude/gallery-race-
