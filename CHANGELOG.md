@@ -1673,6 +1673,38 @@ stripping `QT_QPA_PLATFORMTHEME`/`XDG_CURRENT_DESKTOP`/
 
 ## 2026-08-05
 
+### Record build: session.json onto the repo's existing crash-safe write idiom
+
+Built to the intent recorded below. No deviation: `Session.write` and
+`_record_correction_status` write via `.with_suffix(".tmp")` + `os.
+replace`, same parent directory, no shared helper — the same shape the
+other seven sites use, applied to these two verbatim. Nothing else in
+either function changed (diff: `provenance.py` +3/-1, `qt_shell.py`
++2/-1, both purely the write-call substitution).
+
+**`python3 qt_shell.py --render-check`: exit 0, every assertion PASS**,
+run in the foreground directly (not backgrounded).
+
+**On-rig, real `Picamera2Camera`, one Snap** via `win._start_capture()`
+(the real Capture button's own handler, same pattern this repo's own
+`render_check()` already uses for `FocusPreviewWindow` verification).
+Session `2026-08-05_185946`. `session.json` exists, is valid JSON
+(`json.loads` succeeded), and contains the capture entry — including
+the correction-status fields (`flat_correction`/`dark_correction`/
+`raw_discarded`/`derived_outputs_discarded`/`derived_outputs_note`),
+confirming both writers fired correctly through the real flow (`Session.
+write` for the initial record, `_record_correction_status` for the
+patch once auto-processing finished). No `.tmp` file left behind
+(`session.tmp` checked explicitly, absent) — `prov_dir` holds exactly
+`session.json` and the capture's own `.meta.json` sidecar. Full content
+pasted in this session's own report; not reproduced here since the
+CHANGELOG is prose, not a data dump — the session directory itself is
+the durable record.
+
+Field-loss defect (`HANDOFF.md` items 8a/8c) untouched, as scoped —
+this single-capture run doesn't exercise it (that needs a second
+capture in the same session), and this task was durability only.
+
 ### Record intent: session.json onto the repo's existing crash-safe write idiom
 
 Own branch off `main`: `claude/session-json-atomic-write`. Runs directly
