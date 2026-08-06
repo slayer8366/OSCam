@@ -7,6 +7,158 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-06
 
+### Measurement: does the clipped population separate from the unclipped population in master_5.tif?
+
+Branch `claude/qt-platformtheme-plugin-check`, HEAD `f4a89b0` throughout
+— unchanged by this work (measurement only; no repo code touched, no
+branch switched). Script: `~/scratch/measure_master_separation.py`
+(outside the repo, not committed). Follow-up to the previous three
+entries.
+
+**Q1 — minimum/p1/median master value, pixels clipped at 65535 in ALL 8
+level-5 science frames, per CFA position:**
+
+| position | n | min | p1 | median | max | mean |
+|---|---|---|---|---|---|---|
+| B@(0,0) | 0 | — | — | — | — | — |
+| G@(0,1) | 1,399,224 | **61101** | 61363.0 | 61417.0 | 61781 | 61416.792 |
+| G@(1,0) | 1,412,168 | **61145** | 61363.0 | 61417.0 | 61671 | 61416.668 |
+| R@(1,1) | 0 | — | — | — | — | — |
+
+**Q2 — never-clipped-in-any-of-8 maximum, reconfirmed independently (not
+assumed from the prior entry) — and the separation:**
+
+| position | never-clipped max (reconfirmed) | clipped-all-8 min | gap |
+|---|---|---|---|
+| G@(0,1) | 61066 (matches prior entry exactly) | 61101 | **separated by 35 ADU** |
+| G@(1,0) | 61012 (matches prior entry exactly) | 61145 | **separated by 133 ADU** |
+
+At both green positions the two pure/extreme populations do **not**
+overlap: every pixel that was never clipped in any of the 8 raw frames
+has a lower master value than every pixel clipped in all 8. The gap is
+small (35 and 133 ADU) but measured as a clean separation, not an
+overlap, at this bracket/level.
+
+**Q3 — dark master spatial variation per CFA position (global min/max/
+mean/std), and whether it predicts the gap/band width:**
+
+| position | min | max | mean | std | max−min (predicted band width) |
+|---|---|---|---|---|---|
+| B@(0,0) | 3836.000 | 4586.000 | 4117.246 | 25.732 | 750.000 |
+| G@(0,1) | 3754.000 | 4724.000 | 4121.417 | 28.776 | 970.000 |
+| G@(1,0) | 3864.000 | 4720.000 | 4121.491 | 28.732 | 856.000 |
+| R@(1,1) | 3856.000 | 4514.000 | 4111.629 | 22.545 | 658.000 |
+
+**It does not predict the measured result.** The dark master's global
+spatial range (856–970 ADU at the two green positions) is an order of
+magnitude larger than the actual measured relationship between the two
+populations, which is not an overlap at all but a 35–133 ADU
+*separation* — the global spatial-variation number does not describe
+the boundary behavior actually measured in Q1/Q2. Reported as measured;
+no further cause investigated here, per instruction.
+
+**Q4 — intermittently-clipped population (some but not all of 8 frames),
+not classified, numbers only:**
+
+| position | n | % of position | min | max | median |
+|---|---|---|---|---|---|
+| B@(0,0) | 0 | 0.000000% | — | — | — |
+| G@(0,1) | 209,354 | 6.791563% | 56374 | 61627 | 60975.0 |
+| G@(1,0) | 207,220 | 6.722335% | 56830 | 61571 | 60975.0 |
+| R@(1,1) | 0 | 0.000000% | — | — | — |
+
+Where they sit relative to the two Q1/Q2 populations, counted directly:
+
+| position | intermittent px ≤ never-clipped max | intermittent px ≥ clipped-all-8 min |
+|---|---|---|
+| G@(0,1) | 117,269 (56.0147% of intermittent) | 86,782 (41.4523% of intermittent) |
+| G@(1,0) | 108,515 (52.3670% of intermittent) | 78,566 (37.9143% of intermittent) |
+
+The intermittent population's own range (56374–61627 / 56830–61571)
+spans both sides of the Q1/Q2 gap — part of it sits at or below the
+never-clipped maximum, part of it sits at or above the clipped-all-8
+minimum, and (since its max, 61627/61571, exceeds the clipped-all-8
+minimum, 61101/61145) part of it reaches into the clipped-all-8 range
+itself.
+
+**Q5 — every place `white_level`/`sat` are read, set, defaulted, or
+passed, file:line:**
+
+- `hdr_merge.py:322-323` — `--white-level` argparse default `None`
+  (own-script default; only matters when `hdr_merge.py` is invoked with
+  no `--white-level` at all).
+- `hdr_merge.py:330-331` — `--sat` argparse default `0.95`.
+- `hdr_merge.py:212` — `wl = float(white_level) if white_level is not
+  None else dtype_max(in_dtype)` (resolves the runtime value).
+- `hdr_merge.py:229` — `vn = a.astype(np.float64) / wl`.
+- `hdr_merge.py:236` — `clipped = vn >= sat_frac` (the actual
+  hard-exclusion test).
+- `hdr_from_session.py:66` — `MERGE_WHITE_LEVEL_DEFAULT = 65520`
+  (module constant).
+- `hdr_from_session.py:421-422` — `--wl` argparse default
+  `MERGE_WHITE_LEVEL_DEFAULT` (for standalone `hdr_from_session.py`
+  invocations).
+- `hdr_from_session.py:201` — `hm += ["--white-level", a.wl, "-o",
+  "hdr_linear.tif"]` — the actual `hdr_merge.py` invocation; **no
+  `--sat` is ever appended here.**
+- `qt_shell.py:5972-5973` — `--wl` argparse default:
+  `_hdr_from_session.MERGE_WHITE_LEVEL_DEFAULT if _hdr_from_session else
+  65520`.
+
+**Confirmed, repo-wide grep for `--sat`:** the string appears only in
+`hdr_merge.py` itself (definition, docstring, validation) and in this
+investigation's own prior CHANGELOG entries. No caller anywhere in the
+repo ever passes `--sat` — the operative `sat_frac` is always
+`hdr_merge.py`'s own default, 0.95, in every real code path.
+
+**DISCOVERED, directly relevant to what "the operative threshold" means
+for this specific bracket:** two actual `hdr_merge.py` output files
+exist on disk for this bracket, with their real run parameters embedded
+in each file's own `ImageDescription` TIFF tag (not inferred from
+source, read verbatim from the files):
+
+| file | created_utc | white_level (as run) | sat_frac (as run) | operative cutoff (white_level × sat_frac) |
+|---|---|---|---|---|
+| `hdr_linear.tif` | 2026-08-03T12:07:29Z | 65520.0 | 0.95 | **62244** |
+| `hdr_wl62100.tif` | 2026-08-04T07:01:42Z (~19h later) | 62100.0 | 0.95 | **58995** |
+
+`hdr_linear.tif`'s parameters (65520) match `session.json`'s own
+`display_flags` field (`["--wl", "65520", "--lw", "2.2"]`, reconfirmed
+this session) — this is the bracket's own auto-processing output, the
+one the live pipeline actually produced. `hdr_wl62100.tif` is a
+separate, later, explicitly-named manual run at a different
+`--white-level`. **Every "58995" figure in this investigation's prior
+three entries describes `hdr_wl62100.tif`'s parameters, not
+`hdr_linear.tif`'s** — the bracket's own auto-processed output was made
+at operative cutoff 62244, a number not yet measured against in this
+series.
+
+**Q6 — generality: does anything assume which channel saturates first,
+or is the threshold applied identically to all four CFA positions?**
+
+`hdr_merge.py:104` (`load_frame`): a 2D input (`master_N.tif`, exactly
+what every master file is) becomes shape `(H, W, 1)` — the entire raw
+Bayer mosaic is treated as a single channel, not split by CFA position
+anywhere in `merge()`. `hdr_merge.py:360-368` defines `--channel-layout`/
+`--cfa-pattern` arguments, but per their own help text ("Recorded
+verbatim") and confirmed by reading `merge()`'s body (lines 189-250):
+they are never referenced in the actual per-pixel weight/threshold math
+(`vn`, `clipped`, `w_valid` — none of it branches on position or on
+these arguments) — they only reach the output provenance dict, as
+labels. Confirmed by repo-wide grep: neither `hdr_from_session.py` nor
+`qt_shell.py` ever passes `--channel-layout` or `--cfa-pattern`. The
+same scalar `white_level`/`sat_frac` threshold is applied identically to
+every pixel in the mosaic regardless of CFA position — nothing in the
+pipeline assumes, detects, or special-cases which channel saturates
+first.
+
+No file inside the repo was modified except this entry.
+`frame_average.py`/`hdr_merge.py` untouched, no `--sigma-clip`, no
+`white_level`/`--sat` change anywhere, no threshold proposed.
+`profile.json`/`calib/` excluded as always; not pushed. Branch left
+exactly as found: `claude/qt-platformtheme-plugin-check`, unchanged HEAD
+until this entry's own commit.
+
 ### Measurement: clipped-vs-excluded overlap, bracket 2026-08-03_050600 level 5
 
 Branch `claude/qt-platformtheme-plugin-check`, HEAD `1a7a122` throughout
