@@ -7,6 +7,89 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-06
 
+### Record intent: saturation-mask design decisions + backfill for three existing brackets
+
+Branch `claude/qt-platformtheme-plugin-check`, HEAD `b91187f`. Follow-up
+to the prior entry's investigation and proposal — no code, no threshold,
+no merge policy decided there either; this session records three
+specific decisions as accepted and produces validation data to check
+both the format and a future merge policy against, before either is
+fixed in code.
+
+**Why this order, stated for the record:** the three existing brackets'
+raws all survive (confirmed directly before writing this entry: 8
+science raws at every one of 5 levels, all three brackets — 120 raws
+total). Masks are therefore derivable retroactively right now. Producing
+them before the format hardens in `frame_average.py`/`hdr_merge.py`
+means the format gets checked against real data instead of the reverse.
+
+**Decisions to record, as accepted, in `HANDOFF.md` (updated in place)
+and this entry's own build record — not implemented in code this
+session:**
+
+1. **The mask is retained unconditionally, independent of Keep RAW
+   Images.** Discarding it saves a trivial amount of disk relative to
+   the raws it's derived from (established in the prior entry's Q3: a
+   packed mask is ≤3.2% of one bracket's own raw-DNG storage) and
+   permanently forecloses the only unambiguous saturation record, since
+   averaging is irreversible (prior entry's Q2/Q4). Retention is not the
+   Keep RAW Images setting's decision to make — that setting is about
+   raws, not about a record derived from them once it exists.
+2. **The merge-weighting policy for the partially-clipped population is
+   NOT decided here.** Building the record (what was actually clipped,
+   per raw frame) and deciding what `hdr_merge.py` does with that
+   information at merge time are separate jobs. Recorded as deliberately
+   deferred: the policy should be chosen by looking at real masks from
+   real brackets, not fixed in advance of having any.
+3. **`sat_frac` is scaffolding with no recorded reasoning**, unchanged
+   since the initial commit (`c488168`), never overridden by any caller
+   in this repo's history (confirmed via `git log -S`, prior entry).
+   Recorded as scheduled for collapse once the raw-domain record exists
+   to replace what it currently approximates — not collapsed, not
+   touched, in this session.
+
+**Baseline (the scope this build is measured against):**
+
+- `HANDOFF.md` gains the three decisions above, updated in place, under
+  "Open right now" (decision 2 is an open item; decisions 1 and 3 are
+  accepted facts going forward, recorded alongside it for the same
+  reader). No other section of `HANDOFF.md` touched.
+- A new backfill script under `~/scratch/` (outside the repo), producing
+  one packed per-frame saturation-bitmask file per (bracket, level) —
+  15 total (3 brackets × 5 levels) — written to `~/scratch/masks/`
+  (outside the repo, outside `~/provenance/`). Detection is raw-domain
+  `== 65535` only: no threshold, no inference, no dark subtraction.
+  Per-frame, not pooled — the packed byte at each pixel carries one bit
+  per raw frame (8 frames/level), so the partially-clipped population
+  (clipped in *some* but not all 8) is fully recoverable from the mask,
+  not collapsed into a single ANY/ALL boolean. Mask geometry matches the
+  raw frame's own native shape (`3040×4056`), not pre-split by CFA
+  position — CFA-position breakdowns are derived from the mask by
+  slicing at read time, same convention as every prior scratch script in
+  this investigation.
+- **Verification gate, checked before this entry's build record is
+  written, not after:** the backfilled level-5 masks must reproduce
+  figures already on record — `2026-08-03_050600` clipped-in-ANY
+  52.18%/52.53% and clipped-in-ALL 45.39%/45.81% at the two green
+  positions, 0% at B/R; `2026-08-03_230856` and `2026-08-04_013732` both
+  69.52%/71.15% clipped-in-ANY at G@(1,0). A backfill that does not
+  reproduce these numbers is reported as a disagreement, not silently
+  reconciled or proceeded past — and which figure is wrong (the new
+  backfill or the old measurement) gets investigated before anything
+  else in this task continues.
+- No change to `frame_average.py`, `hdr_merge.py`, `white_level`, or
+  `sat`. No new artifact added to `~/provenance/` — that is the
+  record-format change flagged in the prior entry and it gets its own
+  intent entry when it happens, not folded into this one.
+
+Three-phase commit: this entry (intent, its own commit, nothing else),
+then the `HANDOFF.md` update + backfill script + mask production (build,
+measurement — belongs in the build record since the backfill's own
+outcome, the verification numbers, is the point of doing it), then a
+build entry recording what actually happened, including the
+verification result and, per bracket, mask size on disk, production
+time, and per-level clipped fractions per CFA position.
+
 ### Investigation and design proposal: scoping the saturation-detection rework
 
 Branch `claude/qt-platformtheme-plugin-check`, HEAD `6095c9e` throughout —
