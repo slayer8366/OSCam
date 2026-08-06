@@ -1673,6 +1673,53 @@ stripping `QT_QPA_PLATFORMTHEME`/`XDG_CURRENT_DESKTOP`/
 
 ## 2026-08-05
 
+### Record intent: stop a second capture from stripping the first capture's correction-status fields
+
+Own branch off `claude/session-json-atomic-write` (not `main` — this
+builds on that branch's tmp-then-`os.replace` change to
+`_record_correction_status`, same function). Runs directly on the Pi.
+
+**What this is.** `_record_correction_status` (`qt_shell.py`) patches
+`session.json` on disk for one capture's correction-status fields.
+`Session.write` (a live, in-memory `Session` object's own writer) has
+no way to know that patch happened, so the next time it writes the
+whole file — a second capture in the same session, the common case —
+it silently drops those fields (`HANDOFF.md` items 8a/8c, first
+observed in session `2026-08-05_163014`). The fix: when a live
+`Session` object exists for the exact directory `_record_correction_
+status` is patching, it also applies the identical update to that
+object's own in-memory capture entry, in the same call. One writer
+keeps both copies consistent, instead of two independently-evolving
+copies needing to be reconciled after the fact.
+
+**The seam.** `_on_process_finished` already holds both `self._session`
+and `self._last_process_session_dir` — comparing `self._session.dir.
+resolve()` against `Path(self._last_process_session_dir).resolve()`
+(resolved paths, not strings, per instruction) tells it whether a live
+Session exists for the directory about to be patched. When it does,
+that `Session` object is passed through as the new `live_session=`
+parameter; when it doesn't (the manual processing wizard reprocessing
+some other session entirely, or no session open at all), `None` is
+passed and behavior is byte-for-byte what it was before this change.
+
+**Explicitly not touched, per instruction:**
+- The disk-read itself stays unconditional. It is not gated on
+  `live_session` — it's what lets this one function serve both
+  `_auto_process` and the manual wizard's non-live sessions without two
+  code paths, and the manual wizard's own behavior must not change.
+- `measure.py`'s `_on_exclude_toggled` — a second disk-patch writer with
+  the identical clobber mechanism (`HANDOFF.md` item A) — is not
+  covered. It has no access to a live `Session` object at all; covering
+  it would need a cross-module registry that does not exist. A
+  `# CAVEAT:` at the new code says so explicitly, so the next reader
+  does not assume this closes the whole defect class rather than one
+  call site of it.
+
+Verification (the reproduction: two Snaps in one session, both
+`session.json` states pasted in full; the manual wizard reprocess path
+confirmed unaffected; render-check) reported in the matching "Build"/
+"Record build" entries.
+
 ### Record build: session.json onto the repo's existing crash-safe write idiom
 
 Built to the intent recorded below. No deviation: `Session.write` and
