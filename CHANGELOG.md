@@ -49,14 +49,26 @@ qt_shell; ..."`), no environment manipulation**, ambient
 acceptance test the fix is judged against, not a cleaned/exported
 environment. `qt_shell.py --render-check` re-run clean, no regressions.
 
-**Unexplained divergence, recorded not resolved**: the 2026-08-05
-measurement (unset = 18.0pt PibotoLt, visually confirmed by B) and the
-2026-08-06 re-measurement of the same condition (9.0pt Sans Serif)
-directly contradict each other. Nothing about the earlier run's
-`XDG_CURRENT_DESKTOP`/`XDG_SESSION_DESKTOP`/`XDG_SESSION_TYPE`/session
-wrapper was recorded anywhere in the repo, so the 2026-08-06 session
-could not diff against it and could not establish what changed. Not
-assumed to mean the earlier reading was wrong — recorded as open in
+**Divergence explained, 2026-08-06 (follow-up session), read-only
+investigation.** The 18.0pt and 9.0pt readings for the nominally same
+`env -u QT_QPA_PLATFORMTHEME` command were both captured by the same
+prior session's transcript, in the same shell, same boot — no reboot
+between them, so the reboot never explained anything (it was a
+troubleshooting guess partway through that same session). The real
+cause: the 18.0pt reading ran `import qt_shell` against old
+`main`-branch code (`os.environ.setdefault("QT_QPA_PLATFORMTHEME",
+"gtk3")`) at a point in the transcript before this branch even existed
+— `env -u` had genuinely stripped the var from that process, so
+`setdefault` set `gtk3` and it worked, which was never Qt
+auto-detecting anything. Once this branch's first fix attempt rewrote
+the function to clear-only (no explicit set), the identical `env -u`
+test stopped going through any `setdefault` call and fell back to Qt's
+built-in default — the 9.0pt reading. Reproduced directly, read-only,
+no branch switch: the literal old `setdefault(..., "gtk3")` line under
+`env -u QT_QPA_PLATFORMTHEME` reproduces 18.0pt PibotoLt exactly;
+stripping `QT_QPA_PLATFORMTHEME`/`XDG_CURRENT_DESKTOP`/
+`XDG_SESSION_DESKTOP` together with no `qt_shell` import still gives
+9.0pt — Qt itself never auto-detects `gtk3` here. Full trace in
 `HANDOFF.md`'s matching section.
 
 ## 2026-08-05

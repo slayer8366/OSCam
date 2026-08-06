@@ -2791,20 +2791,38 @@ platformtheme-plugin-check`, in order:**
    desktop — the acceptance test this whole fix is judged against.
    `qt_shell.py --render-check` re-run clean, no regressions.
 
-**Unexplained divergence, recorded rather than resolved:** the
-2026-08-05 code comment's own on-rig measurement claimed
-`QT_QPA_PLATFORMTHEME` unset = 18.0pt PibotoLt, visually confirmed by B.
-The 2026-08-06 session's fresh re-measurement of that exact condition
-(reboot immediately prior, ambient `qt5ct` confirmed present in the new
-shell first) got 9.0pt Sans Serif instead — the opposite result. Nothing
-about the earlier run's `XDG_CURRENT_DESKTOP`/`XDG_SESSION_DESKTOP`/
-`XDG_SESSION_TYPE`/session-wrapper was recorded anywhere in the repo, so
-there is nothing to diff the 2026-08-06 values above against, and no
-explanation could be established. This is recorded as open, not resolved
-— don't assume the earlier reading was simply wrong; if a future session
-can explain the divergence (a desktop-session config change, a Qt/plugin
-package update, something else), replace this paragraph rather than
-delete it.
+**Divergence explained, 2026-08-06 (follow-up session).** The
+"`QT_QPA_PLATFORMTHEME` unset = 18.0pt PibotoLt" reading and the later
+"9.0pt Sans Serif" reading for the nominally same `env -u
+QT_QPA_PLATFORMTHEME` command were both captured by the *same* prior
+session (transcript
+`~/.claude-agent2/projects/-home-bwann83-imx/8d430360-...jsonl`), in the
+*same shell, same boot* — no reboot between them. It was never about the
+reboot, the desktop session, or `XDG_*` hints. It was about which code
+`import qt_shell` ran: the first (18.0pt) reading, at that transcript's
+line 1593, ran against **old `main`-branch code** (this branch's `git
+checkout -b` happens later, at line 1636) — old `main` had
+`os.environ.setdefault("QT_QPA_PLATFORMTHEME", "gtk3")`. `env -u`
+genuinely stripped the var from that process's environment before Python
+started, so `setdefault` had nothing blocking it and set `gtk3`
+successfully (the transcript's own script even printed `"after import:
+gtk3"`). This was never Qt auto-detecting anything. Once this branch's
+first fix attempt rewrote the function to *only clear* an unloadable
+value, the identical shell-level `env -u` test no longer went through
+any `setdefault("gtk3")` call — clearing an already-absent var is a
+no-op — so Qt fell back to its own built-in default, giving the 9.0pt
+reading. Directly reproduced read-only, without switching branches:
+running the literal old `setdefault(..., "gtk3")` line under `env -u
+QT_QPA_PLATFORMTHEME` reproduces `18.0pt PibotoLt` exactly; stripping
+`QT_QPA_PLATFORMTHEME`/`XDG_CURRENT_DESKTOP`/`XDG_SESSION_DESKTOP`
+together with no `qt_shell` import at all still gives `9.0pt Sans
+Serif` — confirming Qt itself never auto-detects `gtk3` here under any
+tested condition, only an explicit `QT_QPA_PLATFORMTHEME=gtk3` (however
+it gets set) works. The fix on this branch as of the
+`_ensure_loadable_platformtheme` rewrite above already does the right
+thing — it explicitly sets `gtk3` (verified present) rather than only
+clearing, which is exactly the mechanism that produced `18.0pt` both
+times it ever worked.
 
 ### Keep RAW Images narrowed to raws only — BUILT (data-loss fix), self-check only
 
