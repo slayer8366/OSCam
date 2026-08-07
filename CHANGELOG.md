@@ -7,6 +7,125 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-07
 
+### Record build: Stage 3 sequence 1 — Check 1 (dimension scan) + the fix it drives
+
+Built to the intent above. `camera_backend.py` (new check function),
+`measure.py` (the one production-region literal it found), and
+`SWEEP_CHECKS.md` (the corrected row) — matches the intent entry's own
+stated scope exactly; `qt_shell.py`'s `GREEN_PLANE_RES` computation and
+live call-site bug untouched, as declared, left to sequences 2 and 3.
+
+**The check** (`camera_backend.py`): `_sensor_profile_dimension_pairs`
+derives the forbidden set live from whatever profile module(s)
+`_sensor_profile_module_names` discovers by shape (never a maintained
+list) — `FULL_ARRAY_SIZE` plus every `_CROP_TABLE` key, each in both
+axis orders, plus each pair's own integer halves.
+`_production_region_source` truncates a file at its own
+`render_check()`/`if __name__ == "__main__":` entry point, whichever
+comes first — a single principled cut excluding self-check fixtures,
+not a per-line exception list.
+`assert_no_hardcoded_sensor_dimension_above_driver_layer` tokenizes
+(`tokenize`, the same technique `_source_without_docs_and_comments`
+already uses, adapted from one object's source to a whole-file sweep)
+every non-driver `.py` file's production region for two adjacent
+`NUMBER` tokens forming a forbidden pair, comments and strings already
+stripped by the tokenizer itself.
+
+**Watched it fail, real output, foreground, exit code pasted — before
+any fix landed:**
+
+```
+$ python3 camera_backend.py
+[... every other self-check block PASSES first, in order, unchanged ...]
+assert_only_camera_backend_imports_sensor_profiles PASS: no other module imports a sensor-profile module (imx477.py discovered by shape, not a maintained list) directly -- the checkable half of PHILOSOPHY.md's revised sensor-profile rule
+Traceback (most recent call last):
+  File "/home/bwann83/imx/camera_backend.py", line 2064, in <module>
+    assert_no_hardcoded_sensor_dimension_above_driver_layer()
+  File "/home/bwann83/imx/camera_backend.py", line 1695, in assert_no_hardcoded_sensor_dimension_above_driver_layer
+    assert not hits, (
+AssertionError: hardcoded sensor dimension(s) found above the driver layer, production region only (see _production_region_source): ['measure.py:139 (4056, 3040)']
+exit: 1
+```
+
+**Exactly one hit, exactly the hand-baseline's one production-region
+literal, everything else the production-region exclusion correctly
+filtered.** 14 hits from the earlier hand+prototype scan (12
+hand-found, 2 more the prototype caught at `qt_shell.py:6542` that hand
+review missed — a two-tuple line, both mentioning a forbidden pair)
+came back clean: all 14 sit inside a `render_check()`/`if __name__`
+region and the check's own exclusion rule removed every one of them
+without a single per-line exception. The hand baseline's count (13) and
+the check's own first-run count (1, after exclusion) are **not the same
+number and are not supposed to be** — the hand count included every
+occurrence anywhere in the file; the check's own scope, stated in the
+intent entry, was always "production region only." No disagreement to
+resolve, and no superseding entry needed: the two counts were never
+measuring the same thing.
+
+**Fix** (`measure.py:133-144`): the `ImportError` fallback's hardcoded
+`FULL_RES = (4056, 3040)` becomes `FULL_RES = None` — no fabricated
+dimension for a case (`camera_backend.py` itself failing to import) this
+file cannot know the truth of. `GREEN_PLANE_RES`'s derivation guards
+against that `None` (`... if FULL_RES is not None else None`) rather
+than crashing measure.py's own import for a branch that, on this Pi,
+does not execute (`camera_backend.py` imports cleanly; the branch exists
+for a genuinely rare failure, not the common path).
+
+**Watched it pass, real output, foreground, exit code pasted:**
+
+```
+$ python3 camera_backend.py
+[... unchanged PASSES ...]
+assert_no_hardcoded_sensor_dimension_above_driver_layer PASS: no non-driver .py file's own production region contains a literal matching a profile-derived sensor dimension (or its half), in either axis order
+[... unchanged PASSES continue ...]
+camera_backend self-check PASS
+exit: 0
+```
+
+**Full sweep, every file this sequence touched or that depends on what
+it touched, foreground, real output, all clean:**
+
+```
+$ python3 measure.py --render-check   -> exit 0 (14 PASS lines; one
+    pre-existing RuntimeWarning, divide-by-zero in fit_ellipse's
+    _conic_to_ellipse at an a==c degenerate case -- unrelated to this
+    change, not introduced by it, not touched)
+$ python3 gallery.py --render-check   -> exit 0 (4 PASS lines, including
+    capture_has_annotation's own use of measure.py's green-plane hash)
+$ python3 qt_shell.py --render-check  -> exit 0 (full suite, every block
+    PASS, including Live Measure/Live Measuring's own
+    native_point_from_preview_click coverage -- unaffected, since this
+    sequence deliberately left qt_shell.py's own GREEN_PLANE_RES and its
+    live call-site bug to sequences 2/3)
+```
+
+**`SWEEP_CHECKS.md` corrected** (Geometry-derivation table, the
+dimension-claim row): import boundary stays Implemented on
+`assert_only_camera_backend_imports_sensor_profiles` (unchanged claim,
+still true); hardcoded dimensions is now genuinely Implemented, on the
+function this entry built, not the import check that never tested for
+it. Full corrected text in the file itself, not repeated here.
+
+**DISCOVERED:** `calibrate.py` is named in `HANDOFF.md`'s "Known
+problems" list ("`GREEN_PLANE_RES`/`FULL_RES` duplicated across
+`measure.py`, `qt_shell.py`, `gallery.py`, `calibrate.py`") but holds no
+actual `FULL_RES`/`GREEN_PLANE_RES` code — `grep` for both names plus
+every raw dimension literal turned up exactly one hit, a comment at
+`calibrate.py:312` mentioning `camera_backend.py`'s constants by name,
+not a duplication of them. `HANDOFF.md` itself already carries the
+caveat that its line numbers "haven't been re-verified since the port";
+this is that caveat firing for real. Not corrected in `HANDOFF.md` here
+— out of this sequence's stated scope (`camera_backend.py`,
+`measure.py`, `SWEEP_CHECKS.md` only) — recorded so the next reader
+doesn't go looking for code that isn't there.
+
+**Verification**: `--render-check`/bare-`python3` is *fixed*, run
+directly in the foreground on the Pi, not backgrounded, exit codes
+pasted above. Not *confirmed* — nothing here touches the rig, and
+nothing claims to. Branch `main`, working tree otherwise unchanged
+(`profile.json`/`calib/` excluded as always). Sequence 2 starts next,
+its own intent entry.
+
 ### Record intent: Stage 3 sequence 1 — Check 1 (dimension scan) + the fix it drives
 
 Baseline, measured before any other file is touched. Branch `main`, HEAD
