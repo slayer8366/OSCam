@@ -7,6 +7,104 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-07
 
+### Record intent: Stage 3 sequence 1 — Check 1 (dimension scan) + the fix it drives
+
+Baseline, measured before any other file is touched. Branch `main`, HEAD
+`f4c71ba`.
+
+**What Stage 3 is** (stated here since `HANDOFF.md`'s own Stage 3 entry
+still reads "named in conversation, not detailed here" and this session's
+own task brief is the first place a closed scope for it exists): sensor
+knowledge collapses to one file (`camera_backend.py` + its sensor-profile
+module); everything else asks rather than duplicates. Three checks, each
+landed with the change that satisfies it, its own three-phase sequence,
+main kept green between them — this entry opens the first.
+
+**The SWEEP_CHECKS.md correction, folded into this sequence rather than a
+separate one** (the check it corrects is what this sequence builds):
+`SWEEP_CHECKS.md`'s "Geometry derivation" table has a row titled "No
+hardcoded sensor dimension above the driver layer," marked **Implemented**,
+citing `assert_only_camera_backend_imports_sensor_profiles` as its
+evidence. That function verifies no module *imports* a sensor-profile
+module — it is real and does exactly what it claims — but an import check
+does not test for a hardcoded dimension; `GREEN_PLANE_RES`, `FULL_RES`,
+and reversed-order shape literals are all present above the driver layer
+today while that check passes clean. The row will be corrected as part of
+this sequence's build entry: import boundary implemented (unchanged
+claim), hardcoded dimensions a gap now being closed (new claim,
+replacing the false one). Not corrected here in the intent entry itself —
+the correction is properly part of recording what was BUILT, since intent
+only states what's about to happen.
+
+**Baseline, hand-counted — Check 1 doesn't exist yet, so this count comes
+from manual review (`grep` + read), not from the tool it is a baseline
+for.** Forbidden set: `imx477.FULL_ARRAY_SIZE` `(4056, 3040)`, every
+`_CROP_TABLE` key `(2028, 1520)`/`(2028, 1080)`/`(4056, 2160)`/
+`(1332, 990)`, each in both axis orders, plus each pair's own integer
+halves — 16 pairs total, by hand arithmetic (`//2` on each component of
+6 unique dimensions × 2 orders, minus no collisions found). Reviewed
+every `.py` file in the project root except `camera_backend.py`/
+`imx477.py` themselves (the driver layer, exempt by the check's own
+scope) for a literal occurrence of any pair in that set:
+
+```
+measure.py:139   (4056, 3040)   -- FULL_RES ImportError-fallback literal
+qt_shell.py:6601 (1332, 990)
+qt_shell.py:6926 (4056, 3040)
+qt_shell.py:7301 (2028, 1520)
+qt_shell.py:7312 (2028, 1520)
+qt_shell.py:7375 (2028, 1080)
+qt_shell.py:7376 (2028, 1080)
+qt_shell.py:7380 (2028, 1080)
+qt_shell.py:7386 (2028, 1080)
+qt_shell.py:8056 (1332, 990)
+qt_shell.py:8057 (4056, 3040)
+pixel_hash.py:73  (2028, 1520)
+plane_cache.py:240 (1520, 2028)
+```
+
+**13, hand-counted.** Every one of these except `measure.py:139` sits
+inside that file's own `render_check()`/`if __name__ == "__main__":`
+self-check region (read directly, not assumed) — plausible or
+driver-real test data for a generic mechanism (a string formatter, a
+hash round-trip, a cache path, a UI combo box), not a production-path
+assumption about the sensor's true geometry. `measure.py:139` is the one
+hit outside any self-check region — real production code, reached
+whenever `camera_backend` fails to import.
+
+Separately, not literal-scanner-detectable and not counted above because
+neither is a raw number token: `measure.py:141` and `qt_shell.py:470`
+each independently compute `GREEN_PLANE_RES = (FULL_RES[0] // 2,
+FULL_RES[1] // 2)` — the actual duplicated-formula defect
+`HANDOFF.md`'s "Known problems" list names, addressed by Check 2's own
+sequence, not this one; named here so the baseline doesn't imply Check 1
+alone closes the whole "Known problems" item.
+
+**What this sequence will build**, to be checked against this baseline
+once done: a tokenizing scanner (`tokenize`, not `grep` — the existing
+`_source_without_docs_and_comments` technique adapted to a whole-tree
+sweep) that derives its forbidden set from the loaded profile at run
+time (never a maintained list, same discovery predicate
+`_sensor_profile_module_names` already uses), scans every non-driver
+`.py` file's own PRODUCTION region (everything before its own
+`render_check()`/`if __name__` self-check entry point — a single
+principled exclusion rule covering all 12 self-check hits above, not a
+per-line exception list), and reports every hit with file/line for a
+human to review rather than silently filtering any of them. Then: fix
+whatever the check's first real run finds in the production region
+(`measure.py:139`, expected already from the hand count), re-run to
+green, run the full `--render-check` sweep on every file this session
+touches, and correct the `SWEEP_CHECKS.md` row.
+
+Scope for this sequence, so the build entry can be checked against it:
+touches `camera_backend.py` (new check function), `measure.py`
+(`FULL_RES` fallback fix only — not the `GREEN_PLANE_RES` formula
+duplication, deliberately left to sequence 2's own check), and
+`SWEEP_CHECKS.md` (the one row). Does not touch `qt_shell.py`'s own
+`GREEN_PLANE_RES` computation or its live call-site bug (sequences 2 and
+3 respectively) or `gallery.py`/`calibrate.py` (neither holds a
+production-region hit).
+
 ### Record: Stage 3 Step 0 addendum — second, longer distance mark on the same reference
 
 Work-is-the-outcome form, no intent phase: one measurement taken, no plan
