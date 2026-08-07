@@ -5,6 +5,616 @@ dump — each entry names the commit(s) it corresponds to for traceability.
 See `HANDOFF.md` for what a fresh agent needs to know before working here;
 this file is the historical record of what happened and why.
 
+## 2026-08-07
+
+### Audit: PHILOSOPHY.md rule bindings and originating incidents (Q1-Q5)
+
+Branch `claude/philosophy-rule-audit-4sjk4i`, HEAD `ce2183e` at start,
+unchanged by this work except for this entry's own commit — no other file
+touched. Environment: cloud sandbox, confirmed before starting, not
+inferred (no `picamera2`, no live `DISPLAY`, no rig, no ssh route to the
+Pi) — everything below is document analysis and `git`/`CHANGELOG.md`
+archaeology, nothing that touches hardware, so nothing here can be moved
+past *fixed* to *confirmed*. This entry is the whole task's outcome
+(audit report only, no `PHILOSOPHY.md` edits, no restructuring, no new
+rules); work-is-the-outcome form, no intent phase, per instruction. `main`
+resolves to `ce2183e` too (`git fetch origin main` then `git rev-parse
+--short origin/main`); the task brief's stated floor of `4a6a918` does not
+resolve to an object in this repo (`git cat-file -t 4a6a918` →
+`fatal: Not a valid object name`) — flagged rather than silently
+substituted, since a wrong baseline is exactly the kind of unchecked
+assumption this project warns against.
+
+**Q1 — Inventory.** Sixteen rules total: nine under "Strict rules — do not
+break these", seven under "Working principles that have earned their place"
+(the two sections the task scopes this audit to). For each: the rule text,
+then BINDING and INCIDENT if PHILOSOPHY.md's own text carries them — quoted,
+not paraphrased. "Referenced" means the document points at an incident
+without narrating it.
+
+**Strict rules:**
+
+**1. Measurement substrate is green plane or linear master, always.**
+> "Measurement substrate is green plane or linear master, always. See
+> above. There is no acceptable exception, including 'just for a preview'
+> or 'just for this one check.'"
+
+BINDING (via "See above", in the provenance-model section):
+> "The codebase enforces this structurally: `debayer.py` tags such outputs
+> `"kind": "display-referred derivative (NOT a measurement)"`, and
+> `measure.py`'s `check_measurement_provenance()` refuses to load anything
+> carrying that flag."
+
+INCIDENT:
+> "A real bug from this project's history, worth internalizing: a feature
+> once checked 'does this capture have annotations?' by hashing the
+> session's `final_display.tif`. That file is structurally excluded from
+> the annotation store by the rule above — so the check would have
+> reported 'never annotated' for every capture, including ones with real
+> measurements on them. It looked reasonable, would have run without
+> error, and would have been quietly wrong."
+
+**Both.**
+
+**2. Stores are append-only.**
+> "Stores are append-only. Never edit or delete an existing entry. Never
+> 'clean up' a store. If a stored value is wrong, the fix is a new entry
+> that supersedes it."
+
+No BINDING, no INCIDENT in this rule's own text. (The atomicity sentence
+two paragraphs earlier — "Every store write is atomic — temp file, then
+`os.replace` — so a crash mid-write can't leave a truncated store" — binds
+crash-safety, a different property from append-only-ness, and isn't cited
+from this rule.) **Neither.**
+
+**3. Overlays never touch capturable pixels.**
+> "Overlays never touch capturable pixels. The focus box, the XY ruler,
+> measurement marks — all composite over the live feed or the displayed
+> image as a separate layer. The image data itself is never drawn into."
+
+No BINDING, no INCIDENT cited. **Neither** (in-document — see Q2 for what
+exists uncited in code).
+
+**4. Camera-bound operations stay behind `camera_backend.py`.**
+Core statement:
+> "Camera-bound operations stay behind `camera_backend.py`. The camera
+> adapter is deliberately thin and provenance-unaware... it's currently
+> intact, which was confirmed rather than assumed."
+
+BINDING, explicit and strong:
+> "`camera_backend.py`'s own self-check runs
+> `assert_only_camera_backend_imports_picamera2` (no other file may import
+> `picamera2`/`libcamera`) and
+> `assert_only_camera_backend_imports_sensor_profiles` (no other file may
+> import a sensor-profile module — discovered by shape... not a maintained
+> list, so a future `imx519.py` is covered the moment it exists)."
+
+INCIDENT: referenced, not narrated —
+> "Stated more strictly, because a later decision hardened it, then
+> revised again when `PRIORITY_click_mapping_fix.md` outgrew the original
+> wording..."
+and, describing a failure mode rather than a dated event:
+> "the guard keeps passing while covering less than it claims. Nothing
+> fails; the boundary just quietly stops being enforced for new profiles.
+> That silent gap is exactly the defect this rule exists to catch."
+
+**Binding present; incident pointed at but not told in-document** (recovered
+externally — see Q3).
+
+**5. Pure logic is Qt-free and camera-free.**
+> "Pure logic is Qt-free and camera-free. Anything that isn't obviously GUI
+> wiring belongs in a module-level, testable section, not inline in a
+> widget method. Every module has a `--render-check` self-test that runs
+> with no camera and (mostly) no PyQt6. This isn't a testing preference;
+> it's what makes the measurement logic verifiable at all."
+
+BINDING: weak/implicit — "Every module has a `--render-check` self-test
+that runs with no camera and (mostly) no PyQt6" is a general, checkable-in-
+principle claim, but no named assertion is cited the way rule 4 cites two.
+No INCIDENT. **Weak binding only.**
+
+**6. `--render-check` coverage is the definition of done.**
+> "New logic without a corresponding self-check assertion isn't finished.
+> And assert the thing that actually matters, not its proxy — 'the output
+> file exists' is a much weaker claim than 'the output file carries the
+> provenance block it's supposed to.'"
+
+No BINDING (this is a meta-rule about what "done" means; there's no stated
+mechanism that checks whether every new function got a check — that's an
+absence claim, structurally different from the presence claims the other
+bindings make). No INCIDENT. **Neither.**
+
+**7. One session folder contributes one z-stack plane.**
+> "One session folder contributes one z-stack plane. A stack spans
+> *across* session folders via tags; it is never assembled from a single
+> session's own capture list."
+
+No BINDING. INCIDENT, referenced but not detailed:
+> "This one has already been violated once and caused a real bug. If
+> z-stack code looks like it's reading one session's captures for multiple
+> planes, that's the same bug recurring."
+
+**Incident referenced, not detailed** (recovered externally — see Q3).
+
+**8. The `calib/` directory is real specimen data.**
+> "The `calib/` directory is real specimen data. Not test fixtures. Never
+> modify, move, or delete it."
+
+No BINDING, no INCIDENT. **Neither.**
+
+**9. A `CHANGELOG.md` entry, once written, is never modified.**
+(The intent/build/record-build convention, plus the three merge-conflict
+resolution forms.)
+
+BINDING, explicit — this is the task's own worked example:
+> "Each phase is its own commit. The intent commit contains the CHANGELOG
+> entry and nothing else, and is committed before any other file is
+> touched. That commit boundary is what makes the ordering checkable
+> rather than asserted — three entries landing in one commit prove nothing
+> about which one actually came first. Record intent before the build
+> begins; it gets a diff, so `git log -p CHANGELOG.md` shows exactly when
+> it appeared."
+
+And for merge-conflict resolutions specifically:
+> "confirm every pre-existing entry is still present, still byte-identical,
+> and still sitting under its own header, never folded into a neighbor's."
+
+No INCIDENT narrated *in PHILOSOPHY.md itself*. The specific failure story
+that motivates the merge-conflict-form guard — "a superseding entry has
+previously consumed the superseded entry's header line and left its body
+orphaned under the new title, and the diff looked clean throughout" — lives
+in `CLAUDE.md`, not `PHILOSOPHY.md`. Worth flagging on its own: the binding
+and its incident are currently split across two documents, and an agent who
+reads only `PHILOSOPHY.md` (which is what it itself tells you to read first)
+gets the binding with no story attached to it. **Binding present; incident
+absent from this document.**
+
+**Working principles that have earned their place:**
+
+**10. Evidence, never a gate.**
+> "Several checks detect problems — a stale calibration, a soft z-stack
+> plane, unusual CA curvature. Every one of them *surfaces* the finding and
+> lets a human decide. None auto-corrects, auto-excludes, or blocks."
+
+No BINDING, no INCIDENT. **Neither.**
+
+**11. Absence is not evidence of a mismatch.**
+> "When checking whether something has drifted, skip fields an older
+> record never captured rather than flagging them... Absence with a
+> recorded reason is provenance; absence without one is a gap that looks
+> like corruption."
+
+No BINDING, no INCIDENT. **Neither.**
+
+**12. Don't build ahead of evidence.**
+> "A chromatic-aberration correction model is specced, understood, and
+> deliberately unbuilt — because no real target has yet exhibited the
+> curvature it would correct. Building it would mean validating it against
+> nothing."
+
+No BINDING, no INCIDENT. **Neither.**
+
+**13. Additive over replacing.**
+> "Video recording sits alongside still capture. A general processing
+> wizard sits alongside the existing session-based one... This has
+> consistently been the lower-risk choice here."
+
+No BINDING, no INCIDENT — "consistently" claims a track record without
+citing one. **Neither.**
+
+**14. One uniform path beats a special case.**
+> "A single-frame group still goes through frame-averaging rather than
+> short-circuiting to a copy — one code path, one honest provenance
+> record, no separately-behaving branch that nobody thought to test."
+
+No BINDING, no INCIDENT. **Neither.**
+
+**15. Report honestly, never silently swallow.**
+> "A failed item in a batch gets recorded and the batch continues. A
+> failure never becomes a silent success, and a partial result never gets
+> presented as a complete one."
+
+No BINDING, no INCIDENT. **Neither.**
+
+**16. Separable features carry removal instructions.**
+> "Larger optional features are bounded by banner comments naming exactly
+> what to delete to remove them. If you build something optional, do the
+> same."
+
+No BINDING, no INCIDENT. **Neither.**
+
+**Inventory summary:**
+
+| # | Rule | Binding | Incident |
+|---|---|---|---|
+| 1 | Measurement substrate | Yes | Yes |
+| 2 | Stores append-only | No | No |
+| 3 | Overlays never touch pixels | No | No |
+| 4 | camera_backend.py seam | Yes | Referenced only |
+| 5 | Pure logic Qt/camera-free | Weak | No |
+| 6 | render-check = done | No | No |
+| 7 | One session, one z-plane | No | Referenced only |
+| 8 | calib/ is specimen data | No | No |
+| 9 | CHANGELOG never modified | Yes | No (in this doc) |
+| 10 | Evidence, never a gate | No | No |
+| 11 | Absence ≠ mismatch | No | No |
+| 12 | Don't build ahead of evidence | No | No |
+| 13 | Additive over replacing | No | No |
+| 14 | Uniform path > special case | No | No |
+| 15 | Report honestly | No | No |
+| 16 | Removal instructions | No | No |
+
+Of 16 rules, 3 carry an explicit in-document binding (1, 4, 9), 1 carries a
+weak one (5). Only 1 rule carries a fully-told incident (1); two more point
+at one without telling it (4, 7). **Every one of the seven "working
+principles"** — the section whose own title claims they've "earned their
+place" — carries neither, in-document.
+
+---
+
+**Q2 — The gaps (rules with no binding).** For each rule with no binding
+above, whether one is possible and what it would check. Not written into
+the document — this is the report only.
+
+**Stores are append-only (general).** Bindable, and by direct analogy to
+rule 9's own binding: the three JSON stores (spatial calibration, CA
+calibration, annotations) are files in the repo/working tree across
+sessions. A binding would run `git log -p` (or an equivalent diff-since-
+last-check for files that aren't committed every session) over each store
+file and assert every previously-present record ID is still present,
+byte-identical, with any change appearing only as a *new* entry carrying a
+`supersedes` pointer to an existing ID — the same check rule 9 already
+states for `CHANGELOG.md`, applied to three more files.
+
+**Overlays never touch capturable pixels.** Bindable, and partially already
+implemented in code without being cited from the document (see Q4 below —
+`qt_shell.py`'s `render_overlay`/`render_overlay_into` build a separate RGBA
+buffer, and `qt_shell.py:6200`'s render-check asserts
+`ov.shape == (LORES_RES[1], LORES_RES[0], 4)`). The stronger, more direct
+version of this binding doesn't exist yet: capture the same frame with an
+overlay showing and with it hidden, and assert the two saved output files
+hash identically — proving the overlay never reached the bytes written to
+disk, not just that it lives in a separate array at render time.
+
+**`--render-check` coverage is the definition of done.** Only partly
+bindable. "New logic without a check isn't finished" can't be proven by a
+script in general — that's a claim about the absence of something, and this
+repo already has the tool that gets closest: `function_index.py`. A binding
+built from it could diff a module's function list between two commits and
+flag any new module-level function with no matching assertion added to that
+module's `render_check()` in the same diff. That catches *zero coverage*.
+It cannot catch the rule's second half — a check that asserts a weak proxy
+("the file exists") instead of the real claim ("the file carries the
+provenance block") — because judging whether an assertion is *the right*
+assertion is exactly the kind of judgment call this project's own "Evidence,
+never a gate" principle reserves for a human.
+
+**The `calib/` directory is real specimen data.** Bindable in two forms.
+Cheaply: `git log --all -- calib/` should return nothing — and, observed,
+it does return nothing in this repo right now, consistent with `calib/`
+never being committed at all (`CLAUDE.md`'s own write-permissions table:
+"nobody" writes to it). More directly: a before/after hash or mtime sweep
+of everything under `calib/` at session start and session end would catch
+in-place modification even when nothing gets staged or committed.
+
+**Evidence, never a gate.** Partially bindable, and weaker than the others.
+A detector function's *purity* is inspectable: does it write to the store
+or filesystem it's reading, and is its return value ever consumed by code
+that branches into deletion or auto-exclusion? That's checkable by static
+inspection of call sites (grep for a detector name, confirm no caller uses
+the result as a condition gating a mutation) but not by a single black-box
+command the way `git log -p` is — it needs a maintained list of detector
+names to check against, which is itself a smaller version of the same
+"guard covers less than it claims" failure mode rule 4 already names.
+
+**Absence is not evidence of a mismatch.** Cleanly bindable as a concrete
+test: construct an old-format record missing a field a newer schema version
+introduced, run the drift/consistency checker over it, and assert zero
+mismatches are flagged for that specific missing field (while a record that
+*has* the field and disagrees on its value still gets flagged normally).
+This is a runnable unit test, not yet written as one.
+
+**Don't build ahead of evidence.** The weakest candidate for a binding of
+any rule in this document — arguably genuinely unbindable as a rule, not
+just unbound today. What's checkable is only a snapshot fact ("is the
+CA-correction model absent from the codebase right now" — yes, observed:
+no `ca_lib.py`/`ca_measure.py` code implements curvature correction). That
+snapshot can't catch a *future* violation, because the rule's own trigger
+condition — evidence arriving — changes what compliance means the moment it
+happens. Whether the evidence that has arrived is *sufficient* to build
+against is a judgment call, not a structural property.
+
+**Additive over replacing.** Weakly bindable per-instance, not as a general
+rule: for a named pair (still capture vs. video recording; the session
+wizard vs. the general processing wizard), assert the older path's own
+`render_check()` still passes unmodified after the newer one lands. That
+catches regression of the *kept* path but can't classify "was this addition
+additive or a disguised replacement" in general — that classification is
+a design judgment, not a structural test.
+
+**One uniform path beats a special case.** Bindable per-instance, and in
+fact the closest of the ungated working principles to already having one:
+`process_wizard.py`'s own render-check (per its `CHANGELOG.md` build entry)
+already asserts the 1-frame case produces `frame_average.py`'s real
+provenance shape, "not a special-cased copy that happens to look right."
+That's a working example of exactly this binding, just not generalized or
+cited from `PHILOSOPHY.md`.
+
+**Report honestly, never silently swallow.** Bindable per call site: for
+any batch-processing entry point, feed it a batch containing one
+deliberately-broken item and assert the result has length N (not N-1), the
+broken item's own record carries an error field, and no bare/broad
+`except` swallows the failure before it's recorded. `process_wizard.py`'s
+render-check already does this for its own batch loop (see Q3 below);
+formalizing it as a named, reusable assertion pattern is the gap.
+
+**Separable features carry removal instructions.** Cleanly bindable: grep
+every module for a paired feature-boundary banner (start/end markers naming
+the same feature) and confirm each pair actually states what to delete.
+Cheap, mechanical, and the convention already exists in at least one place
+in the code (an "INTEGRATION banner's removal instructions," per
+`CHANGELOG.md`) without a check enforcing its presence generally.
+
+**Pure logic is Qt-free and camera-free (upgrading the weak binding).**
+Strengthenable to match rule 4's own strength: run each module's
+`render_check()` in a process where `PyQt6` and `picamera2` are actually
+blocked from importing (poison `sys.modules` rather than merely "happen not
+to be installed"), proving the *logic itself* never imports them rather
+than only proving today's headless run manages to pass. This would make the
+binding hard in the same sense rule 4's two `assert_only_camera_backend_*`
+checks are hard.
+
+---
+
+**Q3 — The missing incidents.** Searched `CHANGELOG.md` (8,210 lines) and
+`git log --all` for a failure that plausibly produced each rule with no
+incident narrated in `PHILOSOPHY.md`. Reporting exactly what was found,
+with commit hashes, and saying "found nothing" where that's the honest
+result — not constructing a plausible story to fill the gap, per the
+task's own explicit warning about that failure mode.
+
+**Camera_backend.py seam (rule 4) — found.** `PHILOSOPHY.md` only points at
+this ("revised again when `PRIORITY_click_mapping_fix.md` outgrew the
+original wording") without narrating it. Commit `0639d4e`, "Fix:
+PHILOSOPHY.md's sensor-profile rule had gone stale (and uncheckable)":
+
+> "The rule as written ('`camera_backend.py` is the only file in this
+> project that may know what an IMX477 is') had a property worth keeping
+> even though `imx477.py` had already outgrown it: it was checkable by a
+> plain grep. Reasoning past the stale wording without updating it would
+> have left a document that disagreed with the code it's supposed to
+> govern — the next reader could reasonably 'fix' the disagreement by
+> folding `imx477.py` back into `camera_backend.py`, undoing the modularity
+> on the authority of a rule nobody had corrected."
+
+That commit is also where `assert_only_camera_backend_imports_sensor_profiles`
+was added (`camera_backend.py:1570`), verified at the time against a
+throwaway sibling file confirmed to trip the assertion before being deleted.
+This is a real, dated, hash-bearing incident; `PHILOSOPHY.md` just doesn't
+tell it.
+
+**One session, one z-stack plane (rule 7) — found.** Also only referenced
+in-document ("already been violated once"). Commit `7bc204b`, "Review pass:
+fixed six real defects", item 2:
+
+> "`measure.py`'s z-stack `_load_stack` was unreachable and broken: it was
+> never called by anything, read a `'base'` key no capture entry has ever
+> had, and assembled a stack from one session's captures when the real
+> model is one-session-one-plane. Rebuilt on `stacks.py`'s actual API..."
+
+Same treatment as rule 4: a real incident exists and is findable, the
+document just doesn't carry the specifics.
+
+**Stores are append-only (general) — found nothing.** No `CHANGELOG.md`
+entry or commit describes an in-place edit to the spatial-calibration,
+CA-calibration, or annotation stores. `CHANGELOG.md` mentions the
+append-only *convention* repeatedly (e.g. line 4801: "licenses editing a
+landed entry, which the append-only stores rule two..." — a reference to
+the rule, not a violation of it) but never a case where a store actually
+got edited or "cleaned up." Genuinely nothing found.
+
+**Overlays never touch capturable pixels — found nothing directly, one
+adjacent near-miss.** No commit or `CHANGELOG.md` entry describes overlay
+content actually reaching saved pixels. The closest adjacent material is
+compositor/fullscreen-scaling debugging (`CHANGELOG.md` around lines
+7438–7540, a Wayland `xdg_toplevel` fullscreen-state investigation) — a
+different problem (display scaling, not pixel-data contamination) that
+happens to share the word "compositor." Not the same failure; not counted
+as a match.
+
+**`--render-check` coverage is the definition of done — found nothing
+directly, three adjacent (but distinct) matches.** `PHILOSOPHY.md`'s own
+"Verification culture" section (outside this audit's two scoped sections,
+noted for completeness) names three genuine self-check-coverage incidents —
+the live-measure-panel handler never wired into `eventFilter`, `get_
+capabilities()` never tested mid-preview, and Live Measuring's structural
+check never called from anywhere. Those are about a check *existing but not
+running*, which is close in spirit but not the same claim as this rule's
+("new logic has no check *written* at all" / "the check asserts a weak
+proxy"). Flagging the near-miss rather than claiming a match.
+
+**The `calib/` directory — found nothing.** No commit or entry describes
+`calib/` being modified, moved, or deleted. It appears in dozens of
+CHANGELOG lines only as the recurring exclusion note "`profile.json`/
+`calib/` excluded as always; not pushed" — every one of those is the rule
+being *followed*, not violated.
+
+**`CHANGELOG.md` entry, once written, never modified (rule 9) — found in a
+sibling document, not this one.** The specific incident — "a superseding
+entry has previously consumed the superseded entry's header line and left
+its body orphaned under the new title, and the diff looked clean
+throughout" — is the exact language of `CLAUDE.md`'s "Verify append-only
+after each phase" section, not `PHILOSOPHY.md`'s. Confirmed by grep
+(`orphaned|consumed the superseded` matches only `CLAUDE.md`, zero matches
+in `PHILOSOPHY.md`). The incident exists; it just isn't in the document
+this audit was asked to check.
+
+**Evidence, never a gate — found nothing.** `CHANGELOG.md` line 6283 shows
+the principle being *applied correctly* while building the export/orphan-
+scan feature ("the write is the deliverable, the scan is comparatively
+expensive and is evidence, never a gate") — a design decision citing the
+rule, not a failure that produced it.
+
+**Absence is not evidence of a mismatch — found nothing.** No commit
+narrates a case where an old record's missing field was wrongly flagged as
+drift.
+
+**Don't build ahead of evidence — found nothing.** No commit describes
+building something that was later found impossible to validate. The CA-
+correction-model example the rule itself gives is presented as a standing
+decision, not a past mistake corrected.
+
+**Additive over replacing — found nothing.** No commit narrates a replace-
+then-regret story.
+
+**One uniform path beats a special case — found nothing as an incident**,
+though `CHANGELOG.md`'s `process_wizard.py` build entry applies the
+principle explicitly (1-frame groups deliberately not special-cased,
+"not a special-cased copy that happens to look right") — again a correct
+application, not a failure.
+
+**Report honestly, never silently swallow — no exact match, one plausible
+partial match, reported as such rather than overclaimed.** Commit `f4af4fd`,
+"Fix: `_stash_lores`'s `RuntimeError` guard now distinguishes still-mode
+race from real lores decode failure":
+
+> "`camera_backend.py`'s `_stash_lores`... has always had a blanket `except
+> RuntimeError: return`... silently swallowing every other `RuntimeError`
+> too — including a lores stream that's configured but genuinely failing to
+> decode on every frame..."
+
+This is a real silent-failure bug with the right shape (an overly broad
+exception handler erasing a real error), but it's about a single-value
+diagnostic path, not the rule's own stated shape — "a failed *item in a
+batch*... gets recorded and the batch continues." Reporting it as adjacent
+and plausible, not as confirmed provenance for this specific rule.
+
+**Separable features carry removal instructions — found nothing as an
+incident**, one confirming (non-incident) reference: `CHANGELOG.md` line
+6094 mentions an "INTEGRATION banner's removal instructions" existing and
+being left unaffected by an unrelated change — evidence the convention is
+practiced, not evidence of a failure that produced the rule.
+
+**Q3 summary.** Of the 13 rules with no incident narrated in `PHILOSOPHY.md`, real dated
+incidents were recovered for 2 (rules 4 and 7 — both merely under-cited in
+the document, not actually undocumented anywhere in the repo). One more
+(rule 9) has its incident, verbatim, in a sibling document. For the
+remaining 10, the search came back empty or only turned up the principle
+being correctly *applied* — which is not the same claim as a failure that
+produced it — with one honest partial match (`f4af4fd`) flagged as
+adjacent-but-imperfect rather than treated as confirmation.
+
+---
+
+**Q4 — The suspects (neither binding nor incident).** Eleven of sixteen
+rules carry neither, in-document:
+
+- Stores are append-only (2)
+- Overlays never touch capturable pixels (3)
+- `--render-check` coverage is the definition of done (6)
+- The `calib/` directory is real specimen data (8)
+- Evidence, never a gate (10)
+- Absence is not evidence of a mismatch (11)
+- Don't build ahead of evidence (12)
+- Additive over replacing (13)
+- One uniform path beats a special case (14)
+- Report honestly, never silently swallow (15)
+- Separable features carry removal instructions (16)
+
+Stated plainly, per the task's framing: these eleven may be preferences
+rather than invariants, as the document currently stands. That is not the
+same claim as "these are wrong" — several (append-only stores, calib/,
+overlays) are almost certainly load-bearing in exactly the way the four
+bound-and-storied rules are, and Q2 showed concrete bindings are possible
+for most of them. It *is* the same claim the task's own background makes
+about the pre-binding version of the CHANGELOG rule: a rule in this shape
+is satisfiable in spirit only, by an agent's own say-so, and nothing in the
+document currently lets a third party check that without trusting the
+agent. Not proposing removing any of them — only naming which eleven
+currently rest on the document's authority alone.
+
+Worth naming separately: all seven "Working principles that have earned
+their place" fall in this set. Every rule in that section, as written,
+currently satisfies "earned their place" by assertion only.
+
+---
+
+**Q5 — One worked example: the substrate rule.** Taking "measurement
+substrate is green plane or linear master" through the three-clause form,
+concretely, so it's judgable against the rest rather than described in the
+abstract. This is report content — not a proposed edit to `PHILOSOPHY.md`.
+
+**RULE.** A measurement (a distance, an annotation mark, anything
+`measure.py` computes a real-world quantity from) is only ever taken on
+the green plane (one de-mosaiced green channel) or a linear master. Never
+on a display-referred derivative — anything that has passed through
+sharpening, tonemapping, or CLAHE — because those operations move apparent
+edge positions, so a measurement taken on one measures where the processing
+put the edge, not where the specimen boundary is.
+
+**BINDING.** `debayer.py:701` tags any display-referred output it produces
+with `"kind": "display-referred derivative (NOT a measurement)"`.
+`measure.py:175-184`'s `check_measurement_provenance()` reads that embedded
+tag and raises before anything downstream can measure on a flagged file —
+observed directly in the source, not inferred (`measure.py:184`: `if desc
+and isinstance(desc.get("kind"), str) and "NOT a measurement" in
+desc["kind"]:` → raises). A third party can run this without trusting the
+author: feed `check_measurement_provenance()` a file carrying that tag and
+confirm it raises; feed it an untagged green-plane file and confirm it
+doesn't. `measure.py`'s own render-check (line ~1674-1678) already does
+exactly this, both directions.
+
+This binding is **partial**, in a specific, nameable way: it's a blocklist,
+not an allowlist. It proves a *flagged-bad* file gets refused. It does not
+independently prove that a file which *reaches* `measure.py` unflagged
+really is green-plane or linear-master data — only that nothing marked it
+otherwise. A code path that produced a display-referred image *without*
+setting the tag would sail through this check exactly the way the
+`final_display.tif`-hashing bug would have sailed through a naive "does
+this file exist" check. The binding is real and checkable, but it inherits
+the same shape of gap the incident below describes.
+
+**INCIDENT.** From `PHILOSOPHY.md` itself:
+
+> "A real bug from this project's history, worth internalizing: a feature
+> once checked 'does this capture have annotations?' by hashing the
+> session's `final_display.tif`. That file is structurally excluded from
+> the annotation store by the rule above — so the check would have
+> reported 'never annotated' for every capture, including ones with real
+> measurements on them."
+
+Traced this one step further than the document does, in the spirit of the
+task's own warning about unverified incident claims: the exact prose was
+introduced in commit `36ab34f` ("Expand PHILOSOPHY.md into a full
+design-philosophy and working-rules doc"), as documentation text with no
+accompanying bug-fix diff in that same commit. What *does* corroborate it
+is commit `eda9b5c` ("Add gallery.py"), earlier in history, building the
+real `capture_has_annotation` check and reasoning through the identical
+trap by name — "not hashing whatever small file happens to already sit in
+the session folder" — while explicitly choosing the green-plane hash
+instead. That's strong circumstantial support that the concern was real and
+specifically considered during `gallery.py`'s design, not manufactured after
+the fact for the document. It is not, however, a commit that shows the
+`final_display.tif`-hashing version actually shipped and was later caught
+and fixed — the mistake reads as one avoided at design time, not one that
+ran in production and was later corrected. Reporting the distinction rather
+than rounding it up to "confirmed": the incident is well-supported, not
+independently proven as a shipped-and-fixed bug the way rules 4 and 7's
+recovered incidents are.
+
+**Judging the form.** With all three clauses filled in, this rule is
+checkable by someone with no history with the project: run the two-line
+test the binding describes, and read one commit (`eda9b5c`) for the
+incident's real-world grounding instead of taking the document's "a feature
+once checked" at face value. That is a meaningfully stronger position than
+any of the other 15 rules in this inventory are in today — even rule 4 and
+rule 7, which have a comparably strong binding or a comparably real
+incident, don't have *both* in one place the way this one does once the
+external trace is added. Whether it's worth spending the effort to bring
+the other fifteen to this standard is a scope call for the operator, not
+this audit — but this is what "worth applying to the rest" would concretely
+look like if the answer is yes.
+
 ## 2026-08-06
 
 ### Record build: saturation-mask backfill — all three brackets verified against prior measurements
