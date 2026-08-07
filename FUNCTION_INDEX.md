@@ -196,9 +196,10 @@ facts worth reading in full.
 - `def yes_no(prompt, default_no=True):`
 - `def display_opts(a):`
 - `def pick_capture(session, kind, index):`
-- `def process(capture_dir, session, cap, a, ext):`
+- `def process(capture_dir, dark_dir, session, cap, a, ext, publish_dir=None):`
 - `def archive_raws(capture_dir, ext, mode):`
 - `def main():`
+  > CAVEAT: during the gallery-race staging design's staging window (CHANGELOG.md's 2026-08-05 entries), this field is a PROMISE, not a description. It always names the real/final session directory -- provenance never moves -- but while a capture is staged (--capture-dir below), its bytes physically live elsewhere, not here yet. Any reader that resolves a path through this field during that window, this one included, gets a path to a file that does not exist yet. Accepted, deliberately, as the same defect class as HANDOFF.md open item 2 at smaller scope -- see the CHANGELOG entry, not engineered around here.
 
 ## hdr_merge.py
 
@@ -271,6 +272,7 @@ facts worth reading in full.
 - `def new_session_dir(root=None):`
 - `def new_session_dirs(capture_root=None, provenance_root=None):`
 - `def new_zstack_root_dirs(capture_root=None, provenance_root=None):`
+- `def new_staging_dir(name, capture_root=None):`
 - `class Session:`
 - `def record_capture(session, result):`
 - `def record_burst(session, kind, file_prefix, result, note=''):`
@@ -286,6 +288,7 @@ facts worth reading in full.
 ## qt_shell.py
 
 > CAVEAT: unguarded against self._capturing, unlike _open_processing_wizard right above -- this can race the auto-process worker thread's own deletion loop (Keep RAW Images off deletes this capture's raw frames + their preview .jpgs as process()'s last step). Being modal only blocks other GUI actions; it does not block a background worker thread, which is deliberately NOT blocked by the Qt event loop (that's the whole reason processing runs on one). A user opening this mid-process can list a file here and then fail to open it moments later (TOCTOU) if the worker thread's deletion lands in between. See CHANGELOG.md's 2026-08-03 "Gallery race" investigation for the concurrency contract this function doesn't yet satisfy; no guard added here.
+> CAVEAT: this only keeps a LIVE Session object in sync when the caller identifies one for this exact directory (qt_shell.py's own self._session, via _on_process_ finished). measure.py's _on_exclude_toggled is a SEPARATE disk-patch writer with the identical clobber mechanism and no access to a live Session object at all -- covering it would need a cross-module registry that does not exist. That class of defect is NOT closed by this, only the one call site above that can actually name a live Session to update. See HANDOFF.md items 8a/8c.
 
 - `def _qt6_plugin_keys(so_path):`
 - `def _qt6_platformthemes_dirs():`
@@ -345,7 +348,7 @@ facts worth reading in full.
 - `def list_sessions(capture_root):`
 - `def load_session_json(session_dir):`
 - `def processable_captures(session_json):`
-- `def capture_correction_status(session_dir, session_json, cap):`
+- `def capture_correction_status(session_dir, session_json, cap, own_frames_dir=None):`
 - `def archive_session_raws(session_dir):`
 - `def main(argv=None):`
 - `def render_check():`
