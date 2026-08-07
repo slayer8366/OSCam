@@ -33,9 +33,11 @@ from __future__ import annotations
 
 import abc
 import importlib
+import io
 import re
 import sys
 import threading
+import tokenize
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -1599,6 +1601,103 @@ def assert_only_camera_backend_imports_sensor_profiles():
         "found a violation: {}".format(offenders))
 
 
+def _sensor_profile_dimension_pairs(project_dir):
+    """Forbidden (w, h) pairs derived from the loaded sensor profile(s),
+    never a maintained list: profile modules are discovered by the same
+    shape predicate _sensor_profile_module_names already uses, then each
+    one's FULL_ARRAY_SIZE and every _CROP_TABLE key are read LIVE off the
+    module (an actual import, not a copied number). Both axis orders are
+    included -- a numpy array's own .shape is (rows, cols), i.e. (h, w),
+    the reverse of the profile's own (w, h) convention, and Stage 3 Step
+    0's own reference recorded exactly this reversed form,
+    (1520, 2028), as the shape load_measurement_plane compares against.
+    Each pair's own integer halves are included too -- GREEN_PLANE_RES's
+    entire defect is "some sensor dimension, halved," and half a
+    dimension is still a fact about the sensor, not a free-standing
+    number."""
+    names = _sensor_profile_module_names(project_dir)
+    pairs = set()
+    for name in sorted(names):
+        module = importlib.import_module(name)
+        sizes = {tuple(int(v) for v in module.FULL_ARRAY_SIZE)}
+        if hasattr(module, "_CROP_TABLE"):
+            sizes |= {tuple(int(v) for v in size) for size in module._CROP_TABLE}
+        for w, h in sizes:
+            pairs.add((w, h))
+            pairs.add((h, w))
+            pairs.add((w // 2, h // 2))
+            pairs.add((h // 2, w // 2))
+    return pairs
+
+
+def _production_region_source(path):
+    """A file's own source, truncated at its own render_check()/`if
+    __name__ == "__main__":` self-check entry point -- whichever comes
+    first -- so a self-check's own plausible-but-arbitrary test fixture
+    (a hash round-trip's stand-in array, a UI combo box's test value, a
+    diagnostic formatter's sample dict) never trips a scan meant to catch
+    a PRODUCTION assumption about the sensor's true geometry. A single
+    principled cut, not a per-line exception list: verified against this
+    project's own sequence-1 baseline scan, where 12 of 13 hand-found
+    hits sit inside exactly this region, every one a self-check fixture
+    for a function that doesn't care what the real sensor size is."""
+    src = path.read_text()
+    cut = len(src)
+    for pattern in (r'^def render_check\(', r'^if __name__ == "__main__":'):
+        m = re.search(pattern, src, re.MULTILINE)
+        if m is not None and m.start() < cut:
+            cut = m.start()
+    return src[:cut]
+
+
+def assert_no_hardcoded_sensor_dimension_above_driver_layer():
+    """SWEEP_CHECKS.md's Geometry-derivation "no hardcoded sensor
+    dimension above the driver layer" row -- previously marked Implemented
+    on `assert_only_camera_backend_imports_sensor_profiles`'s evidence,
+    which is wrong: an import check does not test for a hardcoded
+    dimension. This is the check that actually does.
+
+    Tokenizes (`_source_without_docs_and_comments`'s own technique --
+    strip comments/strings via `tokenize`, never a regex -- adapted here
+    to a whole-file sweep rather than one object's source) every
+    non-driver .py file's PRODUCTION region (see
+    _production_region_source) for two adjacent NUMBER tokens forming a
+    pair in _sensor_profile_dimension_pairs' forbidden set. Reports every
+    hit for a human to review; a genuine false positive gets recorded and
+    asked about, never silently filtered by this function itself."""
+    project_dir = Path(__file__).resolve().parent
+    profile_names = _sensor_profile_module_names(project_dir)
+    forbidden = _sensor_profile_dimension_pairs(project_dir)
+    exempt = {"camera_backend.py"} | {name + ".py" for name in profile_names}
+    skip_types = {tokenize.COMMENT, tokenize.STRING, tokenize.NL,
+                 tokenize.NEWLINE, tokenize.INDENT, tokenize.DEDENT,
+                 tokenize.ENCODING, tokenize.ENDMARKER}
+    hits = []
+    for path in sorted(project_dir.glob("*.py")):
+        if path.name in exempt:
+            continue
+        src = _production_region_source(path)
+        try:
+            toks = [t for t in tokenize.generate_tokens(io.StringIO(src).readline)
+                   if t.type not in skip_types]
+        except tokenize.TokenizeError:
+            continue
+        for i in range(len(toks) - 2):
+            a, comma, b = toks[i], toks[i + 1], toks[i + 2]
+            if (a.type == tokenize.NUMBER and comma.type == tokenize.OP and
+                    comma.string == "," and b.type == tokenize.NUMBER):
+                try:
+                    pair = (int(a.string), int(b.string))
+                except ValueError:
+                    continue
+                if pair in forbidden:
+                    hits.append("{}:{} {!r}".format(path.name, a.start[0], pair))
+    assert not hits, (
+        "hardcoded sensor dimension(s) found above the driver layer, "
+        "production region only (see _production_region_source): {}"
+        .format(hits))
+
+
 if __name__ == "__main__":
     # Self-check with no hardware: sweep the fake through focus, exercise the
     # exposure surface, the async capture path, and the two burst primitives.
@@ -1961,6 +2060,12 @@ if __name__ == "__main__":
               "other module imports a sensor-profile module (imx477.py "
               "discovered by shape, not a maintained list) directly -- the "
               "checkable half of PHILOSOPHY.md's revised sensor-profile rule")
+
+        assert_no_hardcoded_sensor_dimension_above_driver_layer()
+        print("assert_no_hardcoded_sensor_dimension_above_driver_layer PASS: "
+              "no non-driver .py file's own production region contains a "
+              "literal matching a profile-derived sensor dimension (or its "
+              "half), in either axis order")
 
         # Sensor crop geometry (PRIORITY_click_mapping_fix.md): FakeCamera's
         # own contract, general across arbitrary preview/full resolutions,

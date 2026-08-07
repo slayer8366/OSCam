@@ -136,9 +136,17 @@ except ImportError:
     try:
         from camera_backend import FULL_RES
     except ImportError:
-        FULL_RES = (4056, 3040)   # IMX477 full sensor, matches camera_backend.py's own constant
+        # No fabricated fallback (Stage 3 sequence 1): a guessed dimension
+        # here is exactly the class of hardcoded-above-the-driver-layer fact
+        # this sequence's own check exists to catch, and camera_backend.py
+        # not being importable at all is a real, rare failure this file
+        # cannot paper over with a plausible-looking number. None here,
+        # loudly, rather than a number that might be wrong for whatever
+        # sensor is actually attached.
+        FULL_RES = None
 
-GREEN_PLANE_RES = (FULL_RES[0] // 2, FULL_RES[1] // 2)
+GREEN_PLANE_RES = ((FULL_RES[0] // 2, FULL_RES[1] // 2)
+                   if FULL_RES is not None else None)
 
 # The shared image-source wizard page (build checklist section 4): pick an
 # image already shot, or shoot a new one live. Optional the same way every
