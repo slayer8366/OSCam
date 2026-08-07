@@ -7,6 +7,129 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-06
 
+### Record: branch-stack landing — four branches rebased onto main, pushed
+
+Work-is-the-outcome form, no intent phase: the work is the landing
+operation itself (merges and rebases only, explicitly no new features
+and no fixes beyond the two named below), not a designed change with a
+baseline to diverge from. Branch and starting SHA:
+`claude/qt-platformtheme-plugin-check`, `b1a3230`, on the Pi
+(`hostname` == `raspberrypi`) throughout. `main` started at `1a2eb45`.
+
+**Inventory, checked before touching anything, matched the expected
+shape exactly:** `claude/gallery-race-staging-design` (7 ahead, 0
+behind, not an ancestor of anything else), `claude/qt-platformtheme-
+plugin-check` (19 ahead, 0 behind), `claude/session-json-atomic-write`
+(3 ahead, 0 behind, confirmed an ancestor of the next branch),
+`claude/session-json-field-loss-fix` (6 ahead — atomic-write's 3 plus 3
+of its own), `claude/session-json-field-loss-investigation` (0 ahead,
+0 behind — literally identical to `main`, empty).
+
+**Landed in the specified order, each rebased onto the previous step's
+resulting `main`, each fast-forwarded with no merge commit, each
+followed by a foreground `qt_shell.py --render-check` before the next
+branch started:**
+
+1. `claude/gallery-race-staging-design` — rebase was a no-op (already
+   based on current `main`). `main`: `1a2eb45` → `f55e3f5`.
+   Render-check: exit 0.
+2. `claude/qt-platformtheme-plugin-check` — two `HANDOFF.md` conflicts
+   during rebase (staging and this branch had each updated a different
+   numbered item in the same list: staging closed old item 2, this
+   branch updated old item 1). Resolved by reconciling to present
+   state per instruction — the more-current text for each item, not one
+   side's whole block. `main`: `f55e3f5` → `222c130`. `CHANGELOG.md`
+   verified append-only (`git diff <base> HEAD -- CHANGELOG.md | grep
+   '^-' | grep -v '^---'`: empty) and every one of the 120 pre-existing
+   `### ` headers confirmed byte-identical and in order in the rebased
+   tip, not just an insertions-only diff. Render-check: exit 0.
+3. `claude/session-json-atomic-write` — one `CHANGELOG.md` conflict:
+   both this branch and the already-landed staging work had inserted at
+   the top of the same `## 2026-08-05` heading. Resolved by
+   interleaving on real commit timestamps (`git log` — this branch's
+   intent entry at 18:39:06, staging's latest entry at 18:09:17, so the
+   incoming entry sorts first), `PHILOSOPHY.md`'s first conflict form —
+   the entry itself landed byte-identical to what its own commit wrote,
+   confirmed by direct comparison, not just eyeballed. `main`: `222c130`
+   → `9f9ce8d`. Render-check: exit 0.
+4. `claude/session-json-field-loss-fix` — the same conflict recurred in
+   two smaller hunks (this branch's own history still carried the
+   original, unrebased form of atomic-write's intent commit; git
+   correctly skipped the two commits already landed by patch-id but not
+   the CHANGELOG hunk, whose surrounding context had moved). Both hunks
+   had an empty incoming side — the content was already present from
+   step 3 — so resolution was removing the marker lines only, no text
+   changed. `main`: `9f9ce8d` → `56b3f55`. Render-check: exit 0.
+
+`claude/session-json-field-loss-investigation` deleted, not landed —
+confirmed empty (identical to `main`) both before and after the other
+four landed.
+
+**`FUNCTION_INDEX.md` regeneration.** The full 17-module `--render-check`
+sweep (not just `qt_shell.py`) run after all four branches landed found
+one failure: `function_index.py`, stale against the four branches'
+combined function-signature changes and two new `CAVEAT:` comments.
+Flagged to the user rather than assumed in scope, given the task's
+explicit "no fixes" — confirmed as wanted, then regenerated
+(`python3 function_index.py`, no manual edits — mechanical sync, the
+diff matched the render-check's own reported diff exactly) and
+committed (`ce2183e`). Full sweep re-run: **17/17 exit 0.**
+
+**Post-landing re-verification, on the rebased `main`, real hardware.**
+Two Snaps in one session (`2026-08-06_202014`, real `Picamera2Camera`,
+driven through the real `win._start_capture()` handler, not a mock):
+publish succeeded into the already-non-empty session directory, staging
+was empty afterward, capture 0 retained every applicable
+correction-status field after capture 1 was recorded (the exact defect
+`claude/session-json-field-loss-fix` closes — confirmed surviving the
+rebase, not just present pre-rebase), and the retention embed
+(`raw_discarded: false`) matched what was actually on disk. All four
+checks: PASS. Plain launch, no environment manipulation, ambient
+`QT_QPA_PLATFORMTHEME=qt5ct` confirmed present first: font read
+`Cantarell 16.0`, not the previously-confirmed `PibotoLt 18.0` —
+investigated rather than reported as a bare failure, and traced to the
+desktop's own ambient font configuration
+(`~/.config/qt5ct/qt5ct.conf`'s `[Fonts]` entry, corroborated by
+`gsettings org.gnome.desktop.interface font-name`) having been changed
+by the user earlier the same day, independent of any code in this
+repo — confirmed directly with the user, not assumed. The
+platformtheme-selection mechanism itself ran identically to its last
+confirmed pass.
+
+**Pushed.** `main` only, per explicit instruction —
+`claude/pyqt6-migration-review-2vterg` (4 commits, pre-existing
+unrelated work) and every other feature branch deliberately left
+unpushed. `git push origin main`: `1a2eb45..ce2183e`. `origin/main..main`
+confirmed empty after; `origin/main` was confirmed unmoved from
+`1a2eb45` immediately before the push (a `git fetch` first, per
+instruction).
+
+**Wrap-up**, after the push: `HANDOFF.md`'s "Open right now" items
+renumbered once, sequentially 1-13 (former `8a`/`8c`/`8b` and the
+duplicate-`9` collision between staging's and this branch's own new
+items resolved as a numbering collision, not a content update — full
+detail in that commit's own message), and rewritten for a reader
+landing on a different checkout: a landing announcement naming
+`origin/main`'s new SHA and the four-branch order up front, item 9
+(session.json field loss) updated from "not fixed" to closed for the
+call site the landed fix actually covers (with `_on_exclude_toggled`'s
+still-uncovered gap kept, unchanged, not glossed over), and the
+platformtheme section's `18.0pt PibotoLt` acceptance figure annotated
+so a future reader doesn't mistake today's deliberate font change for
+a regression.
+
+No feature-logic file touched by the landing operation itself beyond
+what each branch's own already-recorded commits carried; this session's
+own direct contributions are `FUNCTION_INDEX.md` (mechanical
+regeneration) and `HANDOFF.md` (renumbering + wrap-up), both separately
+committed and described above. `profile.json`/`calib/` excluded as
+always (stashed and restored around every branch switch, never
+committed); pushed only `main` (`0447f8c` is this entry's own parent
+commit, already on `origin/main` — this entry's own commit is the one
+addition since the push, not itself pushed). Branch left on `main` —
+this is where the working tree is left for B to run the instrument
+from.
+
 ### Record build: saturation-mask backfill — all three brackets verified against prior measurements
 
 Built to the intent recorded below (`43ba4b6`). `HANDOFF.md` gained item
