@@ -7,6 +7,109 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-06
 
+### Verification: saturation evidence base — raws, masks, CHANGELOG provenance, HANDOFF item 1
+
+Work-is-the-outcome form, no intent phase: a checklist against an
+already-concluded result, not a designed change with a baseline to
+diverge from. Branch `main`, HEAD `921d1c7` throughout — read-only,
+nothing built, no branch switched. Per instruction, the clip measurement
+itself was **not** re-run; no histogram was computed. `check_
+measurement_provenance`/`clean_cache`/etc. untouched — no repo code
+read for behavior, only for citation.
+
+**Q1 — raws present.** All three brackets (`2026-08-03_050600`,
+`2026-08-03_230856`, `2026-08-04_013732`) hold, per level (5 levels,
+uniform across all three): **8 science raws, 8 dark raws** — 80 raws/
+bracket total (40 science + 40 dark), matching the corrected count, not
+the retired "160." First/middle/last level-5 science raw
+(`5_frame_0000/0004/0007.dng`), size and sha256:
+
+| bracket | frame | size (bytes) | sha256 |
+|---|---|---|---|
+| `050600` | 0000 | 24661216 | `29f45f7b88baf4bc291b3ba20093a336a213f28da369420c79ac57d3f47f618c` |
+| `050600` | 0004 | 24661216 | `5462743e48ae5dfdc42479607a0e858dee345296b0e5983d5a54631568ae267c` |
+| `050600` | 0007 | 24661216 | `52ffb1ed4cf4c2f481533c9d5d83625b085b2fc168336fdcaa4b6673039a0da3` |
+| `230856` | 0000 | 24661216 | `60902b8e11a4ffe38e6afde10fa3992135e2f8eeb82c04c1d5568b4f6e98832d` |
+| `230856` | 0004 | 24661216 | `e699b4a39c096b29bc6d7370f06e86a5788c40caf01ec53cb99c26c3d385084f` |
+| `230856` | 0007 | 24661216 | `6ad0f5283699dbb3fbe79e55bd1ac4e9c2bf502c2793864c0e2965f683665ebd` |
+| `013732` | 0000 | 24661212 | `5e02a87bbb8fb8d0a8a6a1eefb3f31386f13fc4b1c3b3fa77c99f6b514ea06ef` |
+| `013732` | 0004 | 24661212 | `2779fcd9cf25b36c106cb2b1e489026769af22e539fe91004dead55cc8203b3c` |
+| `013732` | 0007 | 24661212 | `571d62155ec60bccc53d79a5298f65214106abe9f6840c888b28a367dd894055` |
+
+**`050600` vs `~/archive/bracket_2026-08-03_050600/`**: all three
+spot-checked level-5 science raws byte-identical (sha256 match, sizes
+match); full-set counts also match (40 science + 40 dark `.dng` on both
+sides). **No divergence — nothing to stop on.**
+
+**Q2 — masks present, one figure spot-checked.**
+`~/scratch/masks/<bracket>/` present for all three: 5 `.npy` files
+each, 12,330,368 bytes/file, 58.796 MiB/bracket (61,651,840 bytes
+total), matching the prior backfill entry's own figures exactly. Spot-
+check, `050600` level-5 mask: `G@(0,1)` (rows `0::2`, cols `1::2` of the
+`(3040, 4056)` uint8 array), clipped-in-any = `popcount(byte) > 0`:
+1,608,578 / 3,082,560 pixels = **52.183185%** — exact match to the
+recorded `52.183185%`, to all six reported decimal places. **Match — no
+suite run, this one figure only.**
+
+**Q3 — branch/SHA provenance across the saturation-measurement thread.**
+Ten `CHANGELOG.md` entries carry this thread (backfill decision through
+the n=8 hard-clip check). Nine open with an explicit "Branch X, HEAD
+`<sha>`" statement naming what they ran against:
+
+| entry (current `CHANGELOG.md` line) | branch/SHA stated? |
+|---|---|
+| Record intent: saturation-mask design decisions... (:498) | yes — `claude/qt-platformtheme-plugin-check`, HEAD `b91187f` |
+| Investigation and design proposal: scoping... (:581) | yes — HEAD `6095c9e` |
+| Measurement: full Q1-Q6 chain... (:936) | yes — HEAD `6297efa` |
+| Measurement: why the master-domain smear band... (:1249) | yes — HEAD `950ba7f` |
+| Measurement: independent reconfirmation... (:1375) | yes — HEAD `d9f1a23` (explicitly reconciled against the prompt's stale `f4a89b0`, not silently) |
+| Measurement: does the clipped population separate... (:1482) | yes — HEAD `f4a89b0` |
+| Measurement: clipped-vs-excluded overlap... (:1634) | yes — HEAD `1a7a122` |
+| Measurement: hdr_merge.py's actual input... (:1730) | yes — HEAD `d4d3d56` |
+| Measurement: level-5 science raws, n=8... (:1890) | yes — HEAD `b057237` |
+| **Record build: saturation-mask backfill...** (:403) | **no** |
+
+**One entry lacks it**: "Record build: saturation-mask backfill — all
+three brackets verified against prior measurements" (`CHANGELOG.md:403`)
+never states the SHA it ran against. It names the branch once, at its
+closing line ("Branch left exactly as found:
+`claude/qt-platformtheme-plugin-check`, unchanged HEAD until this
+entry's own commit") — a relative claim ("unchanged") rather than a
+self-contained one, and the two SHAs it does cite (`43ba4b6`, the intent
+commit; `a1ee294`, a `HANDOFF.md` commit) are other commits' identities,
+not a statement of what HEAD was while the backfill script itself ran.
+Per `PHILOSOPHY.md`'s measurement-provenance rule and per instruction,
+**not corrected retroactively here** — the result this entry records
+(cross-checked against seven independently-recorded prior figures, all
+exact) is not in question, but this one entry is not reproducible by
+this project's own standard: a later reader cannot independently confirm
+which commit the backfill script actually ran against, only that the
+branch didn't change.
+
+**Q4 — item 1 correction: already made.** `HANDOFF.md` item 1 was
+corrected in place by commit `e15e03f8` (`slayer8366`, 2026-08-06
+08:55:11 -0700 — human-authored, not this session's), already an
+ancestor of this session's starting `HEAD`. The same commit carries the
+matching `DISCOVERED:` entry ("Measurement: level-5 science raws,
+bracket 2026-08-03_050600 — hard-clip check, n=8," `CHANGELOG.md:1890`)
+that found the miscount, and states outright: "now corrected in place
+in `HANDOFF.md`." **The task's premise — that the correction landed in
+`CHANGELOG.md` but never reached `HANDOFF.md` — does not hold against
+the current tree.** Current item 1 already states 80 raws (40 science,
+40 dark), level-5 science n=8, and "**Checked, 2026-08-06**: level-5
+science raws (n=8) do show a hard clip signature," pointing at the
+concluded result rather than posing it as open; only the genuinely
+still-open sequencing decision (item 2 in the same list) is left open,
+correctly. **No edit made** — the document already matches what this
+task asked for, and editing an already-correct entry to satisfy
+instructions it already satisfies would manufacture a provenance trail
+for a change that did not happen this session.
+
+**Verification**: read-only; nothing to `--render-check` against.
+`profile.json`/`calib/` excluded as always, untouched. Not pushed until
+this entry lands; branch left on `main`, this entry's own commit is
+where the working tree sits.
+
 ### Record intent: Stage 3 prerequisite list
 
 Baseline, measured before any other file is touched. `HANDOFF.md` (HEAD
