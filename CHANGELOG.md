@@ -7,6 +7,62 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-07
 
+### Record intent: Stage 3 sequence 3 — Check 3 (round trip) + inverse + live-bug fix
+
+Baseline, measured before any other file is touched. Branch `main`,
+HEAD `f8a4cb9`.
+
+**What this sequence closes**: the round trip, subsuming the
+degenerate-crop claim rather than sitting beside it. Two things: (1) a
+check, scoped one level wider than `native_point_from_preview_click`
+itself — driven from `preview_res`/`still_res` through a real camera's
+own `sensor_crop_for_size`, never hand-picked crop tuples, since that
+function never sees a mode's own output size, only its crop, so a round
+trip confined to it alone cannot structurally exercise whether a CALLER
+resolved the right crop for the right mode; (2) `HANDOFF.md`'s
+already-named live bug — the live-measure freeze click passes the
+frozen `GREEN_PLANE_RES` module constant to
+`native_point_from_preview_click`'s last argument instead of deriving
+it from the camera's own actual configured still resolution, while the
+same call site already correctly derives `preview_crop`/`still_crop`
+from `self.camera`'s own methods two lines above.
+
+**No inverse of `native_point_from_preview_click` exists anywhere in
+the tree** (confirmed by name search across every `.py` file) — one
+gets written this sequence.
+`lores_point_from_preview_click`/`_live_measuring_view_point` is the
+one existing forward/inverse pair, and it belongs to Live Measuring,
+which `assert_live_measuring_has_no_calibration_dependency` structurally
+forbids from touching `native_point_from_preview_click` at all — not
+borrowed.
+
+**The anchor requirement, stated precisely so the build entry can be
+checked against it**: a round trip alone is insufficient — an inverse
+derived by reversing a wrong forward function agrees with that wrong
+forward function on every round trip, by construction (the same "both
+sides agreeing on a wrong constant" caveat `SWEEP_CHECKS.md` already
+records against the green-plane check). Centre of `disp_rect` must map
+to the green plane's own centre, and each of `disp_rect`'s own four
+corners must map to the corresponding corner of the green plane and
+nowhere else, for every sensor mode the profile offers — checked
+independently of either direction's own arithmetic. Probe points stay
+strictly inside `disp_rect`: `frac_from_point` clamps to `[0, 1]`, many-
+to-one right at the letterbox boundary, so a point outside the rect is
+not recoverable.
+
+**Scope for this sequence, checkable against the build entry**: touches
+`qt_shell.py` only — the inverse function, the round-trip check, the
+live call-site fix. `camera_backend.py`/`gallery.py`/`calibrate.py` not
+expected to need changes; if building reveals otherwise, the build
+entry records the deviation and why it was necessary, per the
+three-phase convention's own rule for handling exactly that.
+
+**No baseline count** — same reasoning as sequence 2's own intent
+entry: this is a round-trip/anchor test with a binary result, not a
+scan. The task brief's own instruction stands: Check 3 may legitimately
+pass on first run if the scattered constants already agree; that would
+be a real finding, not a check to be made artificially fail.
+
 ### Record build: Stage 3 sequence 2 — Check 2 (the collapse, in positive form) + fix
 
 Built to the intent above, no scope deviation: `camera_backend.py` and
