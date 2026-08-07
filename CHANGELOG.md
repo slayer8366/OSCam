@@ -7,6 +7,104 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-07
 
+### Record build: Stage 3 sequence 2 — Check 2 (the collapse, in positive form) + fix
+
+Built to the intent above, no scope deviation: `camera_backend.py` and
+`measure.py` only, matching the intent entry's own stated scope exactly
+(`qt_shell.py` untouched, left to sequence 3).
+
+**Watched it fail, real output, foreground, exit code pasted — the
+check written before the fix it needs existed:**
+
+```
+$ python3 measure.py --render-check
+[... check_measurement_provenance PASS, existing load_measurement_plane
+     check PASS, unchanged ...]
+Traceback (most recent call last):
+  File "/home/bwann83/imx/measure.py", line 2477, in <module>
+    main()
+  File "/home/bwann83/imx/measure.py", line 2437, in main
+    render_check()
+  File "/home/bwann83/imx/measure.py", line 1785, in render_check
+    syn_plane = load_measurement_plane(syn_mosaic_path, camera=synthetic_cam)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: load_measurement_plane() got an unexpected keyword argument 'camera'
+exit: 1
+```
+
+Not a manufactured failure and not a trivial one either: the check
+tried to call the real function with the real substitution argument it
+needs, and that argument did not exist yet. A check that could only
+ever have passed (e.g. one written against a stub) would not have shown
+this.
+
+**The fix**: `camera_backend.py`'s `FULL_RES` collapses to
+`_imx477.FULL_ARRAY_SIZE` — the exact same deliberate stand-in reference
+`FakeCamera.sensor_crop_for_size` already uses (see that name's own
+module-level import comment), now extended to this constant too, so
+this remains the *one* place a hardcoded `"imx477"` name is allowed to
+appear, not a second one growing beside it. `GREEN_PLANE_RES` is a new
+module-level export, computed once, there, from that same `FULL_RES`.
+`measure.py` imports both (`from camera_backend import FULL_RES,
+GREEN_PLANE_RES`) instead of running its own independent `// 2`
+formula — the actual collapse: one source, everything else asks.
+`load_measurement_plane(path, camera=None)` — omitted, every real call
+site today, unchanged behavior (module constants apply exactly as
+before); given a `CameraBackend`-conforming object, derives
+`full_res`/`green_res` from that camera's own `capture_resolution()`
+instead.
+
+**Watched it pass, real output, foreground, exit code pasted:**
+
+```
+$ python3 measure.py --render-check
+[... existing checks unchanged ...]
+load_measurement_plane substitution check PASS: a FakeCamera constructed with a non-real full_res (before the loader call) changes load_measurement_plane's own BRANCH DECISION, not just its returned shape (verified by extract_green call count, not shape alone); the same synthetic sizes are refused by every call that omits camera=, so the substitution never leaks into the default (real-profile) path
+[... remaining checks unchanged, all PASS ...]
+exit: 0
+```
+
+(One pre-existing `RuntimeWarning`, divide-by-zero in `fit_ellipse`'s
+`_conic_to_ellipse` at an `a==c` degenerate case — same warning sequence
+1's own build entry already noted, unrelated to this change, not
+touched.)
+
+**What the check actually proves, restated precisely**: not merely
+"the returned array has the right shape" — a `debayer.extract_green`
+call-count spy shows the loader took the extraction branch exactly once
+for a mosaic-shaped-under-the-substitution array and zero times for an
+already-green-shaped-under-the-substitution array, and a parallel run
+of the SAME two synthetic sizes with no `camera=` argument confirms
+both are refused by the real (default) profile — the substitution
+mechanism doesn't leak into the path every real caller actually uses.
+This is the "assert on the branch decision, not only the returned
+shape" requirement, and the "prove it doesn't leak into the default
+path" is this build's own addition beyond what the intent entry
+strictly required, added because it was one loop and a handful of
+lines given the fixture already existed.
+
+**Full sweep, every file this sequence touched or that depends on what
+it touched, foreground, real output, all clean:**
+
+```
+$ python3 camera_backend.py             -> exit 0 (all prior PASSES
+    unchanged, including sequence 1's own dimension-scan check)
+$ python3 measure.py --render-check     -> exit 0
+$ python3 gallery.py --render-check     -> exit 0 (4 PASS lines,
+    unaffected -- consumes measure.GREEN_PLANE_RES by attribute access,
+    now resolving through the collapsed source transparently)
+$ python3 qt_shell.py --render-check    -> exit 0 (full suite; imports
+    FULL_RES/PREVIEW_RES from camera_backend.py, unaffected by FULL_RES's
+    new derivation since its VALUE is unchanged, (4056, 3040) either way
+    on this rig's real profile)
+```
+
+**Verification**: *fixed*, run directly in the foreground on the Pi,
+exit codes pasted above. Not *confirmed* — nothing here touches the
+rig. Branch `main`, working tree otherwise unchanged (`profile.json`/
+`calib/` excluded as always). Sequence 3 starts next, its own intent
+entry.
+
 ### Record intent: Stage 3 sequence 2 — Check 2 (the collapse, in positive form) + fix
 
 Baseline, measured before any other file is touched. Branch `main`, HEAD
