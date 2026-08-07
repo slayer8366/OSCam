@@ -5,6 +5,303 @@ dump — each entry names the commit(s) it corresponds to for traceability.
 See `HANDOFF.md` for what a fresh agent needs to know before working here;
 this file is the historical record of what happened and why.
 
+## 2026-08-07
+
+### Record: Stage 3 Step 0 — before-reference for the click-mapping/geometry overhaul
+
+Work-is-the-outcome form, no intent phase: capturing measurements already
+taken, not a designed change with a baseline to diverge from. **Stage 3
+itself not started, no source file modified.** On the Pi (`raspberrypi`),
+branch `main`, HEAD `359677d` throughout (checked before and after; working
+tree unchanged apart from this entry's own commit — `profile.json`/`calib/`
+excluded as always, per this file's write-permissions table, neither
+touched). The only writes this session: this entry, a frozen `.dng`+`.jpg`
+pair outside the repo (path below), and one real distance mark committed to
+`~/.zynergy/annotations.json` (see Reference A — a genuine measurement
+under a real calibration entry on a real captured frame, not a test
+fixture, so the real append-only store is the correct place for it, not a
+redirected temp copy).
+
+**Why this exists**: Stage 3 moves sensor geometry behind the driver
+boundary. This records what the numbers are *before* that lands, so a
+silently changed measured value has something exact to be checked against
+afterward — re-measuring the SAME frozen bytes, not a tolerance.
+
+**Blocker, resolved with the operator present:** the camera was already
+held by a live `python3 qt_shell.py --gains 1.89 1.69 --camera` session
+(PID 14686, confirmed via `fuser /dev/media0 /dev/media2` — both devices
+listed that PID). Picamera2 allows only one process on the camera at a
+time, so no capture was possible until it released. Asked the operator
+first rather than killing it unilaterally; operator confirmed it was safe
+to close. `kill -TERM 14686` — exited cleanly (`ps -p 14686` empty within
+3s), `fuser` afterward showed only the two kernel media-daemon PIDs
+(`1014`/`1016`), not the app. Camera free from that point on.
+
+**Objective, operator-confirmed (not something this session could check by
+software or camera alone): 4x is physically mounted.** Matches the active
+calibration this reference is measured against.
+
+**Active calibration, read from `~/.zynergy/calibration.json` (observed,
+not the repo — this store lives outside it):** the `"4x"` chain's last
+entry, not superseded by anything later in that chain (checked — no other
+entry's `supersedes` names it):
+
+```
+entry_id:      d38b13076c4c4ab9804c265439321c12
+um_per_px:     1.408410912378439
+calibrated_at: 2026-07-18T02:28:32.136071
+objective:     4x
+```
+
+**Precondition check (illuminator on, target under the objective) — passed,
+observed, not inferred.** A real still was captured through the actual
+camera seam (`Picamera2Camera`, its `QGl6Picamera2` widget parented into a
+shown `QMainWindow` and the Qt event loop pumped before/after `start()` and
+around `capture_still_async` — the deadlock this session was warned an
+unshown/unparented widget causes; construction otherwise matches `main()`'s
+own call, `Picamera2Camera(**capture_resolution_kwargs(load_pref(...)),
+**preview_resolution_kwargs(load_pref(...)))`). Deliberately called
+`capture_still_async` directly rather than driving `qt_shell.py`'s
+`_start_capture` button path: a plain Snap also opens a `provenance.Session`
+and fires `_auto_process` (frame-averaging + debayer subprocess + staged
+publish), none of which this reference needs — only the raw `.dng` and its
+own capture metadata do. Green-plane stats, measured through `measure.py`'s
+own `load_measurement_plane`:
+
+```
+green-plane shape/dtype: (1520, 2028) uint16
+green-plane mean:  4579.081392089692
+green-plane min/max: 3904 / 5328
+SensorBlackLevels (verbatim, all 4 positions): (4096, 4096, 4096, 4096)
+Lux: 256.7497253417969
+```
+
+Mean sits ~483 counts above the uniform 4096 black level and Lux is
+256.75 — clearly not the dark-frame signature the task's own precondition
+named as the failure mode to check for first (mean 4096.5 against the same
+4096 black level, Lux 0.53). Proceeded.
+
+---
+
+**Reference A — the frozen file.**
+
+Path: `/home/bwann83/stage3_reference/stage3_ref_2026-08-07.dng` (a matching
+`.jpg` preview sits alongside it; the `.dng` is the frozen artifact this
+entry is about). Stored outside the repo and outside `~/scratch` per
+instruction, on `/dev/nvme0n1p2` — the same filesystem `/` and `~` are on,
+confirmed via `df -h` on the path directly, not inferred from `~` in
+general. Not `~/archive` (a plain directory, also NVMe, but already used
+for other real specimen backups) and not `/mnt/archive` (a *different*
+mount, `/dev/mmcblk0p1`, the SD card — checked and deliberately avoided).
+
+```
+raw file sha256: 13183460470f8e883b2edc3988bba97422b89c0e64eb990c5adffea6ee186731
+raw file size:   24661216 bytes
+```
+
+sha256 re-checked identical after the move from the scratch candidate
+location into the path above — the move did not touch the bytes.
+
+Green-plane `pixel_sha256` (via `pixel_hash.pixel_sha256`, computed twice —
+once immediately after capture, once again inside `measure.py`'s own
+`MeasureWindow._load_image` path when Reference A's measurement below was
+taken — both runs agree):
+
+```
+3605080018646f75c72bc466a3160328dd2b6b4539b0f02c33c68377dbcf8b65
+```
+
+Full capture metadata, verbatim `request.get_metadata()` (the same dict
+`CaptureResult.metadata` carries):
+
+```
+AeState: 1
+AnalogueGain: 1.0
+ColourCorrectionMatrix: (2.0858335494995117, -0.87926185131073, -0.20656731724739075, -0.38622069358825684, 2.0483272075653076, -0.6621063947677612, -0.09529455751180649, -0.581928551197052, 1.6772230863571167)
+ColourGains: (2.895585298538208, 1.7315040826797485)
+ColourTemperature: 4000
+DigitalGain: 1.0051839351654053
+ExposureTime: 994
+FocusFoM: 5
+FrameDuration: 85335
+FrameWallClock: 1786129762585165568
+Lux: 256.7497253417969
+ScalerCrop: (0, 0, 4056, 3040)
+SensorBlackLevels: (4096, 4096, 4096, 4096)
+SensorTemperature: -20.0
+SensorTimestamp: 91350685815000
+```
+
+`ScalerCrop` `(0, 0, 4056, 3040)` is the full array, matching the
+configured still resolution (4056x3040) exactly — this capture read the
+unbinned, uncropped mode.
+
+**Measurement**, opened through `measure.py`'s own `MeasureWindow`
+(`image_path=` the frozen `.dng` above, `objective="4x"`) — the real
+`_load_image` → `load_measurement_plane` path ran, not a hand-rolled
+loader. Distance tool activated via the real `distance_btn` toggle. The
+two points were placed via real synthetic `QMouseEvent`s dispatched through
+the actual `MeasureView.mousePressEvent` handler (the same `_click()`
+pattern `measure.py`'s own `render_check` uses for this), at view-widget
+coordinates computed by `view.mapFromScene()` from an intended target —
+never coordinates invented by this session's own arithmetic laid directly
+into the record.
+
+Point selection: a horizontal scanline (row `y=720`, chosen for lying
+within the central band) was searched programmatically for its sharpest
+intensity transition, which surfaced a contiguous dark run (thresholded at
+the row's own midpoint value) from plane-x 1069 to 1084 against a ~4400+
+background, bottoming at 3952 — a real specimen edge, not an empty-field
+click. Its midpoint sits 72px from the green plane's own centre `(1014,
+760)` (plane shape `(1520, 2028)` → centre `(1014.0, 760.0)`) — 5.75% of
+the field's half-diagonal (1267px), placed near the centre as instructed,
+not near an edge.
+
+The two points actually recorded (from the real app dispatch — a ~1.2px
+shift from the intended integer targets, from `view`↔`scene` transform
+rounding at the window's own zoom level, same as a real mouse click would
+see):
+
+```
+point A: (1067.8481012658228, 721.5189873417721)
+point B: (1083.8818565400843, 721.5189873417721)
+distance: 16.033755274261466 px  =  22.582115894675198 µm
+```
+
+(`16.033755274261466 × 1.408410912378439 = 22.582115894675198`, confirmed.)
+
+Committed as a real mark into `~/.zynergy/annotations.json`, resolved
+against calibration entry `d38b1307…` (full JSON):
+
+```json
+{
+  "pixel_sha256": "3605080018646f75c72bc466a3160328dd2b6b4539b0f02c33c68377dbcf8b65",
+  "shape": [1520, 2028], "dtype": "uint16", "kind": "green",
+  "calibration_ref": {"objective": "4x",
+                       "entry_id": "d38b13076c4c4ab9804c265439321c12",
+                       "um_per_px": 1.408410912378439},
+  "marks": [{"mark_id": "5c3df70cc92a4b559033edbd47053cae", "type": "distance",
+             "created_at": "2026-08-07T12:15:46.374395",
+             "input": {"points": [[1067.8481012658228, 721.5189873417721],
+                                   [1083.8818565400843, 721.5189873417721]]},
+             "derived": {"distance_px": 16.033755274261466,
+                         "distance_um": 22.582115894675198}}]
+}
+```
+
+`calibration_ref.entry_id` in the record itself confirms `d38b1307…`, the
+same entry named above — the measurement resolved the calibration it was
+supposed to.
+
+---
+
+**Reference B — the conversion inputs**, for `native_point_from_preview_click`
+(`qt_shell.py`), both for the currently configured preview/still resolution
+and for every sensor mode the live `sensor_modes` read discovered. One
+`Picamera2Camera` construction covered both: `camera._mode_crops` is built
+once, at construction, from a single live `sensor_modes` sweep (see that
+method's own comment on why it can only run once), so every mode's own
+live crop was already available with no camera reconfiguration needed —
+the "if reconfiguring is not safely possible, report what you could get"
+fallback in the task did not need to be invoked.
+
+Window geometry note: `showMaximized()` (what `main()` itself calls) was
+tried first and was **not honored** under this non-interactive launch —
+`win.isMaximized()` stayed `False` and the window sat at its small natural
+layout size (`333x729`, preview widget `68x698`) across 100 pumped
+`processEvents()` cycles over 3s. Switched to an explicit
+`win.resize(1920, 1080)` (the real screen's own reported size, `xrandr`:
+`1920x1080`) instead, which the window manager did honor, settling at
+`1920x1024` (`win.size()`) after one layout pass. `disp_rect` below is
+recorded against **this** geometry, labelled as such — not claimed to be
+the operator's own interactively-maximized session geometry, which this
+non-interactive script could not reproduce.
+
+Configured resolution:
+
+```
+preview_res:    (2028, 1520)
+still_res:      (4056, 3040)
+preview_crop:   (0, 0, 4056, 3040)   [sensor_crop_for_size(preview_res), live]
+still_crop:     (0, 0, 4056, 3040)   [sensor_crop_for_size(still_res), live]
+disp_rect:      (74, 0, 1324, 993)   [win.resize(1920,1080) geometry, above]
+preview widget: (1473, 993)          [win.preview.width()/height()]
+win size:       (1920, 1024)
+GREEN_PLANE_RES at the real call site (qt_shell.py:3698): (2028, 1520)
+   — a hardcoded module constant, not a live camera.capture_resolution()
+     read; numerically correct here because still_res happens to equal
+     camera_backend.FULL_RES's default, but this is the same latent gap
+     HANDOFF.md's Stage 3 section already names under "Known problems."
+     Not fixed here — recording the fact, not correcting it.
+lores_resolution: (640, 480)
+```
+
+Preview_crop and still_crop are identical here only because the configured
+preview mode (2028x1520, 2x2-binned full-FOV) happens to share the same
+full-array crop as the configured still mode (4056x3040, unbinned full-FOV)
+— see the per-mode table below for the cases where they diverge.
+
+Five probe points (centre + one inset point per quadrant, all strictly
+inside `disp_rect`, never touching its boundary — `frac_from_point` clamps
+to `[0,1]`, which is many-to-one right at the letterbox edge) and their
+`native_point_from_preview_click` output, for the configured resolution:
+
+| point | input (screen) | native (green-plane px) |
+|---|---|---|
+| centre | (736.0, 496.5) | (1014.0, 760.0) |
+| Q1 top-left inset | (405.0, 248.25) | (507.0, 380.0) |
+| Q2 top-right inset | (1067.0, 248.25) | (1521.0, 380.0) |
+| Q3 bottom-left inset | (405.0, 744.75) | (507.0, 1140.0) |
+| Q4 bottom-right inset | (1067.0, 744.75) | (1521.0, 1140.0) |
+
+**Repeated for every sensor mode** the live `sensor_modes` read discovered
+(`still_crop`/`disp_rect`/`GREEN_PLANE_RES` held fixed at the real
+configured values above; only `preview_crop` varies per mode, exactly the
+axis `PRIORITY_click_mapping_fix.md`'s own bug class is about). Live
+`crop_limits` for `1332x990` (`(696, 528, 2664, 1980)`) and `2028x1080`
+(`(0, 440, 4056, 2160)`) match this project's own previously-recorded
+provenance for those two modes exactly — cross-check, not a new claim:
+
+| mode | live crop_limits | centre native | Q1 native | Q2 native | Q3 native | Q4 native |
+|---|---|---|---|---|---|---|
+| 1332x990 | (696, 528, 2664, 1980) | (1014.0, 759.0) | (681.0, 511.5) | (1347.0, 511.5) | (681.0, 1006.5) | (1347.0, 1006.5) |
+| 2028x1080 | (0, 440, 4056, 2160) | (1014.0, 760.0) | (507.0, 490.0) | (1521.0, 490.0) | (507.0, 1030.0) | (1521.0, 1030.0) |
+| 2028x1520 | (0, 0, 4056, 3040) | (1014.0, 760.0) | (507.0, 380.0) | (1521.0, 380.0) | (507.0, 1140.0) | (1521.0, 1140.0) |
+| 4056x2160 | (0, 440, 4056, 2160) | (1014.0, 760.0) | (507.0, 490.0) | (1521.0, 490.0) | (507.0, 1030.0) | (1521.0, 1030.0) |
+| 4056x3040 | (0, 0, 4056, 3040) | (1014.0, 760.0) | (507.0, 380.0) | (1521.0, 380.0) | (507.0, 1140.0) | (1521.0, 1140.0) |
+
+(`2028x1520` and `4056x3040` reduce to the configured-resolution table
+above exactly, as they must — both share the same `(0, 0, 4056, 3040)`
+crop as `still_crop`, so `native_point_from_preview_click`'s own
+identity-case reduction applies. `2028x1080`/`4056x2160` likewise agree
+with each other, same crop, different output size — both binned/unbinned
+views of the same 16:9 window. Only `1332x990`'s centrer crop actually
+shifts the mapping.)
+
+---
+
+**Not done this session, deliberately** (named in the task's own
+out-of-scope list, restated here so a later reader doesn't have to cross-
+reference to know what this entry does and doesn't cover): Stage 3 itself
+and its three checks; an inverse of `native_point_from_preview_click`; the
+saturation mask record-format change / `sat_frac` collapse / merge-
+weighting policy; recalibration or any question about calibration-entry
+plane-shape recording; the conflict-detecting `session.json` write; branch
+and remote cleanup.
+
+Scratch scripts (`capture_probe.py`, `measure_probe.py`,
+`reference_b_probe.py`, two `debug_geom*.py` geometry probes) live in
+`~/scratch/stage3_ref/`, outside the repo, per this file's own scratch-
+tooling rule.
+
+**Verification**: `git status --porcelain` before and after matches (only
+`M profile.json`, `?? calib/`, both pre-existing and both excluded from
+every commit here); `git rev-parse --short HEAD` unchanged at `359677d`
+until this entry's own commit. Append-only checked directly against this
+commit (removed-lines diff empty; every pre-existing header, including
+today's neighbor `## 2026-08-06`, still present, byte-identical, under its
+own heading — see this commit's own diff).
+
 ## 2026-08-06
 
 ### Verification: saturation evidence base — raws, masks, CHANGELOG provenance, HANDOFF item 1
