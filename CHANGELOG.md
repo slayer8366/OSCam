@@ -7,6 +7,38 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-06
 
+### Record intent: Stage 3 prerequisite list
+
+Baseline, measured before any other file is touched. `HANDOFF.md` (HEAD
+`4a6a918`, `main`) carries 13 numbered "Open right now" items, a 9-line
+"Known problems" bullet list under the PyQt6 section (`GREEN_PLANE_RES`/
+`FULL_RES` duplication through `provenance.py` phase 2), a "Store-
+mechanics migration" design (decided, unbuilt), and a "Focus-aid...
+lores frames" open bug — none of the last three inside the numbered
+list. `origin/claude/philosophy-audit-findings` (unmerged, `09a2b6a`)
+carries a 14th numbered item not yet on `main`. `SWEEP_CHECKS.md`'s
+"Geometry derivation" section carries 4 rows — the actual location, not
+`HANDOFF.md`, of any written checkable predicate resembling "no sensor
+dimension above the driver layer." Task-named candidates: the saturation
+record-format change, `sat_frac` collapse, the merge-weighting policy,
+the conflict-detecting `session.json` write, the substrate binding's
+blocklist/allowlist gap, the gallery's never-refreshing entry list, the
+pick-mode silent drop, `measure.py`'s `_on_exclude_toggled` clobber
+path, `~/OSCam-main` worktree removal, branch/remote cleanup, and
+whether HANDOFF items need a stable identifier.
+
+**Scope**: apply `PHILOSOPHY.md` commitment 4's test (does doing Stage 3
+first break, harden, or force a redo of this item — explicitly not
+"lives in the same file") to every item named above, plus the
+`wizard_pages.py`/`test_burst_backend.py` picamera2-import backlog item
+and the open `G_IS_OBJECT` teardown assertion, both found during the
+inventory pass rather than named in the task. Write whatever survives
+the test into a new, distinctly titled `HANDOFF.md` section stating the
+Stage 3 start-condition rule (list complete → Stage 3 begins). Will not
+build, fix, or start any surviving item, and will not start Stage 3
+itself. Touches `CHANGELOG.md` (this entry, then the build-record entry)
+and `HANDOFF.md` (the new section) only — no executable file.
+
 ### Record: branch-stack landing — four branches rebased onto main, pushed
 
 Work-is-the-outcome form, no intent phase: the work is the landing
