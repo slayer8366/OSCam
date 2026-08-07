@@ -129,64 +129,64 @@ What's actually open, none of it written down anywhere until now:
    own live example of what happens when a check isn't. Full
    intent/build/record-build detail: `CHANGELOG.md`'s 2026-08-05 "tenth
    task Part 3" entries.
-8a. **`session.json` correction-status field loss on a second capture in
-    one session — found verifying the gallery-race staging design's
-    multi-capture publish case, not fixed, documentation only.**
-    Symptom: a second capture in one session strips ALL SIX fields
-    `_record_correction_status`'s own `cap.update(correction_status)`
-    writes from the first capture's entry in `session.json` —
-    `flat_correction`, `dark_correction`, `raw_discarded`,
-    `derived_outputs_discarded`, `derived_outputs_note`, and (present
-    only when `raw_discarded` is true) `raw_discard_reason`. Not just the
-    three that happened to be visible in the observed case — all six go
-    the same way, since one `cap.update()` call writes them together.
-    The first capture's raw files remain present and untouched on disk —
-    only the record of them is gone. Mechanism: `_record_correction_
-    status` reads `session.json` fresh from disk and patches it in
-    place, by design, so it also serves the manual processing wizard's
-    non-live sessions (its own docstring says so explicitly).
-    `Session.record()`, called by the second capture's `record_capture`,
-    appends to `self.captures` in memory — which never learned about
-    that disk-side patch — then calls `Session.write()`, which overwrites
-    the whole file from that stale in-memory list. Scope: pre-existing,
-    untouched by the staging work (none of the three functions below was
-    touched by it), fires on the ordinary two-Snap workflow with no
-    staging involved at all. Observed in session `2026-08-05_163014`.
-    Ranked above item 9: this is silent loss from the provenance record
-    itself, not a UI-level drop — `final.tif` still carries its own
-    embed (see item 8b below), so once this fires, the TIFF states a
-    retention outcome that `session.json` neither corroborates nor
-    contradicts for that earlier capture.
+9. **`session.json` correction-status field loss on a second capture in
+   one session — found verifying the gallery-race staging design's
+   multi-capture publish case, not fixed, documentation only.**
+   Symptom: a second capture in one session strips ALL SIX fields
+   `_record_correction_status`'s own `cap.update(correction_status)`
+   writes from the first capture's entry in `session.json` —
+   `flat_correction`, `dark_correction`, `raw_discarded`,
+   `derived_outputs_discarded`, `derived_outputs_note`, and (present
+   only when `raw_discarded` is true) `raw_discard_reason`. Not just the
+   three that happened to be visible in the observed case — all six go
+   the same way, since one `cap.update()` call writes them together.
+   The first capture's raw files remain present and untouched on disk —
+   only the record of them is gone. Mechanism: `_record_correction_
+   status` reads `session.json` fresh from disk and patches it in
+   place, by design, so it also serves the manual processing wizard's
+   non-live sessions (its own docstring says so explicitly).
+   `Session.record()`, called by the second capture's `record_capture`,
+   appends to `self.captures` in memory — which never learned about
+   that disk-side patch — then calls `Session.write()`, which overwrites
+   the whole file from that stale in-memory list. Scope: pre-existing,
+   untouched by the staging work (none of the three functions below was
+   touched by it), fires on the ordinary two-Snap workflow with no
+   staging involved at all. Observed in session `2026-08-05_163014`.
+   Ranked above item 12: this is silent loss from the provenance record
+   itself, not a UI-level drop — `final.tif` still carries its own
+   embed (see item 11 below), so once this fires, the TIFF states a
+   retention outcome that `session.json` neither corroborates nor
+   contradicts for that earlier capture.
 
-    **Line numbers resolve only against this branch
-    (`claude/gallery-race-staging-design`) — the staging work shifted
-    all three below it, `Session.write` and `_record_correction_status`
-    included. Whoever picks this up must know which base they are
-    patching against:**
+   **Line numbers resolve only against this branch
+   (`claude/gallery-race-staging-design`) — the staging work shifted
+   all three below it, `Session.write` and `_record_correction_status`
+   included. Whoever picks this up must know which base they are
+   patching against:**
 
-    | Function | This branch (`858260d`) | `main` (`1a2eb45`) |
-    |---|---|---|
-    | `_record_correction_status` | `qt_shell.py:5584-5608` | `qt_shell.py:5529-5551` |
-    | `Session.write` | `provenance.py:269-285` | `provenance.py:219-234` |
-    | `Session.record` | `provenance.py:321-328` | `provenance.py:321-328` (coincides on both — offsetting shifts elsewhere in the file, not a signal that this function is unaffected) |
+   | Function | This branch (`858260d`) | `main` (`1a2eb45`) |
+   |---|---|---|
+   | `_record_correction_status` | `qt_shell.py:5584-5608` | `qt_shell.py:5529-5551` |
+   | `Session.write` | `provenance.py:269-285` | `provenance.py:219-234` |
+   | `Session.record` | `provenance.py:321-328` | `provenance.py:321-328` (coincides on both — offsetting shifts elsewhere in the file, not a signal that this function is unaffected) |
 
-    **A second disk-patch writer exists with the identical clobber
-    mechanism: `measure.py`'s `_on_exclude_toggled`.** It reads
-    `session.json` fresh from disk and patches one field (`stacks.
-    set_exclude`'s exclude flag on a z-stack plane's capture entry) in
-    place, by its own docstring explicitly never depending on
-    `qt_shell.Session` — same shape as `_record_correction_status`,
-    same vulnerability to a later live-Session `write()` that never
-    learned of the patch. This is reasoned from the mechanism, not
-    reproduced: the z-stack review flow this runs under typically starts
-    after a stack's per-plane `Session` objects have already gone out of
-    scope, so the realistic collision here looks more like a cross-
-    process race (a second window or process still holding that
-    directory's `Session` live while `measure.py` patches it) than the
-    same-process, same-object sequence observed for the two-Snap case
-    above. Not confirmed on the rig or otherwise.
-8c. **Design, not scheduled: conflict-detecting `session.json` write —
-    the structural fix item 8a's investigation converged on, not
+   **A second disk-patch writer exists with the identical clobber
+   mechanism: `measure.py`'s `_on_exclude_toggled`.** It reads
+   `session.json` fresh from disk and patches one field (`stacks.
+   set_exclude`'s exclude flag on a z-stack plane's capture entry) in
+   place, by its own docstring explicitly never depending on
+   `qt_shell.Session` — same shape as `_record_correction_status`,
+   same vulnerability to a later live-Session `write()` that never
+   learned of the patch. This is reasoned from the mechanism, not
+   reproduced: the z-stack review flow this runs under typically starts
+   after a stack's per-plane `Session` objects have already gone out of
+   scope, so the realistic collision here looks more like a cross-
+   process race (a second window or process still holding that
+   directory's `Session` live while `measure.py` patches it) than the
+   same-process, same-object sequence observed for the two-Snap case
+   above. Not confirmed on the rig or otherwise.
+10. **Design, not scheduled: conflict-detecting `session.json` write —
+    the structural fix item 9's investigation converged on, not
     committed to.** Shape: `Session.write` fingerprints what this object
     last wrote (a hash or mtime of its own prior write); before writing
     again, it compares that fingerprint against what is actually on disk
@@ -211,7 +211,7 @@ What's actually open, none of it written down anywhere until now:
     triggers, not remove the need for it — it covers only the one known
     call site, in this one process, and does nothing for
     `_on_exclude_toggled` or any writer not yet invented.
-8b. **Derived outputs are not per-capture — found in the same
+11. **Derived outputs are not per-capture — found in the same
     verification, not fixed, documentation only.** Raw frames are
     indexed per capture (`snap_frame_0000.dng`, `snap_frame_0001.dng`,
     ...), but `final.tif`, `single_master.tif`, and `final_display.*`
@@ -224,37 +224,32 @@ What's actually open, none of it written down anywhere until now:
     unchanged). Evidence: session `2026-08-05_163014`'s `final.tif` went
     from 25,334,219 bytes at 16:30:28 (after Snap #1) to 25,480,015 bytes
     at 16:30:50 (after Snap #2) — same path, rewritten, not renamed.
-9. **Gallery pick-mode silently drops in-progress entries — found during
-   the gallery-race staging design work (item 2 above), not fixed, out
-   of scope for that task by explicit instruction.** `GalleryWidget`
-   lists once at construction (`gallery.py:334`, the only call site of
-   `.refresh()` anywhere in the repo) and never refreshes — an already-
-   open gallery is a snapshot, not a live view. `GalleryPickDialog`'s
-   `selected_paths()` (`gallery.py`) silently filters out any entry whose
-   `raw_path` is `None` before returning the selection — so a user who
-   picks a tile for a capture whose raw isn't on disk yet (or, for a
-   fully-processed-and-retention-discarded capture, ever) and clicks OK
-   gets an empty selection with no message, not an error, not a
-   "not ready yet." Pre-existing, not introduced by staging — but the
-   staging design widens the window in which it's reachable: a capture
-   now lists in the gallery (`session.json` gains its capture entry,
-   `qt_shell.py`'s `record_capture`) well before its raw frame is
-   published into the session directory, whereas before staging that gap
-   was only the length of one subprocess call. Needs its own decision
-   (an error message on empty-selection OK? disable/gray those tiles?
-   the gallery race guard in item 3 above, once built, may be the more
-   natural place to fix this from) — not guessed at here.
-9b. **Saturation-detection rework: scoped (2026-08-06), three decisions
+12. **Gallery pick-mode silently drops in-progress entries — found during
+    the gallery-race staging design work (item 2 above), not fixed, out
+    of scope for that task by explicit instruction.** `GalleryWidget`
+    lists once at construction (`gallery.py:334`, the only call site of
+    `.refresh()` anywhere in the repo) and never refreshes — an already-
+    open gallery is a snapshot, not a live view. `GalleryPickDialog`'s
+    `selected_paths()` (`gallery.py`) silently filters out any entry whose
+    `raw_path` is `None` before returning the selection — so a user who
+    picks a tile for a capture whose raw isn't on disk yet (or, for a
+    fully-processed-and-retention-discarded capture, ever) and clicks OK
+    gets an empty selection with no message, not an error, not a
+    "not ready yet." Pre-existing, not introduced by staging — but the
+    staging design widens the window in which it's reachable: a capture
+    now lists in the gallery (`session.json` gains its capture entry,
+    `qt_shell.py`'s `record_capture`) well before its raw frame is
+    published into the session directory, whereas before staging that gap
+    was only the length of one subprocess call. Needs its own decision
+    (an error message on empty-selection OK? disable/gray those tiles?
+    the gallery race guard in item 3 above, once built, may be the more
+    natural place to fix this from) — not guessed at here.
+13. **Saturation-detection rework: scoped (2026-08-06), three decisions
     accepted, nothing built in `frame_average.py`/`hdr_merge.py` yet.**
     Full investigation (Q1-Q6, cost/provenance analysis, a proposal) and
     the decisions below: `CHANGELOG.md`'s 2026-08-06 "Investigation and
     design proposal" and "Record intent: saturation-mask design
-    decisions" entries. Numbered `9b` rather than `9` on landing — both
-    this item and the "Gallery pick-mode" item above were independently
-    numbered `9` by two branches that diverged from the same base;
-    resolved as a collision, not a content update to the same item (see
-    this file's own numbering, renumbered once after every branch in
-    today's landing sequence is in).
+    decisions" entries.
     - **The mask is retained unconditionally, independent of Keep RAW
       Images**, once it exists. A packed per-frame mask costs ≤3.2% of
       one bracket's own raw-DNG storage; discarding it saves a trivial
