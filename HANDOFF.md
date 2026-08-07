@@ -19,6 +19,40 @@ to main, blocked on push permission" entry for that history), the user ran
 it directly, and `origin/main`'s tip is now that commit. Closed, not open;
 left in for anyone who reads this expecting it to still be pending.
 
+**Four branches landed and pushed, 2026-08-06 — `origin/main` is `ce2183e`,
+not `1a2eb45`.** If you're picking this up on a different checkout,
+`git fetch && git log --oneline origin/main` starts here, not at any of
+the four branch names below. Landed in this order, each rebased onto the
+result of the one before it, each fast-forwarded (no merge commits), each
+followed by a real `qt_shell.py --render-check` on the resulting `main`
+before the next one started:
+
+1. `claude/gallery-race-staging-design` (7 commits) — staging design +
+   two on-rig findings (items 9/11 below).
+2. `claude/qt-platformtheme-plugin-check` (19 commits) — the platformtheme
+   fix (below) plus the day's saturation-detection investigation and mask
+   backfill (item 13 below).
+3. `claude/session-json-atomic-write` (3 commits) — durability only.
+4. `claude/session-json-field-loss-fix` (3 commits on top of #3) — closes
+   item 9 below.
+
+`claude/session-json-field-loss-investigation` was empty (identical to
+`main`) and was deleted rather than landed. Two CHANGELOG conflicts came
+up rebasing #2 and #3 onto a moving `main`; both resolved by interleaving
+on real commit timestamps (`PHILOSOPHY.md`'s first conflict-resolution
+form), verified append-only (every pre-existing entry byte-identical,
+checked by header, not just an insertions-only diff) — see `CHANGELOG.md`'s
+own entries from this landing for the specifics. `FUNCTION_INDEX.md` was
+stale after all four (new/changed function signatures, two new `CAVEAT:`
+comments) and was regenerated and committed separately
+(`python3 function_index.py`, no manual edits) once the full 17-module
+sweep caught it. Post-landing re-verification (two Snaps in one session
+on real hardware; a plain launch with no environment manipulation) both
+passed against the landed, rebased `main` — see `CHANGELOG.md`'s own
+"Record: post-landing re-verification" entry for the full detail; the
+"Open right now" items below are already written to reflect that
+confirmed state, not the pre-landing one.
+
 What's actually open, none of it written down anywhere until now:
 
 1. **`frame_average.py`'s saturation-rejection question went from
@@ -131,60 +165,58 @@ What's actually open, none of it written down anywhere until now:
    task Part 3" entries.
 9. **`session.json` correction-status field loss on a second capture in
    one session — found verifying the gallery-race staging design's
-   multi-capture publish case, not fixed, documentation only.**
-   Symptom: a second capture in one session strips ALL SIX fields
+   multi-capture publish case. CLOSED, 2026-08-06, for the call site
+   that actually fires it.** Symptom, as originally found: a second
+   capture in one session strips ALL SIX fields
    `_record_correction_status`'s own `cap.update(correction_status)`
    writes from the first capture's entry in `session.json` —
    `flat_correction`, `dark_correction`, `raw_discarded`,
    `derived_outputs_discarded`, `derived_outputs_note`, and (present
-   only when `raw_discarded` is true) `raw_discard_reason`. Not just the
-   three that happened to be visible in the observed case — all six go
-   the same way, since one `cap.update()` call writes them together.
-   The first capture's raw files remain present and untouched on disk —
-   only the record of them is gone. Mechanism: `_record_correction_
-   status` reads `session.json` fresh from disk and patches it in
-   place, by design, so it also serves the manual processing wizard's
-   non-live sessions (its own docstring says so explicitly).
+   only when `raw_discarded` is true) `raw_discard_reason`. The first
+   capture's raw files were never touched — only the record of them
+   went missing. Mechanism: `_record_correction_status` reads
+   `session.json` fresh from disk and patches it in place, by design
+   (it also serves the manual processing wizard's non-live sessions);
    `Session.record()`, called by the second capture's `record_capture`,
    appends to `self.captures` in memory — which never learned about
-   that disk-side patch — then calls `Session.write()`, which overwrites
-   the whole file from that stale in-memory list. Scope: pre-existing,
-   untouched by the staging work (none of the three functions below was
-   touched by it), fires on the ordinary two-Snap workflow with no
-   staging involved at all. Observed in session `2026-08-05_163014`.
-   Ranked above item 12: this is silent loss from the provenance record
-   itself, not a UI-level drop — `final.tif` still carries its own
-   embed (see item 11 below), so once this fires, the TIFF states a
-   retention outcome that `session.json` neither corroborates nor
-   contradicts for that earlier capture.
+   that disk-side patch — then `Session.write()` overwrote the whole
+   file from that stale in-memory list. Observed in session
+   `2026-08-05_163014`.
 
-   **Line numbers resolve only against this branch
-   (`claude/gallery-race-staging-design`) — the staging work shifted
-   all three below it, `Session.write` and `_record_correction_status`
-   included. Whoever picks this up must know which base they are
-   patching against:**
+   **The fix** (`claude/session-json-field-loss-fix`, landed on `main`
+   2026-08-06): `_record_correction_status` gained a `live_session=`
+   parameter. When `_on_process_finished` can identify a live `Session`
+   object for the exact directory being patched (`self._session.dir.
+   resolve() == Path(self._last_process_session_dir).resolve()`), the
+   same `correction_status` update is applied to that object's own
+   in-memory capture entry, in the same call, right after the disk
+   write — the narrower of the two options this item's own investigation
+   considered (see item 10 below for the broader one, still unbuilt).
+   The disk-read stays unconditional; the manual wizard's non-live path
+   is unaffected (`live_session=None` there, behavior byte-for-byte as
+   before). **Confirmed twice**: on-branch (two Snaps, one session,
+   `2026-08-05_192914`, all six fields survived; manual wizard reprocess
+   path independently confirmed unaffected) and again post-landing,
+   against the rebased `main` (two Snaps, session
+   `2026-08-06_202014` — capture 0 retained all applicable fields after
+   capture 1 was recorded, publish landed into the non-empty directory,
+   staging emptied, retention embed matched the directory).
 
-   | Function | This branch (`858260d`) | `main` (`1a2eb45`) |
-   |---|---|---|
-   | `_record_correction_status` | `qt_shell.py:5584-5608` | `qt_shell.py:5529-5551` |
-   | `Session.write` | `provenance.py:269-285` | `provenance.py:219-234` |
-   | `Session.record` | `provenance.py:321-328` | `provenance.py:321-328` (coincides on both — offsetting shifts elsewhere in the file, not a signal that this function is unaffected) |
-
-   **A second disk-patch writer exists with the identical clobber
-   mechanism: `measure.py`'s `_on_exclude_toggled`.** It reads
-   `session.json` fresh from disk and patches one field (`stacks.
-   set_exclude`'s exclude flag on a z-stack plane's capture entry) in
-   place, by its own docstring explicitly never depending on
-   `qt_shell.Session` — same shape as `_record_correction_status`,
-   same vulnerability to a later live-Session `write()` that never
-   learned of the patch. This is reasoned from the mechanism, not
-   reproduced: the z-stack review flow this runs under typically starts
-   after a stack's per-plane `Session` objects have already gone out of
-   scope, so the realistic collision here looks more like a cross-
-   process race (a second window or process still holding that
-   directory's `Session` live while `measure.py` patches it) than the
-   same-process, same-object sequence observed for the two-Snap case
-   above. Not confirmed on the rig or otherwise.
+   **Still open, deliberately not covered by this fix — this is why the
+   item isn't fully closed:** `measure.py`'s `_on_exclude_toggled` is a
+   second disk-patch writer with the identical clobber mechanism (reads
+   `session.json` fresh, patches one field, by its own docstring never
+   depending on `qt_shell.Session`) and has no access to a live `Session`
+   object at all — covering it would need a cross-module registry that
+   does not exist. A `# CAVEAT:` at the fix's own new code says so
+   explicitly. Reasoned from the mechanism, not reproduced: the z-stack
+   review flow `_on_exclude_toggled` runs under typically starts after a
+   stack's per-plane `Session` objects have already gone out of scope,
+   so the realistic collision looks more like a cross-process race (a
+   second window or process still holding that directory's `Session`
+   live while `measure.py` patches it) than the same-process,
+   same-object sequence the two-Snap case exercised. Not confirmed on
+   the rig or otherwise.
 10. **Design, not scheduled: conflict-detecting `session.json` write —
     the structural fix item 9's investigation converged on, not
     committed to.** Shape: `Session.write` fingerprints what this object
@@ -2860,6 +2892,23 @@ it gets set) works. The fix on this branch as of the
 thing — it explicitly sets `gtk3` (verified present) rather than only
 clearing, which is exactly the mechanism that produced `18.0pt` both
 times it ever worked.
+
+**Landed on `main`, 2026-08-06** (`claude/qt-platformtheme-plugin-check`,
+rebased and fast-forwarded, no merge commit — this branch also carried
+the day's saturation-detection investigation, unrelated to this fix).
+Re-verified post-landing with a plain launch, no environment
+manipulation, ambient `QT_QPA_PLATFORMTHEME=qt5ct` confirmed present
+first: the platformtheme-selection mechanism still ran exactly as
+above (`gtk3` set after confirming `qt5ct` has no loadable Qt6 plugin).
+The resulting font read `Cantarell 16.0`, not `PibotoLt 18.0` — **this
+is not a regression**: the desktop's own ambient font configuration
+(`~/.config/qt5ct/qt5ct.conf`'s `[Fonts]` entry, and `gsettings
+org.gnome.desktop.interface font-name`) had been changed deliberately
+by the user earlier the same day, independent of this session's work.
+Whoever next checks this fix's acceptance test should read whatever the
+desktop's own ambient font currently is, not assume `18.0pt PibotoLt`
+specifically — the fix's job is "match the desktop," not "produce this
+one font."
 
 ### Keep RAW Images narrowed to raws only — BUILT (data-loss fix), self-check only
 
