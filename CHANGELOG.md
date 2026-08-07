@@ -39,6 +39,141 @@ build, fix, or start any surviving item, and will not start Stage 3
 itself. Touches `CHANGELOG.md` (this entry, then the build-record entry)
 and `HANDOFF.md` (the new section) only — no executable file.
 
+### Record build: Stage 3 prerequisite list
+
+Built to the intent recorded above, no deviation: every item named in the
+task plus every item found while inventorying `HANDOFF.md`/
+`SWEEP_CHECKS.md` was tested against commitment 4; the one survivor was
+written into a new `HANDOFF.md` section. Nothing built or started beyond
+the analysis and the two files this entry and the intent entry name.
+
+**Full inventory and test results**, one line each — what it is, its
+status (finished / decided-but-unbuilt / undecided), and the verdict on
+whether doing Stage 3 first would break, harden, or force redoing it:
+
+`HANDOFF.md` numbered items, `main` `4a6a918`:
+1. `frame_average.py` saturation-rejection sequencing — undecided (the
+   user's own call). Unrelated file, unrelated question. Parallel.
+2. `correction_status` retention-before-embed ordering — finished
+   (closed). N/A.
+3. Gallery race guard — undecided, parked pending decision. A
+   concurrent-file-access question in `gallery.py`/`process_wizard.py`;
+   "lives near `qt_shell.py`'s capture path" is the only connection,
+   which the test excludes by name. Parallel.
+4. Stage 3 — the subject of this task. Prerequisite: itself (finding 1
+   below).
+5. `--render-check` verification gap, PRs #10-12 — finished (closed).
+   N/A.
+6. Check-enumeration report (Part 2) — finished as a report; its
+   findings (`ca_lib.py` has no self-check, `stacks.py`'s
+   `move_frames_to_discarded` unexercised, `provenance.py` never
+   confirms a recorded path resolves, three unverifiable planning-doc
+   citations) are undecided/unbuilt, none concerning sensor dimensions
+   or the camera boundary. Parallel.
+7. `function_index.py` staleness — finished (closed); the CI/hook
+   enforcement trigger is decided-but-unbuilt, unrelated to Stage 3.
+   Parallel.
+8. `SWEEP_CHECKS.md` — finished (closed). N/A.
+9. `session.json` correction-status field loss — finished for the call
+   site that fires it; `measure.py`'s `_on_exclude_toggled` clobber path
+   is undecided, no fix chosen. A `session.json` write-conflict bug, not
+   a sensor-dimension or camera-boundary question. Parallel.
+10. Conflict-detecting `session.json` write — decided on shape, unbuilt,
+    blocked on an undecided policy question (what a caller does on
+    raise). Targets `Session.write`, already living in `provenance.py`
+    since phase 1 landed, not `qt_shell.py`'s capture-orchestration code
+    (what "extracting capture logic," a Known-problems item, would
+    touch). Parallel.
+11. Derived outputs not per-capture — undecided, documented only. An
+    output-naming question, not sensor geometry. Parallel.
+12. Gallery pick-mode silent drop + never-refreshing entry list —
+    undecided, needs its own decision. A UI-staleness question in
+    `gallery.py`, not sensor geometry. Parallel.
+13. Saturation-detection rework — mixed: mask retention decided and
+    partially built (3-bracket backfill done; live record format still
+    undecided/uncommitted); merge-weighting policy deliberately
+    undecided; `sat_frac` collapse decided-in-direction, unbuilt,
+    blocked on the raw-domain record's own build. All in
+    `frame_average.py`/`hdr_merge.py`'s raw-pixel domain, no
+    sensor-dimension or camera-boundary overlap. Parallel.
+14. Substrate binding blocklist/allowlist gap (`measure.py`'s
+    `check_measurement_provenance()`; unmerged on
+    `origin/claude/philosophy-audit-findings` as item 14, not yet on
+    `main`) — documented, undecided, explicitly out of scope for the
+    audit that found it. Same file as one Known-problems item
+    (`measure.py`) but a different function (the tag check, not
+    `GREEN_PLANE_RES`) — file-adjacency only, which the test excludes.
+    Parallel.
+
+`HANDOFF.md`'s "Known problems" list (PyQt6 section), items 15-23:
+`GREEN_PLANE_RES`/`FULL_RES` duplication; the `qt_shell.py:3452` bug; the
+green-plane loader's hardcoded shapes; the missing mono/no-CFA path; the
+BGGR assumption; `FULL_MODE_LBL` hardcoding; the open `G_IS_OBJECT`
+teardown assertion; extracting capture logic out of `qt_shell.py`;
+`provenance.py` phase 2 (`json_store.py` — decided design, unbuilt; the
+other eight are undecided/unbuilt). These nine are the closest existing
+articulation of what a driver-boundary overhaul would actually touch —
+testing "would Stage 3 first affect these" is close to asking whether
+Stage 3 would affect itself, unanswerable until item 4 says whether
+they're in scope. Not classified prerequisite or parallel; folded into
+finding 1 below rather than forced into either bucket.
+
+Found during the inventory, not named in the task:
+24. `wizard_pages.py`'s/`test_burst_backend.py`'s direct `picamera2`
+    imports (backlog item; fix identified — an availability-probe method
+    on `camera_backend.py`) — decided, unbuilt. A real camera-boundary
+    violation of exactly the kind a driver-boundary overhaul would
+    address; genuinely ambiguous whether it's in-scope-for-Stage-3 or a
+    separate fix — more evidence for finding 1, not a resolvable test
+    result on its own.
+25. Focus-aid "no real lores frames" at a non-default video resolution —
+    undecided (leading hypothesis, unconfirmed on hardware); the
+    diagnostic guard around it is finished. `LORES_RES` already lives
+    correctly inside `camera_backend.py` — a driver-internal
+    stream-pairing bug, not a boundary violation. Parallel.
+26. Store-mechanics migration (`json_store.py`, calibration/CA/
+    annotation stores) — decided in full, unbuilt. No sensor-dimension
+    or camera-boundary overlap. Parallel.
+
+Not code, observed directly rather than read from `HANDOFF.md`:
+27. `~/OSCam-main` worktree — clean, detached HEAD at `pyqt5-final`
+    (`b274cc8`, an ancestor of `main`), no uncommitted work. Undecided
+    whether to remove; not mentioned anywhere in `HANDOFF.md`. Parallel.
+28. `.claude/worktrees/bridge-cse_*` (23 of them) and the
+    `land-hdr-merge-verification`/`task9-work` worktrees — undecided,
+    not inventoried anywhere in `HANDOFF.md`. Parallel.
+29. Whether `HANDOFF.md` items need a stable identifier — undecided; a
+    real cost already paid once (`2560739`'s mechanical renumbering of
+    items 1-13 after the four-branch landing, cross-references updated
+    by hand). Doesn't change Stage 3's shape, but shaped how the new
+    section is written — named in prose ("item 4"), not solely by
+    number, since item 4 is exactly the kind of reference that cost has
+    already hit once.
+
+**DISCOVERED**: the task's framing — "HANDOFF says its finish line is
+already written as checkable predicates: no sensor dimension above the
+driver layer, `GREEN_PLANE_RES` and `FULL_RES` collapsed to one source,
+shapes derived from the sensor profile" — does not match the repo. The
+first phrase is a close paraphrase of a real, checkable, already-passing
+predicate, but it lives in `SWEEP_CHECKS.md`, not `HANDOFF.md`, and the
+check behind it (`assert_only_camera_backend_imports_sensor_profiles`)
+binds a narrower claim (no direct import of a sensor-profile module)
+than the plain-language predicate suggests (no hardcoded sensor
+dimension anywhere above the driver layer) — the same shape of binding
+gap `PHILOSOPHY_AUDIT_FINDINGS.md` finding 1 documents for the
+measurement-substrate rule, found independently here. The other two
+phrases do not exist anywhere in the repo in checkable form; their
+nearest kin are two "Known problems" bullets, which are problem
+statements with no stated completion threshold. No `# CAVEAT:` added at
+`SWEEP_CHECKS.md:56` — that line is documentation, not executable code,
+so the discovery is recorded here and referenced from the new
+`HANDOFF.md` section instead.
+
+**Verification**: read-only task, nothing to `--render-check` against.
+`HANDOFF.md`'s new section verified by direct re-read after the edit —
+pure insertion, `git diff` shows no pre-existing line touched. No
+prerequisite item and no Stage 3 work started, per instruction.
+
 ### Record: branch-stack landing — four branches rebased onto main, pushed
 
 Work-is-the-outcome form, no intent phase: the work is the landing
