@@ -7,6 +7,83 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-07
 
+### Record intent: Stage 3 sequence 2 — Check 2 (the collapse, in positive form) + fix
+
+Baseline, measured before any other file is touched. Branch `main`, HEAD
+`f6197f0`.
+
+**What this sequence closes**: `GREEN_PLANE_RES`/`FULL_RES` are
+currently computed independently in two files — `measure.py:141-142`
+and `qt_shell.py:470` each run the same `(FULL_RES[0] // 2, FULL_RES[1]
+// 2)` formula themselves, on their own imported copy of `FULL_RES` —
+rather than one collapsing to the other. Sequence 1's scanner does not
+catch this (a formula referencing `FULL_RES` by name has no raw NUMBER
+token pair to tokenize against); this sequence's own check tests it
+directly, by substitution, not by scanning source text.
+
+**The check to build**: substitute a synthetic sensor profile — via a
+`FakeCamera` constructed with a deliberately non-real `full_res` (a size
+matching none of `imx477.py`'s real modes, chosen so a wrong or
+ignored substitution fails loudly, not by coincidence) — BEFORE calling
+`measure.py`'s green-plane loader, and assert two things a naive
+"returned shape only" version would miss:
+
+1. The loader's own BRANCH DECISION follows the substitution, not just
+   its final output shape. `load_measurement_plane` chooses "already a
+   green plane" vs "full mosaic, extract it" by comparing the input
+   array's shape against `FULL_RES`/`GREEN_PLANE_RES`. Checked by
+   spying on `debayer.extract_green` (call count, not return value) —
+   a mosaic-shaped-under-the-synthetic-profile array must trigger
+   exactly one call; an already-green-shaped-under-the-synthetic-profile
+   array must trigger zero. Returned-shape-only would not distinguish
+   "extracted and happened to come out the right shape" from "passed
+   through unextracted and happened to already be the right shape" —
+   the exact silent failure mode named in the task brief:
+   `check_measurement_provenance` is a BLOCKLIST (proves a *tagged*
+   file is refused), not an allowlist, so it proves nothing about an
+   untagged mosaic routed down the wrong branch.
+2. The substitution happens at `FakeCamera` construction, via its own
+   `full_res=` constructor argument — the substitution point and the
+   read point (`camera.capture_resolution()`) are the same call,
+   nothing cached separately that could go stale between them.
+   `FakeCamera` has no analogue of `Picamera2Camera`'s own `_mode_crops`
+   (built once, at construction, from a live `sensor_modes` sweep —
+   Step 0's own finding); this session's fix does not need the
+   "substitute-then-construct" ordering hazard Step 0 warned about to
+   hold for `FakeCamera` specifically, and says so rather than claiming
+   a hazard was dodged that was never actually present for this
+   vehicle.
+
+**The fix this check will drive**: `camera_backend.py`'s `FULL_RES`
+collapses to `_imx477.FULL_ARRAY_SIZE` (the same deliberate stand-in
+reference `FakeCamera.sensor_crop_for_size` already uses, extended to
+this constant too) rather than its own hardcoded `(4056, 3040)`;
+`GREEN_PLANE_RES` becomes a new module-level export computed once,
+there, from that same `FULL_RES`. `measure.py` imports both rather than
+computing its own; `load_measurement_plane` gains an optional `camera=`
+parameter — omitted (every real call site today), it derives from the
+module constants exactly as before, unchanged behavior; given a
+`CameraBackend`-conforming object, it derives from that camera's own
+`capture_resolution()` instead, which is what makes the substitution
+above possible without needing a live Pi.
+
+**Explicitly not touched this sequence** (named so the build entry can
+be checked against it): `qt_shell.py`'s own `GREEN_PLANE_RES`
+computation and its live call-site bug (passing the frozen constant to
+`native_point_from_preview_click` instead of a camera-derived value) —
+both belong to sequence 3, which drives them from `preview_res`/
+`still_res` through `sensor_crop_for_size`, one level wider than this
+sequence's own scope. `gallery.py`/`calibrate.py` untouched (neither
+holds a production-region dimension or a `GREEN_PLANE_RES` computation
+of its own).
+
+**No baseline count for this sequence** — Check 2 is not a scan with a
+number to measure ahead of time; it is a substitution test with a
+binary result (branch decision follows the profile, or it doesn't).
+The measured baseline the three-phase convention calls for, in the form
+this kind of work can actually carry: the scope stated above, checkable
+against what the build entry says was touched.
+
 ### Record build: Stage 3 sequence 1 — Check 1 (dimension scan) + the fix it drives
 
 Built to the intent above. `camera_backend.py` (new check function),
