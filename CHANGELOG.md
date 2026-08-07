@@ -7,6 +7,182 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-07
 
+### Record: Stage 3 Step 0 addendum — second, longer distance mark on the same reference
+
+Work-is-the-outcome form, no intent phase: one measurement taken, no plan
+to diverge from. **Supersedes nothing.** Adds to `cc50933`'s reference
+(the "Record: Stage 3 Step 0" entry immediately below) rather than
+replacing it — that entry's file, hashes, and first mark are untouched and
+restated here only where needed to show the new mark sits beside them, not
+instead of them. On the Pi (`raspberrypi`), branch `main`, HEAD `cc50933`
+throughout (this entry's own commit is what advances it). No source file
+modified; no camera or rig hardware used — the frozen file already
+existed. Stage 3 itself not started.
+
+**File identity, verified BEFORE any measurement — both matched, observed,
+not assumed:**
+
+```
+$ sha256sum /home/bwann83/stage3_reference/stage3_ref_2026-08-07.dng
+13183460470f8e883b2edc3988bba97422b89c0e64eb990c5adffea6ee186731  ...
+exit: 0
+```
+
+matches `cc50933`'s recorded `13183460470f8e883b2edc3988bba97422b89c0e64eb990c5adffea6ee186731`
+exactly.
+
+```
+green-plane pixel_sha256 (via measure.py's load_measurement_plane, the
+real loader, not a hand read): 3605080018646f75c72bc466a3160328dd2b6b4539b0f02c33c68377dbcf8b65
+```
+
+matches `cc50933`'s recorded `3605080018646f75c72bc466a3160328dd2b6b4539b0f02c33c68377dbcf8b65`
+exactly. Both agree — nothing moved; proceeded.
+
+**Point selection**: analytic search (same method as the first mark, not
+eyeballing a screenshot), on the same long dark strand visible in the
+frame's right half. Two separate small windows, each searched for its own
+sharpest horizontal-gradient edge (background→dark transition):
+
+```
+Region A window x[1300:1420] y[500:560] -> sharpest edge at (1390, 522), 4480.0 -> 4864.0
+Region B window x[1420:1560] y[900:980] -> sharpest edge at (1488, 923), 4416.0 -> 4832.0
+candidate baseline: 412.8 px (>> the 150px floor; not a stretch to reach it)
+margins from field edges (px): left 1390, right 540, top 522, bottom 597
+```
+
+All four margins are large — none of the ~1.8µm/1.28px field-gradient
+concern's territory (comparable to a couple of pixels at most; these
+margins are hundreds). No edge-reaching was needed to clear the 150px
+floor by a wide margin, so the "report the longest you could place" branch
+of the task didn't apply.
+
+**Measurement**, opened through `measure.py`'s own `MeasureWindow`
+(`image_path=` the same frozen `.dng`, `objective="4x"`) — the real
+`_load_image` → `load_measurement_plane` path ran again, same as the
+first mark. Distance tool activated via the real `distance_btn` toggle;
+both points placed via real synthetic `QMouseEvent`s dispatched through
+the actual `MeasureView.mousePressEvent` handler, at view-widget
+coordinates from `view.mapFromScene()` of the two analytic targets above
+(same `_click()` pattern as before and as `measure.py`'s own
+`render_check`).
+
+Points actually recorded (from the real app dispatch, same small
+view↔scene rounding as the first mark):
+
+```
+point A: (1388.5232067510549, 522.7004219409282)
+point B: (1487.9324894514768, 923.5443037974683)
+distance: 412.986710571699 px  =  581.6549898364569 µm
+```
+
+(`412.986710571699 × 1.408410912378439 = 581.6549898364569`, confirmed.)
+Margins from field edges using the actually-recorded points: left 1388.5,
+right 540.1, top 522.7, bottom 596.5 — consistent with the analytic
+targets, still all comfortably interior.
+
+**Calibration entry in force**, read from the mark's own
+`calibration_ref` (not assumed): `entry_id d38b13076c4c4ab9804c265439321c12`,
+`um_per_px 1.408410912378439`, `objective 4x` — exactly the entry named
+expected, confirmed from the record itself, not from memory of the prior
+entry.
+
+**The real store, both marks present, first mark untouched** (full record,
+`~/.zynergy/annotations.json`, `pixel_sha256`
+`3605080018646f75c72bc466a3160328dd2b6b4539b0f02c33c68377dbcf8b65`):
+
+```json
+{
+  "calibration_ref": {"objective": "4x",
+                       "entry_id": "d38b13076c4c4ab9804c265439321c12",
+                       "um_per_px": 1.408410912378439},
+  "marks": [
+    {"mark_id": "5c3df70cc92a4b559033edbd47053cae", "type": "distance",
+     "created_at": "2026-08-07T12:15:46.374395",
+     "input": {"points": [[1067.8481012658228, 721.5189873417721],
+                           [1083.8818565400843, 721.5189873417721]]},
+     "derived": {"distance_px": 16.033755274261466,
+                 "distance_um": 22.582115894675198}},
+    {"mark_id": "007db75309704f9ba024b969f77ad005", "type": "distance",
+     "created_at": "2026-08-07T12:33:38.198200",
+     "input": {"points": [[1388.5232067510549, 522.7004219409282],
+                           [1487.9324894514768, 923.5443037974683]]},
+     "derived": {"distance_px": 412.986710571699,
+                 "distance_um": 581.6549898364569}}
+  ]
+}
+```
+
+The first mark's `mark_id`/`created_at`/`input`/`derived` fields are
+byte-identical to what `cc50933` recorded — not edited, not "cleaned up"
+to make room for the second. That was the rule working as intended, not a
+temptation resisted with effort.
+
+**Necessary or side effect — the question this entry was asked to
+settle.** Committing to the real store was **a side effect of driving
+`MeasureWindow`'s real click-to-commit path, not something necessary to
+produce the coordinates or the distance values.** Tracing the actual
+call chain (`measure.py`):
+
+- The two click coordinates are already available in
+  `MeasureView._pending_points` the moment each click lands (visible in
+  this session's own raw output: `after click 1, pending points: [...]`)
+  — before any commit happens.
+- `commit_measurement()` (measure.py:409-457) does two separable things
+  in sequence, not one fused operation: it calls
+  `_annotations.build_distance_mark(points[0], points[1], um_per_px)`
+  (measure.py:444) — a pure, Qt-free function that computes
+  `distance_px`/`distance_um` from two points and a calibration value,
+  nothing else — and only *afterward*, as a separate statement
+  (measure.py:456), calls `_annotations.save_mark(...)`, which is the
+  actual store write.
+- `MeasureView.mousePressEvent` (measure.py:774-789) auto-fires
+  `commit_mark` the instant a distance tool's second point lands — that
+  UI wiring is what makes the store write *appear* inseparable from
+  getting a number on screen, but the underlying function it calls
+  already keeps computation and storage apart.
+
+So a caller that wanted the derived values without touching the store
+could call `annotations.build_distance_mark(point_a, point_b, um_per_px)`
+directly — still the real function, not a reimplementation — and stop
+there. This session didn't do that, because the task asked for the same
+path the first mark took, and this file's own convention already treats
+a real measurement landing in the real append-only store as correct, not
+a leak to route around.
+
+**Why this matters for Stage 3's after-half**, since the task named that
+as the open question this was meant to settle: a verification step that
+re-derives native coordinates from the same green-plane bytes and wants
+to compare distances against this entry's recorded values does not need
+to write a new mark into `~/.zynergy/annotations.json` on every run to do
+it — `annotations.build_distance_mark` alone gets the comparable number.
+Whether Stage 3's own verification SHOULD still commit real marks (matching
+this session's choice) or should call the pure function directly is a
+design decision for whoever writes that verification, not resolved here —
+this entry only establishes that the store write is optional, not that
+skipping it is preferred.
+
+**Not done this session** (same out-of-scope list the first entry named,
+restated so this entry stands alone): Stage 3 itself and its three
+checks; an inverse of `native_point_from_preview_click`; Reference B or
+any camera work; the saturation mask record-format change / `sat_frac`
+collapse / merge-weighting policy; recalibration or the calibration
+plane-shape schema question; the conflict-detecting `session.json` write;
+branch and remote cleanup.
+
+Scratch script: `~/scratch/stage3_ref/measure_probe_2.py` (plus a
+re-rendered stretched-green PNG used only to choose which region to
+search analytically), outside the repo, per this file's own scratch-
+tooling rule.
+
+**Verification**: `git status --porcelain` before and after this entry's
+own commit matches (`M profile.json`, `?? calib/`, both pre-existing,
+neither touched); HEAD moves from `cc50933` to this entry's own commit and
+no further. Append-only checked directly against this commit
+(removed-lines diff empty; every pre-existing header — `## 2026-08-07`
+itself, `## 2026-08-06`, and everything below — still present,
+byte-identical, under its own heading; see this commit's own diff).
+
 ### Record: Stage 3 Step 0 — before-reference for the click-mapping/geometry overhaul
 
 Work-is-the-outcome form, no intent phase: capturing measurements already
