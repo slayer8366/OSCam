@@ -57,7 +57,15 @@ except ImportError:
     import imx477 as _imx477
 
 # Rig defaults (match capture.py). Tunable.
-FULL_RES = (4056, 3040)
+# FULL_RES (Stage 3 sequence 2): collapses to _imx477.FULL_ARRAY_SIZE rather
+# than its own hardcoded (4056, 3040) -- the same deliberate stand-in
+# reference FakeCamera.sensor_crop_for_size already uses (see the _imx477
+# import's own comment above), extended to this constant too, so this is
+# still the one place a hardcoded "imx477" name is allowed to appear, not a
+# second one. GREEN_PLANE_RES derives from FULL_RES, computed once, here --
+# the single source measure.py/qt_shell.py ask rather than duplicate.
+FULL_RES = _imx477.FULL_ARRAY_SIZE
+GREEN_PLANE_RES = (FULL_RES[0] // 2, FULL_RES[1] // 2)
 PREVIEW_RES = (1332, 990)
 LORES_RES = (640, 480)     # small enough for real-time scoring, 4:3 like the sensor
 

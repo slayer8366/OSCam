@@ -131,10 +131,10 @@ except ImportError:
         _publish = None
 
 try:
-    from .camera_backend import FULL_RES
+    from .camera_backend import FULL_RES, GREEN_PLANE_RES
 except ImportError:
     try:
-        from camera_backend import FULL_RES
+        from camera_backend import FULL_RES, GREEN_PLANE_RES
     except ImportError:
         # No fabricated fallback (Stage 3 sequence 1): a guessed dimension
         # here is exactly the class of hardcoded-above-the-driver-layer fact
@@ -142,11 +142,12 @@ except ImportError:
         # not being importable at all is a real, rare failure this file
         # cannot paper over with a plausible-looking number. None here,
         # loudly, rather than a number that might be wrong for whatever
-        # sensor is actually attached.
+        # sensor is actually attached. GREEN_PLANE_RES imported alongside
+        # (Stage 3 sequence 2): camera_backend.py is now the one place that
+        # computes it, from its own FULL_RES -- this file asks rather than
+        # running the same "// 2" formula on its own copy.
         FULL_RES = None
-
-GREEN_PLANE_RES = ((FULL_RES[0] // 2, FULL_RES[1] // 2)
-                   if FULL_RES is not None else None)
+        GREEN_PLANE_RES = None
 
 # The shared image-source wizard page (build checklist section 4): pick an
 # image already shot, or shoot a new one live. Optional the same way every
@@ -232,7 +233,7 @@ def _raw_discard_reason(path):
     return None
 
 
-def load_measurement_plane(path):
+def load_measurement_plane(path, camera=None):
     """The measurement substrate, whichever of the two supported input shapes
     it is: a full-sensor raw mosaic (.dng, or a frame_average.py master.tif)
     gets green-which=1 extracted (same call calibrate.py itself makes); an
@@ -240,6 +241,15 @@ def load_measurement_plane(path):
     as-is, no double extraction. Runs the provenance guard first. Raises
     ValueError for anything that is neither shape, or RuntimeError if
     debayer.py is not importable and extraction is actually needed.
+
+    camera (Stage 3 sequence 2): a CameraBackend-conforming object (real,
+    fake, or any future implementation) whose own capture_resolution()
+    supplies the full-sensor size this call expects, halved for the green
+    plane -- omitted (every real call site today), the module-level
+    FULL_RES/GREEN_PLANE_RES apply instead, unchanged behavior. This is
+    what "ask the driver, don't duplicate its shapes" means for THIS
+    function: no camera-free code above the driver layer independently
+    decides what the sensor's own dimensions are.
 
     A missing raw sibling (e.g. path is a .jpg preview whose .dng was
     deleted) is refused by calibrate.resolve_raw_path itself -- this never
@@ -270,8 +280,13 @@ def load_measurement_plane(path):
     if not Path(resolved).is_file():
         raise _discard_error(resolved, ValueError("{} does not exist.".format(resolved)))
     arr = _calibrate.load_mosaic_array(resolved)
-    full_hw = (FULL_RES[1], FULL_RES[0])
-    green_hw = (GREEN_PLANE_RES[1], GREEN_PLANE_RES[0])
+    if camera is not None:
+        full_res = camera.capture_resolution()
+        green_res = (full_res[0] // 2, full_res[1] // 2)
+    else:
+        full_res, green_res = FULL_RES, GREEN_PLANE_RES
+    full_hw = (full_res[1], full_res[0])
+    green_hw = (green_res[1], green_res[0])
     if arr.shape == full_hw:
         if _debayer is None:
             raise RuntimeError("debayer.py could not be imported; needed to "
@@ -1747,6 +1762,102 @@ def render_check():
     print("load_measurement_plane check PASS: full-mosaic extraction matches "
           "debayer.py exactly, an already-green plane passes through unchanged, "
           "an unrecognized shape refuses")
+
+    # --- load_measurement_plane: the collapse, in positive form (Stage 3
+    # sequence 2). A synthetic profile's dimensions, substituted via a
+    # FakeCamera's own full_res= constructor argument BEFORE this call,
+    # must decide load_measurement_plane's BRANCH (mosaic-needs-extraction
+    # vs already-green-pass-through) -- not just its returned shape. Spies
+    # on debayer.extract_green's own call count, since a wrong derivation
+    # could route a mosaic down the pass-through branch silently:
+    # check_measurement_provenance is a blocklist (proves a TAGGED file is
+    # refused), not an allowlist, so it proves nothing about an untagged
+    # mosaic routed the wrong way. -------------------------------------
+    from camera_backend import FakeCamera
+    # Matches no real imx477 mode, full size, or half -- chosen so a wrong
+    # or silently-ignored substitution fails LOUDLY (a shape-mismatch
+    # ValueError against the real profile), never by numeric coincidence.
+    synthetic_full = (2000, 1500)
+    synthetic_green = (synthetic_full[0] // 2, synthetic_full[1] // 2)
+    synthetic_cam = FakeCamera(full_res=synthetic_full)
+
+    extract_calls = []
+    real_extract_green = _debayer.extract_green
+
+    def _spy_extract_green(*args, **kwargs):
+        extract_calls.append(1)
+        return real_extract_green(*args, **kwargs)
+
+    _debayer.extract_green = _spy_extract_green
+    try:
+        syn_full_h, syn_full_w = synthetic_full[1], synthetic_full[0]
+        syn_mosaic = (np.arange(syn_full_h * syn_full_w, dtype=np.uint32) % 4096
+                     ).astype(np.uint16).reshape(syn_full_h, syn_full_w)
+        syn_mosaic_dir = Path(tempfile.mkdtemp(prefix="zynergy_measure_render_check_synmosaic_"))
+        syn_mosaic_path = syn_mosaic_dir / "syn_mosaic.tif"
+        tifffile.imwrite(str(syn_mosaic_path), syn_mosaic)
+        try:
+            syn_plane = load_measurement_plane(syn_mosaic_path, camera=synthetic_cam)
+            assert len(extract_calls) == 1, (
+                "a mosaic shaped under the SUBSTITUTED profile must take the "
+                "extraction branch exactly once -- got {} calls".format(len(extract_calls)))
+            assert syn_plane.shape == (synthetic_green[1], synthetic_green[0]), (
+                "the returned shape must follow the substituted profile "
+                "({!r}), not the real one".format(synthetic_green))
+        finally:
+            shutil.rmtree(syn_mosaic_dir, ignore_errors=True)
+
+        extract_calls.clear()
+        syn_green_h, syn_green_w = synthetic_green[1], synthetic_green[0]
+        syn_green = (np.arange(syn_green_h * syn_green_w, dtype=np.uint32) % 4096
+                    ).astype(np.uint16).reshape(syn_green_h, syn_green_w)
+        syn_green_dir = Path(tempfile.mkdtemp(prefix="zynergy_measure_render_check_syngreen_"))
+        syn_green_path = syn_green_dir / "syn_green.tif"
+        tifffile.imwrite(str(syn_green_path), syn_green)
+        try:
+            syn_plane2 = load_measurement_plane(syn_green_path, camera=synthetic_cam)
+            assert len(extract_calls) == 0, (
+                "an already-green plane under the SUBSTITUTED profile must "
+                "take the pass-through branch, never extracted -- got {} "
+                "calls".format(len(extract_calls)))
+            assert np.array_equal(syn_plane2, syn_green), \
+                "pass-through must return the array as-is, substituted profile or not"
+        finally:
+            shutil.rmtree(syn_green_dir, ignore_errors=True)
+
+        # Same two synthetic-sized arrays, WITHOUT the substitution: the
+        # real (default) profile must still govern every call that omits
+        # camera=, so a size matching neither its real full nor green
+        # shape must still refuse -- proves the substitution mechanism
+        # doesn't leak into the default path.
+        extract_calls.clear()
+        for size, label in ((synthetic_full, "full-sized"), (synthetic_green, "green-sized")):
+            h, w = size[1], size[0]
+            arr = (np.arange(h * w, dtype=np.uint32) % 4096).astype(np.uint16).reshape(h, w)
+            d = Path(tempfile.mkdtemp(prefix="zynergy_measure_render_check_synnocam_"))
+            p = d / "arr.tif"
+            tifffile.imwrite(str(p), arr)
+            try:
+                try:
+                    load_measurement_plane(p)   # no camera= -- must use the REAL profile
+                    raise AssertionError(
+                        "a {} synthetic array must be refused by the default "
+                        "(real-profile) path, not silently accepted".format(label))
+                except ValueError:
+                    pass
+            finally:
+                shutil.rmtree(d, ignore_errors=True)
+        assert len(extract_calls) == 0, \
+            "the default path must never even attempt extraction on a shape it's about to refuse"
+    finally:
+        _debayer.extract_green = real_extract_green
+    print("load_measurement_plane substitution check PASS: a FakeCamera "
+          "constructed with a non-real full_res (before the loader call) "
+          "changes load_measurement_plane's own BRANCH DECISION, not just "
+          "its returned shape (verified by extract_green call count, not "
+          "shape alone); the same synthetic sizes are refused by every "
+          "call that omits camera=, so the substitution never leaks into "
+          "the default (real-profile) path")
 
     # --- load_measurement_plane: deliberate raw discard (Part 03, Keep RAW
     # Images off) must name the TRUE reason, not calibrate.resolve_raw_
