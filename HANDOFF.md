@@ -312,6 +312,58 @@ What's actually open, none of it written down anywhere until now:
       numbers: `CHANGELOG.md`'s 2026-08-06 "Record build: saturation-mask
       backfill" entry.
 
+## Stage 3 start condition — read this before starting Stage 3
+
+**The rule: when every item on this list is complete, Stage 3 begins.**
+Not a date, not a feeling that the queue is thin — this list, checked.
+Built by inventorying every open item, deferred decision, and known
+defect in this file (plus `SWEEP_CHECKS.md` and the unmerged philosophy-
+audit branch) and testing each one against `PHILOSOPHY.md` commitment
+4's question: does doing Stage 3 *first* break it, make it harder, or
+force redoing it? Living in a file Stage 3 will also touch does not by
+itself pass that test — see the full inventory in `CHANGELOG.md`'s
+matching "Record build" entry for every item that was tested and did
+not survive, so this list is never mistaken for the whole backlog.
+
+1. **Stage 3 itself has no written scope — this is the one item on the
+   list.** `HANDOFF.md` item 4 (below) has read "named in conversation,
+   not detailed here... don't assume it's [Part 03]" since before this
+   list existed, and nothing else in the repo defines it: no "Stage 1"
+   or "Stage 2" appears anywhere, and the nearest concrete candidate —
+   the 9-line "Known problems" list under the PyQt6 section below — has
+   never been labelled as Stage 3's scope anywhere it's referenced
+   (`CHANGELOG.md` calls it the port's own "out-of-scope" list, three
+   separate times, and explicitly *not* a definition of what comes
+   next). `SWEEP_CHECKS.md`'s Geometry-derivation section states four
+   predicates in checkable form ("no hardcoded sensor dimension above
+   the driver layer," "shape predicates derive from the sensor profile,
+   not a maintained list," plus two narrower ones) and marks all four
+   **already implemented and passing** — but the check behind the first
+   predicate (`assert_only_camera_backend_imports_sensor_profiles`)
+   verifies only that no module *imports* a sensor-profile module
+   directly; it does not check whether a module hardcodes its own
+   sensor-dimension constant, which the "Known problems" list says is
+   currently true of `GREEN_PLANE_RES`/`FULL_RES` in four files. The
+   predicate reads as satisfied; the problem it's meant to describe is
+   not. No predicate anywhere states "`GREEN_PLANE_RES` and `FULL_RES`
+   collapsed to one source" or "the green-plane loader derives its shape
+   from the sensor profile" in checkable form — those exist only as
+   problem statements, with no stated threshold for "done."
+   **Completion condition, checkable by a reader with no other
+   context**: this file's Stage 3 entry (item 4) names a closed,
+   specific list of files and behaviours Stage 3 will change — not
+   "named in conversation" — and that list either states which of the
+   nine "Known problems" items it includes, explicitly excludes, or
+   defers, or is a different list entirely, stated as such. Until that
+   exists, no other question about Stage 3 (including "is X a
+   prerequisite for it") can be answered checkably, because there is no
+   fixed target to check it against.
+
+Nothing else on the candidate list this task was given, and nothing else
+found while building it, survived the test — every one of them is
+parallel work with no shape-dependency on Stage 3 in either direction.
+Full per-item reasoning: `CHANGELOG.md`'s matching "Record build" entry.
+
 One number worth a line since the constant alone doesn't explain it:
 `hdr_from_session.MERGE_WHITE_LEVEL_DEFAULT` stays `65520`, but the real
 August 2026 bracket was actually merged at `--white-level 62100` — the
