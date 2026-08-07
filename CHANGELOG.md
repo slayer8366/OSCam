@@ -7,6 +7,139 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-07
 
+### Record build: Stage 3 sequence 3 — Check 3 (round trip) + inverse + live-bug fix
+
+Built to the intent above. Touches `qt_shell.py` (the inverse function,
+both checks, the live call-site fix) as stated, plus `camera_backend.py`
+— a deviation the intent entry explicitly named as possible rather than
+certain, and it happened for real, the first time this sequence's own
+round-trip check ran: recorded below, not silently absorbed.
+
+**`preview_click_from_native_point`** (`qt_shell.py`): the inverse of
+`native_point_from_preview_click`, written next to it. Same three-step
+chain, reversed algebraically.
+
+**`assert_round_trip_preview_to_native_and_back`** (`qt_shell.py`):
+built and run standalone against the pure functions FIRST, before
+touching the live call site —
+
+```
+$ python3 -c "
+import qt_shell
+qt_shell.assert_round_trip_preview_to_native_and_back()
+print('round-trip check ran without raising')
+"
+round-trip check ran without raising
+exit: 0
+```
+
+**Passed on first run — a real finding, not a manufactured failure**,
+exactly the outcome the task brief itself said to expect and report
+honestly rather than force: `native_point_from_preview_click`'s own
+math was already correct (centre/corner anchors exact for every mode
+used as both preview and still; round trip holds for every mode
+pairing; the independently hand-derived binning-term value matches).
+The scattered constants agreeing here lowers the assessed risk of this
+whole overhaul on that one axis — the function itself was never the
+suspect; the CALLER passing it the wrong constant was.
+
+**`assert_live_measure_freeze_uses_camera_configured_green_plane_res`**
+(`qt_shell.py`) — the other half of Check 3, wired into `render_check()`
+and run for real. **Watched it fail, real output, foreground, exit code
+pasted — before the live call site was touched:**
+
+```
+$ python3 qt_shell.py --render-check
+[... every prior block PASSES, unchanged ...]
+Traceback (most recent call last):
+  File "/home/bwann83/imx/qt_shell.py", line 9117, in <module>
+    render_check()
+  File "/home/bwann83/imx/qt_shell.py", line 8914, in render_check
+    assert_live_measure_freeze_uses_camera_configured_green_plane_res()
+  File "/home/bwann83/imx/qt_shell.py", line 1308, in assert_live_measure_freeze_uses_camera_configured_green_plane_res
+    assert "GREEN_PLANE_RES" not in src, (
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: _live_measure_preview_event still references the frozen GREEN_PLANE_RES module constant -- must derive green_plane_res from self.camera.capture_resolution() (already read into still_res two lines above the native_point_from_preview_click call) instead
+exit: 1
+```
+
+**The fix**: `_live_measure_preview_event`'s own call to
+`native_point_from_preview_click` now passes `(still_res[0] // 2,
+still_res[1] // 2)` — derived from `still_res`, the exact same
+camera-reported size the `preview_crop`/`still_crop` lookups two lines
+above already use — instead of the frozen `GREEN_PLANE_RES` module
+constant. The comment directly above the bug already stated the rule
+("never `GREEN_PLANE_RES`/`PREVIEW_RES` module constants here, always
+the camera's OWN actual configured sizes") that the line below it broke
+— left in place, with a `FIX (Stage 3 sequence 3):` note added rather
+than rewritten, since the rule itself was always correct.
+
+**Watched it pass, real output, foreground, exit code pasted:**
+
+```
+$ python3 qt_shell.py --render-check
+[... unchanged PASSES ...]
+assert_round_trip_preview_to_native_and_back PASS: screen point -> native -> screen for every sensor-mode pairing lands back exactly where it started; centre/corner anchors hold exactly for every mode used as both preview and still; the binning term (preview crop extent, not preview output size) is independently hand-verified, not just round-tripped
+[... unchanged PASSES continue ...]
+assert_live_measure_freeze_uses_camera_configured_green_plane_res PASS: the live-measure freeze click's own source no longer names the frozen GREEN_PLANE_RES module constant
+[... remaining PASSES, all clean ...]
+exit: 0
+```
+
+**DISCOVERED, as the intent entry named as a possibility rather than a
+certainty**: the very first time `assert_round_trip_preview_to_native_
+and_back` ran as part of the full `qt_shell.py --render-check` sweep
+(after `camera_backend.py`'s own dimension scan had already landed in
+sequence 1), it tripped that scan:
+
+```
+$ python3 camera_backend.py
+Traceback (most recent call last):
+  File "/home/bwann83/imx/camera_backend.py", line 2072, in <module>
+    assert_no_hardcoded_sensor_dimension_above_driver_layer()
+  File "/home/bwann83/imx/camera_backend.py", line 1703, in assert_no_hardcoded_sensor_dimension_above_driver_layer
+    assert not hits, (
+AssertionError: hardcoded sensor dimension(s) found above the driver layer, production region only (see _production_region_source): ['qt_shell.py:1262 (1332, 990)', 'qt_shell.py:1263 (4056, 3040)']
+exit: 1
+```
+
+Both hits are the round-trip check's own deliberate binning-term probe
+— real mode sizes handed to `sensor_crop_for_size` on purpose, the same
+category sequence 1's own intent entry already named as legitimate test
+usage. The actual gap: `_production_region_source`'s exclusion covered
+`render_check()`'s own region, never a standalone top-level `assert_`
+function defined OUTSIDE it — a pattern this codebase already
+established (`camera_backend.py`'s own
+`assert_only_camera_backend_imports_picamera2`) before this session
+added two more to `qt_shell.py`. Fixed by `ast`-parsing each file for
+module-level `FunctionDef`/`AsyncFunctionDef` nodes whose name starts
+with `assert_` and blanking their own line ranges too (line numbers of
+any surviving hit stay accurate — lines are replaced, not removed).
+Discovered by shape, not a maintained list of check-function names,
+matching every other structural check in this file. Re-run clean after
+the fix — pasted under camera_backend.py's own full sweep below.
+
+**Full sweep, every file this sequence touched or that depends on what
+it touched, foreground, real output, all clean:**
+
+```
+$ python3 camera_backend.py             -> exit 0 (all prior PASSES
+    unchanged, dimension scan now clean including the round-trip
+    check's own real-mode-size literals)
+$ python3 qt_shell.py --render-check    -> exit 0 (full suite, 50 PASS
+    lines, both new checks among them)
+$ python3 measure.py --render-check     -> exit 0
+$ python3 gallery.py --render-check     -> exit 0
+$ python3 calibrate.py --render-check   -> exit 0
+```
+
+**Verification**: *fixed*, run directly in the foreground on the Pi,
+exit codes pasted above. Not *confirmed* — nothing here touches the
+rig. Branch `main`, working tree otherwise unchanged (`profile.json`/
+`calib/` excluded as always). Three sequences done; Step 0's two
+verification comparisons are next, and only then does this overhaul's
+own record close.
+
 ### Record intent: Stage 3 sequence 3 — Check 3 (round trip) + inverse + live-bug fix
 
 Baseline, measured before any other file is touched. Branch `main`,
