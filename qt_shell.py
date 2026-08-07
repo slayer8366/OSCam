@@ -851,6 +851,46 @@ def native_point_from_preview_click(px, py, disp_rect, preview_crop,
     return sx * green_plane_res[0], sy * green_plane_res[1]
 
 
+def preview_click_from_native_point(nx, ny, disp_rect, preview_crop,
+                                     still_crop, green_plane_res):
+    """The inverse of native_point_from_preview_click (Stage 3 sequence 3):
+    a frozen green plane's own native pixel coordinate converted back to
+    the screen-space click that would have produced it. No inverse
+    existed anywhere in the tree before this -- Live Measuring's own
+    lores_point_from_preview_click/_live_measuring_view_point pair is
+    structurally forbidden from touching this function (see
+    assert_live_measuring_has_no_calibration_dependency) and was not
+    borrowed.
+
+    The same three-step chain as the forward function, reversed:
+      1. native pixel -> fraction of the STILL crop's own field
+         (dividing out green_plane_res, the forward function's last
+         step).
+      2. fraction -> full-sensor-array pixel coordinate, via still_crop
+         (the forward function's step 3, reversed).
+      3. full-sensor coordinate -> fraction of the PREVIEW crop's own
+         field, via preview_crop, then into disp_rect's own screen
+         pixels (the forward function's steps 1-2, reversed).
+
+    Being the algebraic inverse is not, on its own, evidence of
+    correctness: an inverse derived by reversing a wrong forward
+    function agrees with that wrong forward function on every round
+    trip, by construction. Correctness here rests on the check that
+    calls this function anchoring against points known independently
+    of either direction's own arithmetic -- see
+    assert_round_trip_preview_to_native_and_back's own centre/corner
+    assertions, checked against the field's own geometry, not derived
+    from a forward-then-inverse pair."""
+    sx = nx / green_plane_res[0] if green_plane_res[0] > 0 else 0.0
+    sy = ny / green_plane_res[1] if green_plane_res[1] > 0 else 0.0
+    px_full = sx * still_crop[2] + still_crop[0]
+    py_full = sy * still_crop[3] + still_crop[1]
+    fx = (px_full - preview_crop[0]) / preview_crop[2] if preview_crop[2] > 0 else 0.0
+    fy = (py_full - preview_crop[1]) / preview_crop[3] if preview_crop[3] > 0 else 0.0
+    x, y, w, h = disp_rect
+    return x + fx * w, y + fy * h
+
+
 def _live_measure_tool_hint(name):
     return {
         "distance": "distance: click the feed to freeze, then a second point",
@@ -1116,6 +1156,161 @@ def assert_live_measuring_has_no_calibration_dependency():
                 "{} references {!r} -- Live Measuring must never touch "
                 "calibration/annotation/provenance machinery".format(
                     getattr(target, "__qualname__", target), word))
+
+
+def assert_round_trip_preview_to_native_and_back():
+    """Stage 3 sequence 3's own check: for screen points across the field,
+    convert to native and back, and land where you started -- scoped ONE
+    LEVEL WIDER than native_point_from_preview_click itself, driven from
+    preview_res/still_res through a real camera's own sensor_crop_for_size
+    into the conversion, never from hand-picked crop tuples inward. That
+    function never sees a mode's own OUTPUT size, only its crop rectangle
+    -- a round trip confined to it alone structurally cannot exercise
+    whether a CALLER resolved the right crop for the right mode; driving
+    it from resolutions through sensor_crop_for_size is what closes that
+    gap. Uses FakeCamera (no hardware) -- sensor_crop_for_size delegates
+    to imx477's own real crop table either way, live camera or fake.
+
+    A round trip alone is not sufficient evidence: preview_click_from_
+    native_point is native_point_from_preview_click's algebraic inverse,
+    so a consistent bug in the forward function would round-trip clean
+    against its own inverse. Two anchors, checked independently of
+    either direction's own arithmetic:
+      - Centre of disp_rect must map to the green plane's own centre.
+      - Each of disp_rect's own four corners must map to the
+        corresponding corner of the green plane, and nowhere else.
+    Both hold EXACTLY, by pure algebra, whenever preview_crop and
+    still_crop are literally the same crop (the same mode used for both)
+    -- see the derivation in this function's own comments -- so both are
+    checked for every mode the profile offers, used as both preview and
+    still at once, never assumed to hold for genuinely different modes
+    paired together (a real crop table need not centre two different
+    modes on exactly the same point -- Reference B's own live read found
+    a 2px asymmetry on this rig's 1332x990 mode). Cross-mode pairs get
+    the round-trip check only, explicitly not the independent-anchor
+    claim.
+
+    green_plane_res is derived fresh, per test, from whichever mode is
+    standing in for "still" -- never the frozen GREEN_PLANE_RES module
+    constant -- matching the fix this sequence makes to the one real call
+    site (see _live_measure_preview_event) that used to pass the module
+    constant regardless of the camera's own actual configured size."""
+    cam = FakeCamera()
+    modes = cam.get_capabilities()["capture_resolutions"]
+    assert len(modes) >= 2, "need at least two real sensor modes to test cross-mode pairing"
+
+    disp_rect = (0, 0, 800, 600)
+    x0, y0, w0, h0 = disp_rect
+    corners = [(x0, y0), (x0 + w0, y0), (x0, y0 + h0), (x0 + w0, y0 + h0)]
+    centre = (x0 + w0 / 2.0, y0 + h0 / 2.0)
+    interior_points = [(x0 + 0.2 * w0, y0 + 0.3 * h0), (x0 + 0.6 * w0, y0 + 0.15 * h0),
+                       (x0 + 0.35 * w0, y0 + 0.8 * h0), (x0 + 0.9 * w0, y0 + 0.65 * h0)]
+
+    for preview_mode in modes:
+        preview_crop = cam.sensor_crop_for_size(preview_mode)
+        for still_mode in modes:
+            still_crop = cam.sensor_crop_for_size(still_mode)
+            green_res = (still_mode[0] // 2, still_mode[1] // 2)
+            same_mode = (preview_mode == still_mode)
+
+            if same_mode:
+                # Exact by algebra: preview_crop and still_crop are the
+                # SAME tuple, so step 2's fraction (px_full - still_crop[0])
+                # / still_crop[2] reduces to fx/fy identically, regardless
+                # of the crop's own position or size -- no assumption that
+                # the crop is centred on anything.
+                cx, cy = native_point_from_preview_click(
+                    centre[0], centre[1], disp_rect, preview_crop, still_crop, green_res)
+                assert (cx, cy) == (green_res[0] / 2.0, green_res[1] / 2.0), (
+                    "centre must map to the green plane's own centre for "
+                    "mode {} used as both preview and still -- got {!r}"
+                    .format(preview_mode, (cx, cy)))
+                expected_corners = [(0.0, 0.0), (green_res[0], 0.0),
+                                   (0.0, green_res[1]), (green_res[0], green_res[1])]
+                for (sx, sy), expected in zip(corners, expected_corners):
+                    nx, ny = native_point_from_preview_click(
+                        sx, sy, disp_rect, preview_crop, still_crop, green_res)
+                    assert (nx, ny) == expected, (
+                        "corner {!r} must map to green-plane corner {!r} for "
+                        "mode {} used as both preview and still -- got {!r}"
+                        .format((sx, sy), expected, preview_mode, (nx, ny)))
+
+            # Round trip, every pair, same-mode or not: forward then
+            # inverse must land back where it started, for interior
+            # points strictly inside disp_rect (frac_from_point clamps to
+            # [0, 1], many-to-one right at the letterbox boundary, so a
+            # point outside disp_rect is not recoverable -- these are not
+            # outside it).
+            for px, py in interior_points:
+                nx, ny = native_point_from_preview_click(
+                    px, py, disp_rect, preview_crop, still_crop, green_res)
+                bx, by = preview_click_from_native_point(
+                    nx, ny, disp_rect, preview_crop, still_crop, green_res)
+                assert abs(bx - px) < 1e-9 and abs(by - py) < 1e-9, (
+                    "round trip failed for preview={} still={}: {!r} -> "
+                    "{!r} -> {!r}, expected back at {!r}"
+                    .format(preview_mode, still_mode, (px, py), (nx, ny), (bx, by), (px, py)))
+
+    # The binning term specifically: preview=1332x990 (crop 2664x1980 --
+    # TWICE the mode's own output size, imx477.py's real 2x2-binned mode)
+    # paired with still=4056x3040 (crop is the whole array, no binning).
+    # An independent hand-derived expected value, not a round trip against
+    # this function's own inverse -- a forward function that dropped the
+    # binning term (used preview_res=1332 instead of preview_crop's own
+    # 2664 in step 2) would land at a DIFFERENT point, not merely fail to
+    # round-trip.
+    binned_crop = cam.sensor_crop_for_size((1332, 990))
+    full_crop = cam.sensor_crop_for_size((4056, 3040))
+    green_res_full = (4056 // 2, 3040 // 2)
+    # Screen point at 75% across, 50% down disp_rect (600, 300).
+    # By hand: fx=0.75, fy=0.5. px_full = binned_crop[0] + 0.75*binned_crop[2],
+    # py_full = binned_crop[1] + 0.5*binned_crop[3]. sx = px_full/4056 (full_crop
+    # is the whole array, offset 0), native = sx*2028 = px_full/2 exactly
+    # (green_res_full is exactly half the full array). A dropped binning
+    # term (0.75*1332 instead of 0.75*2664) would land 499.5 green-plane
+    # pixels away on x alone -- not a rounding-sized discrepancy.
+    hand_px_full = binned_crop[0] + 0.75 * binned_crop[2]
+    hand_py_full = binned_crop[1] + 0.5 * binned_crop[3]
+    hand_native = (hand_px_full / 2.0, hand_py_full / 2.0)
+    got_native = native_point_from_preview_click(
+        600.0, 300.0, disp_rect, binned_crop, full_crop, green_res_full)
+    assert got_native == hand_native, (
+        "binning-term check: expected {!r} (hand-derived from the crop's "
+        "own extent, not the mode's own output size), got {!r}"
+        .format(hand_native, got_native))
+
+
+def assert_live_measure_freeze_uses_camera_configured_green_plane_res():
+    """Check 3's other half: the pure geometry functions being correct
+    (assert_round_trip_preview_to_native_and_back, above) proves nothing
+    about whether the one real call site actually uses them correctly --
+    this is the exact "mechanism verified in isolation, real call site
+    stayed broken" shape PHILOSOPHY.md's own verification-culture section
+    names three separate prior instances of. HANDOFF.md's "Known
+    problems" list names it directly: the live-measure freeze click
+    passes the frozen GREEN_PLANE_RES module constant to
+    native_point_from_preview_click's last argument instead of deriving
+    it from the camera's own actual configured still resolution -- while
+    the SAME call site already correctly derives preview_crop/still_crop
+    from the camera's own preview_resolution()/capture_resolution(), a
+    comment sitting right above the bug even states the rule the line
+    below it breaks.
+
+    Source-inspection (_source_without_docs_and_comments -- the same
+    technique assert_live_measuring_has_no_calibration_dependency
+    already uses), not a runtime call: FocusPreviewWindow's __init__
+    constructs the real camera, and driving this through a real click
+    needs a real event loop and widget -- reading the method's own
+    source and confirming it no longer names the bare GREEN_PLANE_RES
+    module constant is what's actually checkable here with no camera and
+    no display."""
+    src = _source_without_docs_and_comments(FocusPreviewWindow._live_measure_preview_event)
+    assert "GREEN_PLANE_RES" not in src, (
+        "_live_measure_preview_event still references the frozen "
+        "GREEN_PLANE_RES module constant -- must derive green_plane_res "
+        "from self.camera.capture_resolution() (already read into "
+        "still_res two lines above the native_point_from_preview_click "
+        "call) instead")
 
 
 # ---------------------------------------------------------------------------
@@ -3689,13 +3884,19 @@ if _HAVE_QT:
                 # rectangles -- never GREEN_PLANE_RES/PREVIEW_RES module
                 # constants here, always the camera's OWN actual configured
                 # sizes (general across a user-set preview_res, item 2).
+                # FIX (Stage 3 sequence 3): the rule above named the module
+                # constant twice and this call still passed it once anyway --
+                # green_plane_res is now derived from still_res, the same
+                # camera-reported size the crop lookups two lines up already
+                # use, not FULL_RES's own frozen half.
                 preview_res = self.camera.preview_resolution()
                 still_res = self.camera.capture_resolution()
                 preview_crop = self.camera.sensor_crop_for_size(preview_res)
                 still_crop = self.camera.sensor_crop_for_size(still_res)
+                green_plane_res = (still_res[0] // 2, still_res[1] // 2)
                 native = native_point_from_preview_click(
                     ev.pos().x(), ev.pos().y(), self._disp_rect(),
-                    preview_crop, still_crop, GREEN_PLANE_RES)
+                    preview_crop, still_crop, green_plane_res)
                 self._live_measure_freeze(native)
             return True
 
@@ -6221,6 +6422,14 @@ def render_check():
     print("render-check PASS: overlay shape, box edges, bar fill monotonic, "
           "letterbox mapping, move keeps size")
 
+    assert_round_trip_preview_to_native_and_back()
+    print("assert_round_trip_preview_to_native_and_back PASS: screen point "
+          "-> native -> screen for every sensor-mode pairing lands back "
+          "exactly where it started; centre/corner anchors hold exactly "
+          "for every mode used as both preview and still; the binning "
+          "term (preview crop extent, not preview output size) is "
+          "independently hand-verified, not just round-tripped")
+
     # --- XY ruler ---------------------------------------------------------
     # nice_tick_step_um: a 1000um field targeting ~10 ticks should land on a
     # round number close to 100, never on 1000/10=100 exactly by coincidence
@@ -8707,6 +8916,11 @@ def render_check():
         # really mutate the mark list; closing discards everything, since
         # nothing here is ever durable.
         assert_live_measuring_has_no_calibration_dependency()
+
+        assert_live_measure_freeze_uses_camera_configured_green_plane_res()
+        print("assert_live_measure_freeze_uses_camera_configured_green_plane_res "
+              "PASS: the live-measure freeze click's own source no longer "
+              "names the frozen GREEN_PLANE_RES module constant")
 
         lqcam = FakeCamera()
         lqwin = FocusPreviewWindow(lqcam, FocusMeter())

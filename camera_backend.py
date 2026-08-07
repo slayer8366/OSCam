@@ -32,6 +32,7 @@ two different sessions had to be reconciled (see the comment there).
 from __future__ import annotations
 
 import abc
+import ast
 import importlib
 import io
 import re
@@ -1639,23 +1640,49 @@ def _sensor_profile_dimension_pairs(project_dir):
 
 
 def _production_region_source(path):
-    """A file's own source, truncated at its own render_check()/`if
-    __name__ == "__main__":` self-check entry point -- whichever comes
-    first -- so a self-check's own plausible-but-arbitrary test fixture
+    """A file's own source with two kinds of self-check/test code blanked
+    out (lines replaced by a blank line each, so every remaining token's
+    own line number is unchanged -- a hit still gets reported at its real
+    line) -- so a self-check's own plausible-but-arbitrary test fixture
     (a hash round-trip's stand-in array, a UI combo box's test value, a
-    diagnostic formatter's sample dict) never trips a scan meant to catch
-    a PRODUCTION assumption about the sensor's true geometry. A single
-    principled cut, not a per-line exception list: verified against this
-    project's own sequence-1 baseline scan, where 12 of 13 hand-found
-    hits sit inside exactly this region, every one a self-check fixture
-    for a function that doesn't care what the real sensor size is."""
+    diagnostic formatter's sample dict, a structural check's own deliberate
+    real-mode-size probe) never trips a scan meant to catch a PRODUCTION
+    assumption about the sensor's true geometry:
+
+      1. Everything from the file's own render_check()/`if __name__ ==
+         "__main__":` self-check entry point onward, whichever comes
+         first -- verified against this project's own sequence-1 baseline
+         scan, where 12 of 13 hand-found hits sat inside exactly this
+         region.
+      2. Every top-level function whose name starts with `assert_` --
+         this codebase's own established convention for a standalone
+         structural check living OUTSIDE render_check() (this file's own
+         assert_only_camera_backend_imports_picamera2 is the original
+         example; qt_shell.py grew two more in Stage 3 sequence 3, one of
+         which legitimately needs to invoke sensor_crop_for_size with real
+         mode sizes to prove a round trip -- discovered when sequence 3's
+         own build first ran this check, exactly the deviation its own
+         intent entry named as possible). Discovered by `ast`-parsing the
+         file for module-level FunctionDef nodes, never a maintained list
+         of check-function names."""
     src = path.read_text()
-    cut = len(src)
+    lines = src.splitlines(keepends=True)
+    cut_line = len(lines) + 1
     for pattern in (r'^def render_check\(', r'^if __name__ == "__main__":'):
         m = re.search(pattern, src, re.MULTILINE)
-        if m is not None and m.start() < cut:
-            cut = m.start()
-    return src[:cut]
+        if m is not None:
+            cut_line = min(cut_line, src.count("\n", 0, m.start()) + 1)
+    blank = set(range(cut_line, len(lines) + 1))
+    try:
+        tree = ast.parse(src, filename=str(path))
+    except SyntaxError:
+        tree = None
+    if tree is not None:
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and \
+                    node.name.startswith("assert_"):
+                blank |= set(range(node.lineno, (node.end_lineno or node.lineno) + 1))
+    return "".join("\n" if (i + 1) in blank else line for i, line in enumerate(lines))
 
 
 def assert_no_hardcoded_sensor_dimension_above_driver_layer():
