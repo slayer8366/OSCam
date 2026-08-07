@@ -7,6 +7,121 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-07
 
+### Verification: Stage 3 against the Step 0 before-reference — no drift, file path and live path
+
+Work-is-the-outcome form, no intent phase: a comparison against an
+already-taken reference, not a designed change with a baseline to
+diverge from. Branch `main`, HEAD `53b3d38` throughout (three sequences
+landed, nothing built here). Two comparisons, reported separately, per
+instruction — never merged into one verdict.
+
+**1 — FILE PATH.** File:
+`/home/bwann83/stage3_reference/stage3_ref_2026-08-07.dng`. Identity
+re-verified BEFORE any replay:
+
+```
+$ sha256sum /home/bwann83/stage3_reference/stage3_ref_2026-08-07.dng
+13183460470f8e883b2edc3988bba97422b89c0e64eb990c5adffea6ee186731  ...
+exit: 0
+```
+
+matches `cc50933`'s recorded `13183460…ee186731` exactly.
+
+```
+green-plane pixel_sha256 (measure.load_measurement_plane, the current,
+post-Stage-3 loader): 3605080018646f75c72bc466a3160328dd2b6b4539b0f02c33c68377dbcf8b65
+```
+
+matches `cc50933`'s recorded `3605080…dbcf8b65` exactly — the same
+bytes, run through the collapsed-source loader Stage 3 sequence 2
+built, resolve to the identical plane.
+
+Both marks' recorded green-plane coordinates replayed through
+`annotations.build_distance_mark` directly — established in `f4c71ba`:
+this computes the derived `px`/`um` values independently of
+`annotations.save_mark`, so replay needs no store write, and a repeated
+verification run never accretes marks the way repeating the real
+click-to-commit path would:
+
+```python
+entry = calibrate.current_calibration('4x')
+# entry_id d38b13076c4c4ab9804c265439321c12, um_per_px 1.408410912378439,
+# calibrated_at 2026-07-18T02:28:32.136071 -- unchanged from cc50933's
+# own recorded entry; confirms no recalibration happened, not assumed
+```
+
+| mark | points | expected px / um (recorded) | got px / um (replayed) | exact match |
+|---|---|---|---|---|
+| `cc50933` | (1067.8481012658228, 721.5189873417721) → (1083.8818565400843, 721.5189873417721) | 16.033755274261466 / 22.582115894675198 | 16.033755274261466 / 22.582115894675198 | **yes, both** |
+| `f4c71ba` | (1388.5232067510549, 522.7004219409282) → (1487.9324894514768, 923.5443037974683) | 412.986710571699 / 581.6549898364569 | 412.986710571699 / 581.6549898364569 | **yes, both** |
+
+Same bytes in, so the pass condition was identical values, not a
+tolerance — both marks landed there exactly. **No mark committed to
+the store this session** (`annotations.build_distance_mark` only, never
+`save_mark`) — the real store still holds exactly the two marks
+`cc50933`/`f4c71ba` recorded, unchanged.
+
+**2 — LIVE PATH.** Illuminator-on and 4x-mounted-and-selected confirmed
+by the operator (observed by the operator, not something this session
+can check by software) before trusting any number below. Configured
+resolution checked first and found unchanged from `cc50933`
+(`preview_resolution` pref `[2028, 1520]`, `capture_resolution` pref
+`[4056, 3040]`) — this comparison describes the same rig state
+`cc50933` did, not a different one. No recalibration performed.
+
+Reference B re-run against a real `Picamera2Camera` (same construction
+pattern as Step 0's own — widget parented into a shown window, event
+loop pumped, before/after `start()`), same probe methodology:
+
+| field | `cc50933` recorded | this session, live | match |
+|---|---|---|---|
+| `preview_res` | (2028, 1520) | (2028, 1520) | yes |
+| `still_res` | (4056, 3040) | (4056, 3040) | yes |
+| `preview_crop` | (0, 0, 4056, 3040) | (0, 0, 4056, 3040) | yes |
+| `still_crop` | (0, 0, 4056, 3040) | (0, 0, 4056, 3040) | yes |
+| `disp_rect` | (74, 0, 1324, 993) | (74, 0, 1324, 993) | yes |
+| preview widget size | (1473, 993) | (1473, 993) | yes |
+| win size | (1920, 1024) | (1920, 1024) | yes |
+| `GREEN_PLANE_RES` | (2028, 1520) | (2028, 1520) | yes |
+
+Five probe points, `native_point_from_preview_click`, both via the
+module `GREEN_PLANE_RES` constant (matching `cc50933`'s own method
+exactly) and via the real post-fix call-site derivation
+(`still_res` halved — what `_live_measure_preview_event` actually
+computes now) — identical to each other in this configuration, and both
+identical to `cc50933`:
+
+| point | `cc50933` native | this session, live (both methods) | match |
+|---|---|---|---|
+| centre | (1014.0, 760.0) | (1014.0, 760.0) | yes |
+| Q1 | (507.0, 380.0) | (507.0, 380.0) | yes |
+| Q2 | (1521.0, 380.0) | (1521.0, 380.0) | yes |
+| Q3 | (507.0, 1140.0) | (507.0, 1140.0) | yes |
+| Q4 | (1521.0, 1140.0) | (1521.0, 1140.0) | yes |
+
+All five sensor modes' live `crop_limits` (`camera._mode_crops`, a
+fresh `sensor_modes` read this session, not a cached or hand-copied
+value) also matched `cc50933`'s recorded figures exactly, including the
+`1332x990` mode's own `(696, 528, 2664, 1980)` — the same 2px-off-the-
+static-table asymmetry `cc50933` first recorded, reproduced again on a
+second, independent live read.
+
+**Conclusion, stated once, for both comparisons separately — never
+merged into a single verdict per instruction**: file path — exact
+match, both marks, no mark newly committed. Live path — exact match,
+every recorded field and every probe point, same rig state. Three
+sequences that moved sensor geometry behind the driver boundary did not
+silently change a single measured value, on either the frozen bytes or
+the live rig, confirmed rather than inferred on both.
+
+**Verification**: *fixed* — every check in every sequence's own
+`--render-check`/bare-`python3` sweep, foreground, exit 0, already
+recorded in each sequence's own build entry. *Confirmed* — this entry:
+the live path ran against real hardware, watched, on this Pi, this
+session. Working tree left on `main`, `profile.json`/`calib/` excluded
+as always. Camera released (`camera.stop()`) at the end of the live
+script; the rig is free for the operator's own next session.
+
 ### Record build: Stage 3 sequence 3 — Check 3 (round trip) + inverse + live-bug fix
 
 Built to the intent above. Touches `qt_shell.py` (the inverse function,
