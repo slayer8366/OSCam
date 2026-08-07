@@ -279,6 +279,25 @@ What's actually open, none of it written down anywhere until now:
       gets its own intent entry when it happens. Full per-bracket
       numbers: `CHANGELOG.md`'s 2026-08-06 "Record build: saturation-mask
       backfill" entry.
+14. **The measurement-substrate rule's binding is a blocklist, not an
+    allowlist — found during a `PHILOSOPHY.md` rule audit, not fixed,
+    documentation only.** `measure.py`'s `check_measurement_provenance()`
+    (`measure.py:175-184`) refuses a file whose embedded `"kind"` says
+    display-referred derivative (the tag `debayer.py:701` sets on its own
+    tonemapped output). It proves a *tagged* file gets refused; it does
+    not independently prove an *untagged* file reaching `measure.py`
+    really is green-plane or linear-master data. A code path that produced
+    display-referred pixels without setting that tag — a future export
+    path, a manual processing step outside `debayer.py`'s own tonemap
+    call, an image reconstructed without its description JSON — would
+    pass unchallenged. Every path in the codebase today that produces
+    display-referred output goes through `debayer.py` and sets the tag
+    correctly; this is a gap in what the check structurally rules out, not
+    a currently-triggerable bug. Full reasoning and citations:
+    `PHILOSOPHY_AUDIT_FINDINGS.md`, finding 1 (that file also records the
+    full audit's branch and commit while it still exists,
+    `claude/philosophy-rule-audit-4sjk4i` at `4909821`, before deletion).
+    Not fixed here — out of scope for the audit that found it.
 
 One number worth a line since the constant alone doesn't explain it:
 `hdr_from_session.MERGE_WHITE_LEVEL_DEFAULT` stays `65520`, but the real
