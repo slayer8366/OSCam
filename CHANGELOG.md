@@ -7,6 +7,229 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-08
 
+### Record: merged-output before-reference, retaken against the post-c75ab94 masters
+
+Work-is-the-outcome form, no intent phase: a captured reading, not a
+designed change. Names `2991189` and `c75ab94` explicitly. Adds a
+reading against the current (post-exclusion) input path; does NOT
+supersede `2991189` — see the reasoning at the end for why both stay.
+Branch `main`, HEAD `94e62b4` throughout — read-only, nothing built;
+`hdr_merge.py`/`frame_average.py` untouched, consumption not started.
+
+**Why this reference is needed**: `2991189`'s masters were built by the
+pre-`c75ab94` `average_burst`, which summed clipped samples
+unconditionally. `c75ab94` changed the input itself — clipped samples
+excluded per photosite, an all-clipped photosite now holds `65520`
+(white_level) rather than a diluted average. `hdr_merge.py` was never
+touched, but what it's fed changed under it.
+
+**The task's own stated hypothesis, tested against real data, not
+assumed**: "master_5's max was 61781 against a 62244 cutoff... that
+relationship has probably inverted and the merge may now find clipped
+pixels for the first time." **Refuted.** At `--white-level 65520`,
+the merge finds zero clipped pixels at every level, identical to
+before `c75ab94`:
+
+```
+$ python3 hdr_merge.py -e master_1_v2.tif 0.01249 -e master_2_v2.tif 0.024981 \
+    -e master_3_v2.tif 0.049963 -e master_4_v2.tif 0.099926 -e master_5_v2.tif 0.199852 \
+    --white-level 65520 -o hdr_linear_050600_wl65520_v2.tif
+  [0] master_1_v2.tif  t=0.01249s   clipped px=0
+  [1] master_2_v2.tif  t=0.024981s  clipped px=0
+  [2] master_3_v2.tif  t=0.049963s  clipped px=0
+  [3] master_4_v2.tif  t=0.099926s  clipped px=0
+  [4] master_5_v2.tif  t=0.199852s  clipped px=0
+exit: 0
+```
+
+**Mechanism, confirmed rather than left unexplained**: the sentinel
+(`65520`) is written in the SCIENCE burst's own native domain, before
+dark subtraction. The final master value at an all-clipped photosite
+is `65520 - dark_mean_there`, and every real dark value at this
+bracket's own level-5 photosites is large enough (≈3754–4434) to pull
+every sentinel below the `62244` cutoff:
+
+```
+$ python3 -c "..." (fully-clipped photosite count and value range)
+fully-clipped photosite count: 2811392
+max value AMONG fully-clipped positions: 61766
+min value AMONG fully-clipped positions: 61086
+cutoff at wl=65520 (0.95*65520): 62244.0
+any fully-clipped position >= cutoff? False
+```
+
+The new master_5's own overall max (`61766`) IS one of these
+all-clipped sentinel positions (`(366, 1759)`, `excluded_count=8/8`) —
+not a coincidence of some other bright feature. Even the HIGHEST
+sentinel value in the whole bracket sits 478 units below the cutoff.
+The inference remains structurally blind at the profile-derived white
+level, for a different, now-confirmed reason than before: not because
+the master never reaches the sensor's ceiling (that was the pre-fix
+story), but because dark subtraction, applied AFTER the sentinel is
+written, always pulls it back down again.
+
+---
+
+**1 — new masters, rebuilt at HEAD from `2026-08-03_050600`'s own raw
+frames, current `frame_average.py`.** Same 8 science + 8 dark frames
+per level, same dark-subtraction-only correction, no `--gamma`, no
+`--sigma-clip` — the exact original invocation, replicated. Written to
+`/home/bwann83/hdr_merge_reference_v2/` — outside the repo, outside
+`~/scratch`, confirmed on the NVMe by `df`, not by assertion:
+
+```
+$ df -h ~/hdr_merge_reference_v2 | tail -1
+/dev/nvme0n1p2  234G   35G  187G  16% /
+```
+
+Distinct from, and neither overwrites: the real production
+`~/captures/2026-08-03_050600/master_N.tif`, `~/hdr_merge_reference/`
+(`2991189`'s own output), and `c75ab94`'s own verification output at
+`~/scratch/frame_average_exclusion/` — all three confirmed still
+present and untouched by `ls` before this session's own writes began.
+
+**2 — per-level stats, new against pre-`c75ab94`** (the pre-`c75ab94`
+figures are `3bff10b`'s own recorded baseline, restated here for the
+side-by-side):
+
+```
+level 1: old min=0   max=7812  mean=2544.286118  std=1508.547184
+         new min=0   max=7812  mean=2544.286118  std=1508.547184   (byte-identical, no clipping)
+level 2: old min=0   max=15192 mean=5096.747075  std=3009.674970
+         new min=0   max=15192 mean=5096.747075  std=3009.674970   (byte-identical, no clipping)
+level 3: old min=0   max=30280 mean=10202.877711 std=6017.952040
+         new min=0   max=30280 mean=10202.877711 std=6017.952040   (byte-identical, no clipping)
+level 4: old min=32  max=60688 mean=20421.211627 std=12045.624579
+         new min=32  max=60246 mean=20421.210395 std=12045.620654   (max delta: -442)
+level 5: old min=260 max=61781 mean=37582.540047 std=19204.893172
+         new min=260 max=61766 mean=37563.703546 std=19182.218442   (max delta: -15)
+```
+
+**Headline number: master_5's new max is `61766`, down 15 from the old
+`61781` — a fall, not a rise.** Matches the direction already
+established in `c75ab94`'s own build entry (excluded values are by
+definition the highest in their set; removing them can only lower or
+hold the result) — this is the same mathematical identity, observed
+again on a freshly-rebuilt file, not a new phenomenon.
+
+**3 — `hdr_merge` run twice against the new masters, unmodified, real
+per-level clipped counts:**
+
+```
+$ python3 hdr_merge.py -e master_1_v2.tif 0.01249 -e master_2_v2.tif 0.024981 \
+    -e master_3_v2.tif 0.049963 -e master_4_v2.tif 0.099926 -e master_5_v2.tif 0.199852 \
+    --white-level 62100 -o hdr_linear_050600_wl62100_v2.tif
+  [0] master_1_v2.tif  clipped px=0
+  [1] master_2_v2.tif  clipped px=0
+  [2] master_3_v2.tif  clipped px=0
+  [3] master_4_v2.tif  clipped px=70
+  [4] master_5_v2.tif  clipped px=3299536
+exit: 0
+
+$ python3 hdr_merge.py ... --white-level 65520 -o hdr_linear_050600_wl65520_v2.tif
+  [0] master_1_v2.tif  clipped px=0
+  [1] master_2_v2.tif  clipped px=0
+  [2] master_3_v2.tif  clipped px=0
+  [3] master_4_v2.tif  clipped px=0
+  [4] master_5_v2.tif  clipped px=0
+exit: 0
+```
+
+At `62100` (the historical value, matching `2991189`'s own
+invocation): counts FELL slightly from `2991189`'s own record (level 4:
+`79 → 70`; level 5: `3308734 → 3299536`) — consistent with the same
+identity: excluding high-diluting samples pulls many previously-
+just-over-`58995` averages back under it, so `hdr_merge`'s own softer
+threshold test now flags fewer positions than it did against the old,
+inflated averages. At `65520`: zero at every level, confirmed above,
+identical to before `c75ab94` — the interesting result asked for, and
+it came back negative. **No clipped pixel found this run is anything
+other than what the mechanism above predicts; nothing here is the "new
+all-clipped sentinel positions" the task asked to check for, because
+none were found at all.**
+
+**4 — the merged output, `2991189`'s own shape, side by side:**
+
+```
+$ sha256sum hdr_linear_050600_wl62100_v2.tif
+22d25a402e0a83ed0d9cbca88b1e293324692927cc0f1f222108ce4b7cc983dc  hdr_linear_050600_wl62100_v2.tif
+```
+
+Path: `/home/bwann83/hdr_merge_reference_v2/hdr_linear_050600_wl62100_v2.tif`
+(vs `2991189`'s `/home/bwann83/hdr_merge_reference/hdr_linear_050600_wl62100.tif`,
+sha256 `1bf317997266e7f939e3694c6941e72188894a888e97a9b0b0923a28f9cc51d5` —
+different bytes, different hash, as expected: the input changed).
+
+```
+green plane (measure.py's own load_measurement_plane):
+  old shape/dtype: (1520, 2028) float32  sha256 e9ed32561642ccbc8bf35d6d1ae332fb18338684e2e76e82d89db73a43e1921b
+  new shape/dtype: (1520, 2028) float32  sha256 9fdd430e2ec8c2e8343c025654b59d7ae835115cdd8a38d1e6784da0d8f1a142
+
+whole-array stats:
+  old min=0.002838960150256753 max=1.2238121032714844 mean=0.41363319754600525 std=0.2438313215970993
+  new min=0.002838960150256753 max=1.2238121032714844 mean=0.4136318564414978  std=0.2438301146030426
+```
+
+Whole-array min and max are EXACTLY unchanged; mean/std differ only at
+the 6th decimal — consistent with only ~3.23M of ~12.33M positions
+changing at all, and each by a small amount relative to the merge's
+own dynamic range.
+
+**Same named pixel coordinates `2991189` used, old and new, side by
+side:**
+
+```
+clipped_1 (1519, 2028): old=0.8702734112739563  new=0.8702734
+clipped_2 (1521, 2028): old=0.8983816504478455  new=0.89838165
+clean_1   (1520, 2028): old=0.3908250033855438  new=0.390825
+clean_2   (1519, 2027): old=0.354765385389328   new=0.3547654
+```
+
+Effectively unchanged at float32 precision, despite level 5's own
+master value moving at both clipped positions (`61411→61396` at
+`clipped_1`, `61405→61390` at `clipped_2`, from `c75ab94`'s own
+earlier finding). Checked why, not left unexplained: `hdr_merge`'s own
+clipping test at `wl=62100` already treats level 5 as clipped at both
+positions in BOTH the old and new master (`61411 >= 58995` and
+`61396 >= 58995` are both `True`; same for `clipped_2`) — so the merge
+was already discounting level 5's own contribution there before and
+after, and a small change to a value the merge treats as unreliable in
+both cases barely moves the final blended result.
+
+---
+
+**5 — is `2991189` superseded? No — both stay, and here is why.**
+`2991189` is not wrong; it is a correct, accurate record of the merge's
+behaviour against the OLD `average_burst` (unconditional summing). It
+answers "what did the merge produce before the exclusion fix." This
+entry answers "what does the merge produce after it," against the same
+bracket, the same exposure times, the same white levels, so the two are
+directly comparable — which is exactly what the side-by-side numbers
+above are. Neither question is answered by the other's data.
+`PHILOSOPHY.md`'s own "additive over replacing" principle applies
+directly: a superseded INPUT PATH does not make the old reading wrong,
+only stale as *the current state* — and a reader asking "how did the
+merge's own output change when frame_average changed" needs both
+readings side by side, which is only possible if neither is deleted or
+edited. `2991189`'s own entry is untouched, not modified in any way by
+this one.
+
+**Out of scope, per instruction, not started**: `hdr_merge.py`
+consumption of the excluded-count record or the new masters directly;
+`sat_frac` collapse; merge-weighting policy; correcting the `62100`
+white level; masks or rebuilt masters for
+`2026-08-03_230856`/`2026-08-04_013732`.
+
+**Verification, stated plainly**: every figure above is *observed* —
+computed directly from freshly-rebuilt files, real `hdr_merge.py`
+invocations, real command output, pasted verbatim, this session, on
+this Pi. Nothing here is *confirmed* on hardware in the on-rig-GUI
+sense — no camera was used, this is entirely file-based. Neither
+`hdr_merge.py` nor `frame_average.py` was modified.
+
+Working tree left clean apart from untracked `calib/` and
+`profile.json`'s own live-rig drift (never committed, as always).
+
 ### Record: correction — cc50933/f4c71ba's Stage 3 Step 0 reference was captured under the wrong objective
 
 Work-is-the-outcome form, no intent phase: a correction to a fact
