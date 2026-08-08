@@ -7,6 +7,224 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-08
 
+### Record build: frame_average excludes clipped samples from the average
+
+Build, own commit, code only (`a53b6fc`), against `3bff10b`'s own
+intent. This entry records what was actually built, checked against
+that intent, plus real-bracket verification against `2026-08-03_050600`.
+
+**Built as described, no deviation from the intent's own design**:
+`average_burst` computes the per-frame clip test live in its existing
+streaming loop (`clipped_mask_for_frame`, unchanged, the same primitive
+`write_clipped_mask` already used), excludes any raw sample
+`>= white_level` from its own photosite's accumulator and divisor,
+applies this uniformly to every burst (science/dark/flat), holds
+`white_level` itself at an all-clipped photosite, returns a new
+`(mean01, info, excluded_count)` 3-tuple (was 2), refuses via
+`sys.exit` when `camera_backend` is not importable. `main()` writes the
+excluded-count array as `<output_stem>_excluded_count.tif` next to the
+science master, embeds `prov["exclusion"]`/`["dark_exclusion"]`/
+`["flat_exclusion"]`, and prints one stage-summary line per burst
+(partially- vs fully-clipped photosite counts kept separate, matching
+the intent's own instruction not to combine them). `--mask-dir`
+(write-side persistence) untouched, independent, its own help text
+updated only to state that exclusion no longer depends on it.
+`sigma_clip`'s own two extra passes: zero code change, confirmed —
+they already read `mean` fresh each call, so they automatically compare
+against the new, exclusion-corrected mean.
+
+**Check built first, watched fail against the unmodified code, exactly
+as required**:
+
+```
+$ python3 frame_average.py --render-check
+Traceback (most recent call last):
+  ...
+  File "frame_average.py", line 560, in render_check
+    mean01, exc_info, excluded = average_burst(burst_files, label="exclusion-check")
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^
+ValueError: not enough values to unpack (expected 3, got 2)
+exit: 1
+```
+
+Then, after the fix, the same check:
+
+```
+$ python3 frame_average.py --render-check
+clipped-sample exclusion (exclusion-check): white_level=65520, 2 partially-clipped
+photosite(s), 1 fully-clipped photosite(s) (sentinel written there), 7 of 16 raw
+sample(s) excluded (43.7500%).
+saturation mask check PASS: ...
+exit: 0
+```
+
+Four synthetic photosites, three distinct clean-counts (0, 1, 2
+excluded of 4 frames — not just "some vs none"): a clean photosite
+bit-identical to today's unconditional average (same reciprocal-
+multiply order the code itself uses, not a fresh division —
+`SWEEP_CHECKS.md`'s own "operation order" caution, applied here
+deliberately); a partially-clipped photosite (1 of 4 excluded)
+averages only its 3 clean samples; a second partially-clipped
+photosite with a DIFFERENT clean count (2 of 4 excluded, 2 clean
+samples) — position-exact, catching a uniform-divisor bug the first
+position alone could not; an all-clipped photosite holds the
+`white_level` sentinel, confirmed distinct from both `0` and `65535`;
+`info["exclusion"]`'s aggregate counts cross-checked against the same
+ground truth independently. `hdr_merge.py --render-check` re-run,
+confirmed still exit 0, untouched. `SWEEP_CHECKS.md` gained the new row
+above; `FUNCTION_INDEX.md` regenerated and confirmed unchanged
+(`average_burst`'s parameter list didn't change, only its return
+arity) — `assert_function_index_current` PASS.
+
+---
+
+**Verification against `2026-08-03_050600`, the real bracket, not just
+the synthetic check.** New output written to
+`~/scratch/frame_average_exclusion/`, never overwriting the real
+`master_N.tif` files or `~/hdr_merge_reference/`. Exact original
+invocation replicated per level (8 science + 8 dark frames,
+dark-subtraction-only correction, no `--gamma`, no `--sigma-clip` — all
+read back from each existing master's own embedded provenance, not
+assumed).
+
+**No-saturation levels (1, 2, 3) — byte-identical, all three, not just
+the one required**:
+
+```
+level 1: changed px=0 (byte-identical) -- pixel-bytes sha256 matches exactly
+level 2: changed px=0 (byte-identical)
+level 3: changed px=0 (byte-identical)
+```
+
+Level 1 cross-checked two ways: `np.array_equal` True, and independent
+pixel-bytes sha256 (`d852013a...8ae90c`) identical between old and new.
+
+**Levels 4 and 5 — real clipping, real change. The direction is a
+correction to the intent entry's own prediction, not a bug**: the
+intent baseline stated "a clipped photosite's value should rise
+relative to today, since the diluting low samples are the ones being
+removed — if it falls, stop and report." Observed: it falls, at every
+single changed position, in both levels:
+
+```
+level 4: old max=60688 -> new max=60246; changed px=39, all<=0: True, min=-1075 max=-194
+level 5: old max=61781 -> new max=61766; changed px=3227966, all<=0: True, min=-4031 max=-15
+```
+
+Stopped and investigated per instruction, rather than reasoning past
+it. **The intent entry's predicted direction was backwards, and this is
+now corrected, on the record, rather than quietly fixed**: an excluded
+sample is by definition `>= white_level`, which is strictly greater
+than every sample that stays in the average (`< white_level`). Removing
+values that are uniformly the highest in a set and re-averaging only
+what remains can only lower or hold the result — `mean(low subset) <=
+mean(whole set)` whenever every excluded value exceeds every kept
+value, an identity, not a property of this data. It can never raise it.
+The intent entry's own reasoning imported a conclusion from a different
+comparison (`362b0a0`'s hdr_merge-vs-mask agreement question, about
+whether a clip gets *detected*) into this one (old-average vs new-
+average, a pure arithmetic question) without checking the arithmetic.
+Confirmed directly, not just argued: real raw values at the position
+where level 4's max moved (`(539, 1730)`) —
+
+```
+science raw values: [64000, 65535, 65535, 64768, 65280, 63744, 65535, 64000]
+clipped (>= 65520): [False, True, True, False, False, False, True, False]
+clean values: [64000, 64768, 65280, 63744, 64000] -> clean mean 64358.4
+old unconditional mean (all 8): 64799.625
+```
+
+`64358.4 < 64799.625` — excluding the three ceiling-hit samples removes
+values that were pulling the average up, not down, and the result is
+lower, exactly as the identity above requires. All 39 changed positions
+at level 4 and all 3,227,966 at level 5 are negative, zero positive, in
+both cases — the mathematical guarantee holding without a single
+exception, which is itself the confirmation that the arithmetic is
+implemented correctly, not a red flag.
+
+**Two real-bracket cross-validations against `362b0a0`'s own,
+independently-derived figures — not designed as a check for this, found
+while investigating the direction**:
+
+```
+level 4 partially-clipped photosites (this session): 39
+level 4 mask-any, whole mosaic, clipped-in-any across 8 raw frames (362b0a0): 39
+
+level 5 partially-clipped (416574) + fully-clipped (2811392) = 3227966 (this session)
+level 5 mask-any, whole mosaic, clipped-in-any across 8 raw frames (362b0a0): 3227966
+```
+
+Exact matches, both levels — this session's live per-frame clip test
+and `362b0a0`'s persisted-mask-based figure, computed independently, in
+different sessions, by different code paths, agree exactly on how many
+photosites saw any clipping at all.
+
+**All-clipped sentinel, verified end-to-end against a real photosite,
+not only the synthetic check** — `(1519, 2028)`, `excluded_count=8/8`:
+
+```
+science raw values (all 8): [65535, 65535, 65535, 65535, 65535, 65535, 65535, 65535]
+dark mean at this position: 4124.0
+white_level (sentinel, native domain): 65520
+predicted corrected value: 65520 - 4124.0 = 61396.0
+observed new master_5 value at this position: 61396
+old (unconditional) master_5 value: 61411 (= 65535 - 4124, rounded)
+```
+
+Predicted and observed match exactly. This photosite is genuinely
+saturated in every one of its 8 raw samples (all at the container's own
+true ceiling, `65535`) — the sentinel path is real production behavior
+here, not only a synthetic case.
+
+**The four named pixel positions from `2991189`'s own reference,
+reported again here on the RAW-DOMAIN master they actually come from
+(`master_5.tif`, not the merged HDR array `2991189` measured — a
+different array, stated so the two are never conflated)**:
+
+```
+clipped_1 (1519,2028): old_master_5=61411  new_master_5=61396  diff=-15  excluded=8/8
+clipped_2 (1521,2028): old_master_5=61405  new_master_5=61390  diff=-15  excluded=8/8
+clean_1   (1520,2028): old_master_5=38814  new_master_5=38814  diff=0    excluded=0/8
+clean_2   (1519,2027): old_master_5=35264  new_master_5=35264  diff=0    excluded=0/8
+```
+
+Both clipped positions move (all-clipped, sentinel path, both `-15`,
+consistent with each other); both clean positions are exactly
+unchanged, as required.
+
+**A forward-looking observation, out of scope to act on this
+session**: master_5's own new max (`61766`) is still far below both the
+profile-derived white level (`65520`) and its `0.95` cutoff (`62244`).
+`362b0a0` found `hdr_merge`'s inference has zero overlap with the mask
+at the pre-correction master's own max (`61781`); the corrected master
+(`61766`) does not change that conclusion — it is still below the
+cutoff, only by 15 units more than before. Exclusion-averaging changes
+what the master's values *are*; it does not, on its own, change whether
+`hdr_merge`'s existing threshold inference can see them. Recorded, not
+acted on — `hdr_merge.py` is untouched this session.
+
+**Out of scope, per instruction, not started**: `hdr_merge.py` consumption
+of either the excluded-count record or the corrected masters;
+`sat_frac` collapse; merge-weighting policy; correcting the `62100`
+white level; masks or exclusion-averaging for
+`2026-08-03_230856`/`2026-08-04_013732` (neither bracket run this
+session).
+
+**Verification summary, stated plainly**: *fixed* — `--render-check`
+exit 0, both before (failing, as required) and after (passing) states
+pasted above. *Confirmed on real data* — levels 1-3 byte-identical
+against the real, already-existing masters; levels 4-5 checked against
+real raw DNG frames position-by-position, the arithmetic direction
+independently re-derived and matched to the observed output, not
+merely asserted; two real-bracket figures cross-validated exactly
+against an independent, earlier session's own computation. Not
+*confirmed on hardware* in the on-rig-GUI sense — this is CLI-level,
+file-based verification; nothing here drives a live capture.
+
+Branch `main`, HEAD after this entry's own commit. Working tree left
+clean apart from untracked `calib/`; `profile.json` excluded from every
+commit this session, per its own live-rig-drift, never-committed rule.
+
 ### Record intent: frame_average excludes clipped samples from the average
 
 Intent, own commit, nothing else touched. Branch `main`, HEAD `362b0a0`.
