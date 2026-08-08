@@ -5,6 +5,156 @@ dump — each entry names the commit(s) it corresponds to for traceability.
 See `HANDOFF.md` for what a fresh agent needs to know before working here;
 this file is the historical record of what happened and why.
 
+## 2026-08-08
+
+### Record intent: saturation mask, write side only
+
+Baseline, measured before any other file is touched. Branch `main`,
+HEAD `e91ec85`.
+
+**What this closes**: `fe91096`'s own intent entry named this
+explicitly as the follow-on work, deferred at the time — "that is the
+record-format change flagged in the prior entry and it gets its own
+intent entry when it happens, not folded into this one." This is that
+entry. Confirmed not started as of `887f9e7` by a dedicated read-only
+investigation (no mask-writing code in `frame_average.py`, no mask
+consumption in `hdr_merge.py`, no mask artifact under `~/provenance/`).
+
+**Why, restated precisely because it is the reason for every design
+choice below**: `hdr_merge.py` today infers clipping from the MERGED
+master, after averaging has already mixed clipped and unclipped raw
+samples together. Averaging 8 frames where 3 clipped does not put the
+mean at the ceiling, so the inference misses it. Saturation is a fact
+about one raw sample on one frame; recording it where it is true means
+recording it per raw frame, before any averaging touches it.
+
+**Measured on the real bracket this sequence will verify against**
+(`~/captures/2026-08-03_050600`'s real `master_1.tif`..`master_5.tif`,
+`hdr_merge.py` unmodified, `--white-level 65520` explicit, matching
+`hdr_from_session.py`'s own real forwarding):
+
+```
+$ python3 hdr_merge.py -e master_1.tif 0.01249 -e master_2.tif 0.024981 \
+    -e master_3.tif 0.049963 -e master_4.tif 0.099926 -e master_5.tif 0.199852 \
+    -o baseline_merge_for_masksession.tif --white-level 65520 --out-bits 32
+  [0] master_1.tif  t=0.01249s   clipped px=0
+  [1] master_2.tif  t=0.024981s  clipped px=0
+  [2] master_3.tif  t=0.049963s  clipped px=0
+  [3] master_4.tif  t=0.099926s  clipped px=0
+  [4] master_5.tif  t=0.199852s  clipped px=0
+exit: 0
+```
+
+Embedded provenance: `"fallback_counts": {"saturated_in_all_px": 0,
+"black_in_all_px": 0, "zero_weight_mid_fallback_px": 0}`,
+`"white_level": 65520.0`, `"sat_frac": 0.95`. **Zero clipping reported
+at every level, on a bracket the earlier out-of-tree investigation
+already found real raw-domain clipping on (52.183185% at level 5,
+green, one CFA position, clipped-in-any).** This is the concrete
+instance of the defect this work exists to fix, on the exact bracket
+this sequence's own verification will use — not a hypothetical. This
+number is the baseline the next (out-of-scope) consumption sequence
+will have a real before against, per instruction.
+
+**Design decisions, stated with reasoning rather than left implicit —
+none of these relitigate the settled points, all of them answer the
+two the task left open:**
+
+- **One file per RAW FRAME, not one file per capture.** "Keyed to the
+  raw it describes, share one key by construction" already answers the
+  file-granularity question once followed to its conclusion: a
+  per-capture file (one file holding several frames' bits) needs an
+  internal index — frame ordinal to offset/bit-position within the
+  combined array — which is exactly the "index or mapping table to
+  keep in sync" the settled design rules out. One file per frame needs
+  none: the mask's own filename, `<raw_frame_stem>.satmask.npz`, sits
+  in the SAME provenance-mirrored directory `.meta.json` sidecars
+  already use, named by the SAME convention
+  (`read_sidecar_meta`'s own `<sidecar_dir>/<raw_frame_stem>.meta.json`
+  pattern, extended to a second suffix) — finding a raw's mask is
+  "take its stem, look in the mirrored directory," the identical
+  operation already used for its sidecar, not a new one. The earlier
+  out-of-tree investigation's own script packed 8 frames' bits into one
+  per-level array; not followed here, because that array needs its own
+  internal ordering convention (bit `i` = frame `i` of the burst) that
+  this design's own "share one key by construction" rule exists to
+  avoid needing.
+- **Packed bit layout: `np.packbits` over the raveled per-pixel
+  clipped-boolean array, plus the original shape stored alongside in
+  the same file (`np.savez`, not bare `.npy`).** One bit per photosite
+  (8x smaller than a plain boolean/uint8 array — material at "survives
+  longer than the raws, forever" scale), using `numpy`'s own standard,
+  well-tested primitive rather than a hand-rolled packing scheme.
+  Self-describing: the shape rides in the same file as the packed
+  bits, so unpacking correctly never depends on an external convention
+  or a caller already knowing the frame's own geometry.
+- **No third option.** Considered and rejected: embedding the mask
+  into the raw `.dng` itself (rejected outright — "IT NEVER TOUCHES
+  PIXELS" and a raw file is not this project's to rewrite once
+  captured); one combined per-bracket file covering every level
+  (rejected — same internal-index problem as per-capture, worse).
+
+**White level**: `camera_backend.white_level_for_bit_depth
+(camera_backend.BIT_DEPTH)` — the exact function `739d2e1` built,
+called via module-attribute access (not a frozen import), matching the
+substitutability `hdr_merge.py`'s own check already established. No
+second derivation, nothing hardcoded. A raw sample is "clipped" at or
+above this value — the sensor's own hard ceiling for its current bit
+depth, a different, prior-stage concept from `hdr_merge.py`'s own
+`sat_frac` (a soft, fractional weight-zeroing threshold at merge time,
+untouched, out of scope). `e91ec85`'s own caveat on `BIT_DEPTH` applies
+unchanged here — this mask is exactly as correct-by-configuration as
+that constant is, inherited, not re-litigated.
+
+**`frame_average.py`'s own stated design principle** — "this tool does
+not import `provenance.py` — it only replicates its known sidecar
+naming, to stay usable with any camera that writes TIFF frames" — is
+honored as far as compatible with this task's explicit instruction to
+reuse `camera_backend`'s function: the `camera_backend` import is
+guarded (`try`/`except ImportError`, matching `hdr_merge.py`'s own
+precedent) and only reached when a caller actually asks for masks
+(`mask_dir` given); the existing averaging path, camera-agnostic
+today, stays exactly as camera-agnostic with this change, since masking
+is opt-in.
+
+**Keep RAW Images off does not delete masks** — verified by reading the
+deletion code, not assumed: `hdr_from_session.py`'s own
+`delete_raw_on_success` block (`f.unlink()` for `f in raw_files`, plus
+each raw's own `.jpg` sibling via `.with_suffix`) only ever touches
+paths already collected into `raw_files` — capture-directory raw files
+and their preview siblings. It has no reference to `sidecar_dir`, the
+provenance-mirrored directory, or anything living there. Since masks
+live in exactly that directory (not the capture folder), this property
+holds structurally, by location, the same way `.meta.json` sidecars
+already survive it — not a new exception carved out for masks.
+
+**Scope for this sequence, checkable against the build entry**: touches
+`frame_average.py` only (the mask read/write/unpack functions, the new
+check, `average_burst`'s new optional `mask_dir` parameter, `main`'s
+new `--mask-dir` flag) plus `SWEEP_CHECKS.md` (one new row) and
+`FUNCTION_INDEX.md` if new top-level functions require it. Does not
+touch `hdr_merge.py` (no consumption this sequence — its clipping
+decision is untouched, still `sat_frac`-based, still operating on the
+merged master) or `hdr_from_session.py` (its own `frame_average.py`
+subprocess invocation is not wired to pass `--mask-dir` this session —
+confirmed by reading it: it does not even pass the already-existing
+`--sidecar-dir` today, so wiring a new flag through that same call site
+is a separate, later decision, not silently bundled in here). The real
+bracket's masks, for this sequence's own verification, are generated by
+invoking `frame_average.py` directly against the real master's own
+source raws, not through `hdr_from_session.py`.
+
+**Verification planned, stated here so the build entry can be checked
+against it**: (1) `frame_average.py` run against a real existing
+bracket's raw frames, before and after this lands, averaged output
+compared byte-identical — a write-only change that moves a pixel value
+has touched something it should not have. (2) masks generated for one
+real bracket, clipped fraction per level reported and compared against
+the earlier investigation's own recorded figures (52.183185% at level
+5 is the one spot figure on record) — agreement is corroboration,
+disagreement is a finding, this implementation is not adjusted to
+force agreement either way.
+
 ## 2026-08-07
 
 ### Record: `# CAVEAT:` on `imx477.BIT_DEPTH` — correct by configuration, not by hardware
