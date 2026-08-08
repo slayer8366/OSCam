@@ -7,6 +7,185 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-08
 
+### Record build: saturation mask, write side only
+
+Built to the intent above. Touches exactly the files named there:
+`frame_average.py`, `SWEEP_CHECKS.md`, `FUNCTION_INDEX.md`. Does not
+touch `hdr_merge.py` or `hdr_from_session.py` — no consumption, no
+subprocess-call-site wiring, as declared.
+
+**Watched it fail, real output, foreground, exit code pasted — before
+`clipped_mask_for_frame`/`write_clipped_mask`/`load_clipped_mask`
+existed:**
+
+```
+$ python3 frame_average.py --render-check
+Traceback (most recent call last):
+  File "/home/bwann83/imx/frame_average.py", line 624, in <module>
+    main()
+  File "/home/bwann83/imx/frame_average.py", line 450, in main
+    render_check()
+  File "/home/bwann83/imx/frame_average.py", line 376, in render_check
+    _, white_level = clipped_mask_for_frame(np.zeros((1, 1), dtype=np.uint16))
+                     ^^^^^^^^^^^^^^^^^^^^^^
+NameError: name 'clipped_mask_for_frame' is not defined
+exit: 1
+```
+
+**The functions**: `clipped_mask_for_frame(arr)` returns
+`(clipped, white_level)` — `clipped = arr >= white_level`,
+`white_level` read fresh each call via
+`camera_backend.white_level_for_bit_depth(camera_backend.BIT_DEPTH)`
+(module-attribute access on both names, matching the substitutability
+`hdr_merge.py`'s own check already established — no second derivation,
+nothing hardcoded, per instruction). `write_clipped_mask(arr,
+mask_path)` packs the clipped-boolean array via `np.packbits` and
+saves it alongside its own original shape in one self-describing
+`.npz` (`np.savez(path, packed=..., shape=...)`); returns the
+`white_level` actually used. `load_clipped_mask(mask_path)` is the
+exact inverse (`np.unpackbits` against the stored shape).
+`average_burst` gained an optional `mask_dir` parameter: when given,
+pass 1's own existing streaming loop (already reading every frame
+once, into `raw`, before `acc += to_work(raw)`) also calls
+`write_clipped_mask(raw, mask_path)` on that SAME loaded array — no
+second read, and `acc`/`to_work`/`final_scale` are never touched by
+any of this. `main()` gained `--mask-dir`, threaded to the science
+burst only, mirroring `--sidecar-dir`'s own naming
+(`<raw_frame_stem>.satmask.npz`) and scope exactly.
+
+**Watched it pass, real output, foreground, exit code pasted:**
+
+```
+$ python3 frame_average.py --render-check
+saturation mask check PASS: position-exact on a synthetic frame with known clipped positions, not a count; all-clipped and all-clean frames both exercised separately; a substituted bit depth changes which positions get marked, through write_clipped_mask's own real call path, not a value handed in from outside
+exit: 0
+```
+
+**Full sweep, every self-check touching the changed files, foreground,
+real output, all clean:**
+
+```
+$ python3 frame_average.py --render-check   -> exit 0
+$ python3 camera_backend.py                 -> exit 0 (unaffected --
+    frame_average.py only ASKS camera_backend, never the reverse)
+$ python3 hdr_merge.py --render-check       -> exit 0 (unaffected --
+    no consumption this sequence)
+$ python3 function_index.py --render-check  -> exit 0, after
+    regenerating (4 new top-level functions: clipped_mask_for_frame,
+    write_clipped_mask, load_clipped_mask, render_check)
+```
+
+---
+
+**Byte-identical verification — the real requirement, run against real
+raw frames from `~/captures/2026-08-03_050600` (level 5's own 8 real
+`.dng` frames), before and after this build, output written to
+`~/scratch`, the real capture/provenance trees touched only by the
+mask-generation step reported separately below.**
+
+Pre-change `frame_average.py` extracted via `git show
+e91ec85:frame_average.py` and run against the same 8 real raw frames,
+no flags this build added (none existed yet). Post-change version run
+against the identical 8 files, `--mask-dir` OMITTED (the "nothing
+changes if you don't ask for it" claim):
+
+```
+pixel array_equal:      True
+pixel bytes identical:  True
+provenance JSON identical except created_utc (real timestamp, both
+  runs) and output.path (this verification's own two distinct output
+  filenames) -- dtype, compression, value_range ([4374, 65535] exactly,
+  both runs) all identical.
+```
+
+**No merged output, no recorded value, changed by this build when the
+new capability is not invoked.** A write-only change that moved a
+pixel value would have shown up here; it did not.
+
+---
+
+**Masks generated for one real bracket, all 5 levels (40 raw frames,
+40 masks), landing for real in `~/provenance/2026-08-03_050600/` — the
+provenance tree, not the capture folder, exactly as designed:**
+
+```
+$ find ~/provenance/2026-08-03_050600 -name "*.satmask.npz" | wc -l
+40
+```
+
+Per-level, per-frame clipped fraction (whole mosaic, all four CFA
+positions together — `average_burst`'s own reported figure, read back
+independently from the saved mask files, not trusted from the CLI's
+own stdout alone):
+
+```
+level 1: 0.000000% (all 8 frames)
+level 2: 0.000000% (all 8 frames)
+level 3: 0.000000% (all 8 frames)
+level 4: 0.000024% .. 0.000073% (8 frames, small but real and nonzero)
+level 5: 24.524640% .. 24.564274% (8 frames)
+```
+
+Levels 1-3 show zero clipping at every frame; level 4 shows small,
+real, nonzero clipping; level 5 shows substantial clipping — consistent
+with level 5 being the brightest exposure, not a bug (same shape as
+the earlier investigation's own control-check finding, reproduced
+independently here on the whole mosaic rather than per-CFA-position).
+
+**The one spot figure on record, reproduced exactly.** Level 5's own 8
+masks sliced to G@(0,1) (rows `0::2`, cols `1::2` of the `(3040,
+4056)` array — the same slicing convention the earlier investigation's
+own figures used) and OR-combined across the burst (clipped-in-ANY —
+a pixel counts if it clipped in at least one of the 8 raw frames):
+
+```
+G@(0,1) clipped-in-ANY: 1608578 / 3082560 = 52.183185%
+earlier investigation recorded:            52.183185%
+difference: 0.000000 percentage points -- exact match, all six
+  reported decimal places
+```
+
+**Two independent implementations — this session's `>= white_level`
+threshold test against `camera_backend.white_level_for_bit_depth
+(BIT_DEPTH)` = `65520`, and the earlier out-of-tree investigation's own
+standalone script using an exact `== 65535` equality test — agree
+exactly on this real bracket's level 5, G@(0,1), clipped-in-ANY
+figure.** Not force-fit: this implementation was not adjusted to
+produce this number, per instruction. The two tests are not
+*algebraically* the same (`>= 65520` admits values `65520`..`65535`;
+`== 65535` admits only the top of that range) — that they agree exactly
+here is itself an observation, not a designed guarantee: it means
+every pixel that clips in this real bracket's real data clips all the
+way to the 16-bit container's own ceiling, `65535`, with nothing
+landing in the `65520`-`65534` gap between the two tests' own
+thresholds — consistent with (though not proof of) the digital-gain
+reasoning `e91ec85`'s own caveat and the earlier white-level session's
+CHANGELOG entry both left as an open, inferred-not-observed question.
+Reported as a real finding, not investigated further — out of this
+session's own scope.
+
+**Verification**: `--render-check`/bare-`python3` is *fixed*, run
+directly in the foreground, exit codes pasted above. The byte-identical
+comparison and the real-bracket mask generation are *confirmed* — real
+raw sensor data, watched, on this Pi, this session; neither is a
+self-check. Branch `main`, working tree otherwise unchanged
+(`profile.json`/`calib/` excluded as always — no camera touched this
+session, all work against already-captured raws). 40 real mask files
+now live permanently in `~/provenance/2026-08-03_050600/`, alongside
+that capture's own `.meta.json` sidecars, surviving independently of
+whether those raws are ever discarded.
+
+**Not started, per instruction**: `hdr_merge.py` consuming any mask
+(its clipping decision is untouched — still `sat_frac`-based, still
+operating on the merged master, still reporting `clipped px=0` on this
+same bracket at every level, unchanged by anything in this entry);
+`sat_frac` collapse; merge-weighting policy; correcting the `62100`
+August-2026-bracket white level; deriving bit depth from the configured
+mode; `FUNCTION_INDEX.md` enforcement (going with the provenance
+overhaul); the conflict-detecting `session.json` write; calibration
+work; `wizard_pages.py`'s `picamera2` boundary violation; the gallery
+race guard; `MeasureWindow` extraction; branch cleanup.
+
 ### Record intent: saturation mask, write side only
 
 Baseline, measured before any other file is touched. Branch `main`,
