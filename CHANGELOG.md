@@ -7,6 +7,126 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-08
 
+### Record intent: hdr_merge saturation-mask consumption, sequence 1 — read the mask, replace sat_frac's hard threshold with per-pixel clean-fraction weighting
+
+Intent, own commit, nothing else touched. Branch `main`, HEAD `f04439c`.
+Sequence 1 of a three-sequence landing (this file's own convention:
+intent → build → build-record, per sequence, each its own commit).
+Does not remove `sat_frac` yet (sequence 2) and does not touch the
+white level (sequence 3) — this sequence only wires mask consumption
+into `merge()` and verifies it against known real cases before either
+of those lands, per the task's own hard sequencing constraint: mask
+consumption must land and verify working before the white level is
+touched, because correcting the white level first would delete
+clipping detection entirely with no consumer built yet to replace it.
+
+**Why, cited from the record, not re-derived**: `362b0a0`'s own
+comparison is the central finding — at the profile-derived white
+level (`65520`), `hdr_merge`'s threshold inference on the averaged
+master finds `0` clipped pixels at level 5 of `2026-08-03_050600`,
+while `26.179263%` of the mosaic genuinely clipped in at least one raw
+frame (mask's own clipped-in-any figure, `3227966 / 12330240`).
+`master_5`'s own max (`61781`, pre-`c75ab94`) never reached the
+`62244` cutoff. `f04439c` reconfirmed this is still true against the
+POST-`c75ab94` masters too (still `0` at `65520`, every level) — the
+averaging fix alone does not give the threshold path any power; only
+consuming the mask does.
+
+**Design, stated before building against it**: `merge()` does NOT read
+`24a07c6`'s raw per-frame `.satmask.npz` files directly. It reads
+`c75ab94`'s own derived artifact instead — the `<master_stem>_
+excluded_count.tif` sibling frame_average now writes beside every
+master, plus `precision.frames_averaged` (`n`) from that master's own
+embedded provenance. Per photosite: `clean_fraction = (n -
+excluded_count) / n`, a continuous value in `[0, 1]`, not a boolean.
+This is the numerically exact aggregate of the per-frame masks
+`24a07c6` wrote (`excluded_count > 0` ⟺ the mask's own "clipped in at
+least one raw frame," `excluded_count == n` ⟺ "clipped in every raw
+frame") — reading it does not lose any information the raw per-frame
+masks carried, and it avoids `merge()` re-deriving something
+`frame_average.py` already computed once, correctly, during averaging.
+
+Replaces the entire `vn >= sat_frac` hard-exclusion test: `w_valid =
+4*p*(1-p) * clean_fraction` instead of `w_valid = 4*p*(1-p)` gated to
+`0` by a binary threshold. **This is the actual design requirement**:
+one clipped sample in eight (`clean_fraction = 0.875`) reduces weight
+proportionally, it does not zero it — the whole reason the `362b0a0`
+5,407-pixel case (mask-only, missed by the old threshold inference)
+exists in the record. A photosite clipped in every sample
+(`clean_fraction = 0`) still gets zero weight from that exposure,
+exactly as the old hard exclusion did for a fully-saturated pixel —
+the new mechanism is a strict refinement, not a loosening.
+
+**Missing-mask handling, per instruction, decided in advance**: when a
+bracket's masters have no `_excluded_count.tif` sibling (`
+2026-08-03_230856`/`2026-08-04_013732`, and any master predating
+`c75ab94`), that exposure merges WITHOUT saturation exclusion — the
+mid-tone hat function `4*p*(1-p)` alone governs its weight, exactly as
+every bracket's weight worked before this sequence existed. Logged
+clearly per exposure, and recorded in that exposure's own provenance
+record as `exclusion.mask_used: false` with a stated reason — never
+silently treated as "no saturation," never silently falling back to
+the old `sat_frac` threshold test either (that test is being replaced,
+not kept as a shadow fallback). A reader of the output must be able to
+tell "this bracket merged without exclusion" from "this bracket merged
+with the mask and found nothing" — the two are different facts and a
+combined silence would erase the distinction.
+
+**Measured baseline, cited from already-recorded figures, not
+re-derived**: the OLD (sat_frac, pre-mask-consumption) `merge()`
+against the POST-`c75ab94` masters (`f04439c`'s own run, same bracket,
+same masters this sequence's own verification will reuse):
+
+```
+wl=65520: level 1-5 all clipped px=0
+wl=62100: level 1-3 clipped px=0; level 4 clipped px=70; level 5 clipped px=3299536
+```
+
+`362b0a0`'s own mask-side figures for the SAME bracket, level 5,
+whole-mosaic, clipped-in-ANY (the quantity `clean_fraction < 1` is a
+strict superset of): `3227966 / 12330240 = 26.179263%`. The specific
+disagreement case named in this sequence's own design requirement:
+`mask-only (missed by inference): 5407` at `wl=62100`, level 5 — a
+photosite the mask flags as touched by clipping (at least 1 of 8 raw
+samples) that the old threshold test on the averaged master never
+caught, because the average diluted it below `58995`.
+
+**Prediction, with a stop condition, stated before any code is
+written**: at `wl=65520`, the mask-consuming merge should now DETECT
+and DOWN-WEIGHT real clipping at level 5 where the old threshold found
+zero — a large, nonzero count of photosites with `clean_fraction < 1`
+there (order of magnitude matching `362b0a0`'s own `3227966`, since
+that is the same underlying per-frame mask data, just read through a
+different consumer). At `wl=62100`, one of the `5407` mask-only
+photosites should show reduced but NONZERO weight from level 5, not
+zero — binary re-exclusion would be the wrong thing built. **Stop
+conditions, checked explicitly before sequence 2 begins**: (a) the new
+merge still reports zero detection at level 5, `wl=65520` — mask isn't
+actually wired in; (b) a photosite with `clean_fraction=0.875` (1 of 8
+clipped) gets zero weight from that exposure — binary any-clipped
+exclusion crept back in, discarding real signal, the exact failure the
+per-pixel fraction design exists to prevent; (c) a photosite with
+`clean_fraction=0` (8 of 8 clipped) gets nonzero weight from that
+exposure — the mask is read but not applied. Any of these stops this
+landing and gets reported rather than pushed through.
+
+**What this sequence builds**: `merge()` gains mask consumption and
+missing-mask handling as described above. A new `render_check` case
+exercises a bracket with no mask file present and asserts the
+log/flag fires (per instruction). `sat_frac` stays as a parameter this
+sequence — its own removal, and the white-level correction, are
+sequences 2 and 3, each their own three-phase landing, gated on this
+sequence's own verification passing first.
+
+**Out of scope this sequence, per instruction**: removing `sat_frac`
+itself (sequence 2); the `62100` white-level correction (sequence 3,
+scope still being clarified against real production data — see that
+sequence's own intent entry when it lands); generating masks for
+`2026-08-03_230856`/`2026-08-04_013732`; the standing parked list.
+
+**Conventions**: this entry is its own commit, before `hdr_merge.py`
+or any other file is touched. Verified append-only below.
+
 ### Record: merged-output before-reference, retaken against the post-c75ab94 masters
 
 Work-is-the-outcome form, no intent phase: a captured reading, not a
