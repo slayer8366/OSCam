@@ -7,6 +7,151 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-08
 
+### Record: 2026-08-03_050600 production merge reprocessed at the corrected white level — not promoted, operator's decision
+
+Work-is-the-outcome form, no intent phase: a data correction, not a
+code change. `hdr_merge.py`/`frame_average.py` untouched — sequences 1
+and 2 (`0b3ca89`) already landed the code this depends on. Branch
+`main`, HEAD `0b3ca89` throughout. Names `362b0a0` and `0b3ca89`
+explicitly, per instruction.
+
+**Why, cited rather than re-derived**: `362b0a0` established `65520`
+as the white level under which mask-based detection is correct, not
+an artifact-derived knee. `0b3ca89` landed and verified mask
+consumption + `sat_frac` removal — at `65520`, the merge now detects
+`3,227,966` clipped photosites at level 5, matching `362b0a0`'s own
+independently-derived figure exactly. The existing production
+`hdr_linear.tif` was produced with `--white-level 62100`, a value with
+no basis beyond a dark-subtraction-knee artifact and never present
+anywhere in this repo's own source (grep-confirmed empty); it predates
+mask consumption entirely.
+
+**Prediction, stated before running anything**: the reprocessed output
+should differ from the old production file broadly — the white-level
+change alone shifts the irradiance scale and mid-tone weighting curve
+continuously, so even unclipped pixels should not be bit-identical —
+while the LARGEST differences should concentrate at the real clipped
+population (level 5's `3,227,966` photosites, level 4's `39`), since
+both the master's own value and the merge's own weighting changed
+there. Overall image structure should stay recognizable — this is a
+scale/detail correction, not a different image. **Stop conditions
+named in advance**: differences confined ONLY to the exact clipped
+population (would mean the white-level change didn't actually
+propagate); or an unrecognizable result at the level of overall
+specimen structure (would mean something is broken, not corrected).
+**Neither triggered — checked below, not assumed.**
+
+**Preflight — the production file's own identity, recorded before
+touching anything**:
+
+```
+$ sha256sum ~/captures/2026-08-03_050600/hdr_linear.tif
+9efe591fd06fb499d072a09fe826c83f7cccbc91c34448b5b0b5b695019594d7
+$ stat -c '%Y %n' ~/captures/2026-08-03_050600/hdr_linear.tif
+1785758850 .../hdr_linear.tif
+```
+
+**The reprocess, exact command verbatim**, against the current masters
+already on disk at `~/hdr_merge_reference_v2/` (rebuilt this session
+from the real raw frames, unaffected by anything sequences 1/2
+touched — `frame_average.py` itself wasn't modified there), current
+`hdr_merge.py`, `--white-level-source` carrying the citation directly
+in the output's own embedded provenance:
+
+```
+$ python3 hdr_merge.py \
+    -e master_1_v2.tif 0.01249 -e master_2_v2.tif 0.024981 \
+    -e master_3_v2.tif 0.049963 -e master_4_v2.tif 0.099926 -e master_5_v2.tif 0.199852 \
+    --white-level 65520 \
+    --white-level-source "correction of the production 62100 value: ... see CHANGELOG.md 362b0a0 and 0b3ca89" \
+    --hash -o hdr_linear_050600_production_reprocess_wl65520.tif
+  [0] master_1_v2.tif  0 fully-clipped px, 0 partially-clipped px (mask)
+  [1] master_2_v2.tif  0 fully-clipped px, 0 partially-clipped px (mask)
+  [2] master_3_v2.tif  0 fully-clipped px, 0 partially-clipped px (mask)
+  [3] master_4_v2.tif  0 fully-clipped px, 39 partially-clipped px (mask)
+  [4] master_5_v2.tif  2811392 fully-clipped px, 416574 partially-clipped px (mask)
+exit: 0
+```
+
+**Output location — outside the capture directory, protected files
+confirmed untouched, not by assertion**:
+
+```
+Path: /home/bwann83/hdr_merge_reference_v2/hdr_linear_050600_production_reprocess_wl65520.tif
+$ df -h /home/bwann83/hdr_merge_reference_v2/... | tail -1
+/dev/nvme0n1p2  234G   36G  186G  16% /
+```
+
+Production file re-checked AFTER the reprocess — sha256
+`9efe591fd06fb499d072a09fe826c83f7cccbc91c34448b5b0b5b695019594d7` and
+mtime `1785758850`, both identical to the preflight reading above.
+`~/provenance/2026-08-03_050600/session.json` (the real provenance
+sidecar) also re-checked — mtime unchanged (`Aug 3 05:07`, its
+original capture time), untouched. `find ~/captures/2026-08-03_050600
+-newer ...` and the equivalent under `~/provenance/2026-08-03_050600`
+both returned nothing — no new file appeared in either protected
+directory.
+
+**Comparison, old production output vs new reprocess**:
+
+```
+old (wl=62100, old masters, old sat_frac merge): min=0.003135404782369733 max=1.138860821723938 mean=0.44816237688064575 std=0.25488507747650146
+new (wl=65520, current masters, mask-consuming merge): min=0.0028385668992996216 max=1.2229923009872437 mean=0.41355758905410767 std=0.2437814325094223
+
+diff (new - old): min=-0.07373470067977905 max=0.08413147926330566 mean|diff|=0.034741799818025325
+fraction of pixels with |diff| > 1e-6: 0.9999993511886225
+pearson correlation, whole array: 0.9985736022309353
+
+mean |diff| at level-5-clipped positions (n=3,227,966): 0.0456604339388581
+mean |diff| at level-5-clean positions (n=9,102,274):   0.030869692726051598
+ratio (clipped / clean): 1.4791347080796913
+```
+
+**Prediction confirmed, neither stop condition triggered**: essentially
+every pixel differs (`99.99994%`, refuting "confined only to the
+clipped population"), correlation is very high (`0.9986`, refuting
+"unrecognizable") — the two images are the same specimen at a
+corrected scale and detail level, not a different result. Differences
+concentrate more heavily at the genuinely clipped positions (`1.48x`
+larger mean absolute difference there than at clean positions),
+matching the predicted mechanism: both the master's own averaging and
+the merge's own weighting changed at those positions specifically, on
+top of the whole-image shift from the white-level change alone.
+
+**Provenance record — a new supersession entry, not an edit to
+existing history**: `~/hdr_merge_reference_v2/
+hdr_linear_050600_wl_supersession_record.json` (full JSON, both file
+paths, both sha256 hashes, both white levels, the reason, and the two
+citations verbatim). The real `session.json` at
+`~/provenance/2026-08-03_050600/` was NOT touched — confirmed above —
+and the old output's own embedded TIFF provenance was NOT touched
+either; this is a standalone new record, not an in-place edit to
+either. `"promoted": false` is recorded explicitly in that file.
+
+**Not promoted — the operator's own decision, per instruction.**
+`hdr_linear.tif` in the capture directory is unchanged. The new,
+reprocessed output sits at
+`~/hdr_merge_reference_v2/hdr_linear_050600_production_reprocess_wl65520.tif`
+for review; nothing in this session replaces the production file, and
+no source file was modified.
+
+**Out of scope, per instruction, not started**: promoting the new
+output into the capture directory; reprocessing
+`2026-08-03_230856`/`2026-08-04_013732` (neither has masks); anything
+on the standing parked list.
+
+**Verification, stated plainly**: every figure above is *observed* —
+real command output, real hashes, real stats, computed on this Pi,
+this session, pasted verbatim. Nothing here is *confirmed* on hardware
+in the on-rig-GUI sense — this is entirely file-based, no camera used.
+Whether the reprocessed output is actually BETTER (as opposed to
+merely different and mechanistically explained) is a judgment about
+image quality this session does not make — that is exactly the
+promotion decision left to the operator.
+
+Working tree left clean apart from untracked `calib/` and
+`profile.json`'s own live-rig drift (never committed, as always).
+
 ### Record build: hdr_merge saturation-mask consumption, sequence 2 — sat_frac removed, verified as a pure removal
 
 Build, own commit (`7263487`), against `8a14c4f`'s own intent.
