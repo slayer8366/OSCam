@@ -7,6 +7,187 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-08
 
+### Record: correction — cc50933/f4c71ba's Stage 3 Step 0 reference was captured under the wrong objective
+
+Work-is-the-outcome form, no intent phase: a correction to a fact
+already recorded, not a designed change with a plan to diverge from.
+Functionally a footnote to `cc50933` and `f4c71ba`; structurally a
+superseding record — neither of those two entries is edited, and
+neither store either entry wrote into is touched. Branch `main`, HEAD
+after this entry's own commit — read-only otherwise: no source file
+modified, no camera or rig used, no new mark added, no store write of
+any kind.
+
+**What was wrong**: `cc50933`'s own entry states "Objective,
+operator-confirmed... 4x is physically mounted" and resolves both its
+own mark and `f4c71ba`'s later mark against calibration entry
+`d38b13076c4c4ab9804c265439321c12` (`4x`, `um_per_px
+1.408410912378439`). **The operator has since established the
+objective actually on the nosepiece at capture time was 10x, not
+4x — the misidentification happened at the moment of the original
+confirmation, not afterward.** How this was established, stated
+plainly rather than only asserted: the operator's own account is that
+the nosepiece was re-checked directly against the physical turret
+after noticing the recorded distances (22.6µm / 581.7µm at 4x) were
+implausible for the specimen feature actually visible in the frame,
+and the objective engaged was found to be 10x. That is what a later
+reader is being asked to trust here — the operator's own physical
+re-check, not a software-derivable fact this session could confirm
+independently. Stated as such, not dressed up as more than it is.
+
+---
+
+**1 — file identity, reconfirmed before anything else, both matched**:
+
+```
+$ sha256sum /home/bwann83/stage3_reference/stage3_ref_2026-08-07.dng
+13183460470f8e883b2edc3988bba97422b89c0e64eb990c5adffea6ee186731  ...
+```
+
+Matches `cc50933`'s own recorded file sha256 exactly.
+
+```
+$ python3 -c "
+import measure, pixel_hash
+plane = measure.load_measurement_plane('/home/bwann83/stage3_reference/stage3_ref_2026-08-07.dng')
+print(plane.shape, plane.dtype)
+print(pixel_hash.pixel_sha256(plane))
+"
+(1520, 2028) uint16
+3605080018646f75c72bc466a3160328dd2b6b4539b0f02c33c68377dbcf8b65
+```
+
+Matches `cc50933`'s own recorded green-plane `pixel_sha256` exactly —
+the real loader, not a hand read. Both agree; not a different problem,
+proceeded.
+
+**2 — the 10x calibration entry, read via the real resolution path
+(`calibrate.current_calibration`, not a hand walk of the chain), store
+not modified**:
+
+```
+$ python3 -c "import calibrate, json; print(json.dumps(calibrate.current_calibration('10x'), indent=2))"
+entry_id:      b3bfe443ce1a48969de83ba22ca5b722
+um_per_px:     0.5552084074503878
+calibrated_at: 2026-07-18T02:29:35.263482
+objective:     10x
+supersedes:    998d87b8c1794a66a22b6cda82f788ec
+```
+
+**3 — both marks' µm figures, recomputed from their recorded pixel
+distances against the 10x scale.** The wrong (4x) figure reproduced
+first, to confirm the arithmetic before touching the correction:
+
+```
+mark1 (cc50933,  mark_id 5c3df70c...): distance_px = 16.033755274261466
+  wrong (4x):    16.033755274261466 * 1.408410912378439 = 22.582115894675198   (matches the stored record exactly)
+  corrected (10x): 16.033755274261466 * 0.5552084074503878 = 8.902075731271964
+
+mark2 (f4c71ba, mark_id 007db753...): distance_px = 412.986710571699
+  wrong (4x):    412.986710571699 * 1.408410912378439 = 581.6549898364569   (matches the stored record exactly)
+  corrected (10x): 412.986710571699 * 0.5552084074503878 = 229.29369387468725
+```
+
+**4 — the store as it currently stands, read verbatim, not
+modified — both marks unchanged, still carrying the 4x
+`calibration_ref` and the wrong µm figures, exactly as
+`PHILOSOPHY.md`'s append-only rule requires**:
+
+```json
+{
+  "pixel_sha256": "3605080018646f75c72bc466a3160328dd2b6b4539b0f02c33c68377dbcf8b65",
+  "shape": [1520, 2028], "dtype": "uint16", "kind": "green",
+  "calibration_ref": {"objective": "4x",
+                       "entry_id": "d38b13076c4c4ab9804c265439321c12",
+                       "um_per_px": 1.408410912378439},
+  "source_sha256": null,
+  "marks": [
+    {"mark_id": "5c3df70cc92a4b559033edbd47053cae", "type": "distance",
+     "created_at": "2026-08-07T12:15:46.374395",
+     "input": {"points": [[1067.8481012658228, 721.5189873417721],
+                           [1083.8818565400843, 721.5189873417721]]},
+     "derived": {"distance_px": 16.033755274261466,
+                 "distance_um": 22.582115894675198}},
+    {"mark_id": "007db75309704f9ba024b969f77ad005", "type": "distance",
+     "created_at": "2026-08-07T12:33:38.198200",
+     "input": {"points": [[1388.5232067510549, 522.7004219409282],
+                           [1487.9324894514768, 923.5443037974683]]},
+     "derived": {"distance_px": 412.986710571699,
+                 "distance_um": 581.6549898364569}}
+  ]
+}
+```
+
+Deliberately left exactly as-is. The two marks stay wrong in the
+store, forever, under this hash — this entry is the correction, not
+an edit to them. Re-measuring against the right objective, or writing
+new marks, would be a different piece of work and is out of scope
+here.
+
+---
+
+**What is and is not affected — established from the data above, not
+taken on faith**:
+
+- **The µm figures on both marks are wrong.** A 4x scale
+  (`1.408410912378439` µm/px) was applied to a 10x image. Corrected
+  figures: `8.902075731271964` µm (mark1, was `22.582115894675198`)
+  and `229.29369387468725` µm (mark2, was `581.6549898364569`) — both
+  roughly 2.54x smaller, matching the ratio between the two
+  `um_per_px` values (`1.408410912378439 / 0.5552084074503878 =
+  2.5368...`), as it must, since both marks share the same
+  `distance_px` under either scale.
+- **The pixel distances are NOT affected.** `16.033755274261466` px
+  and `412.986710571699` px are measurements on the plane itself —
+  clicked positions on a fixed image — and carry no dependency on
+  which objective produced that image.
+- **The green-plane coordinates are NOT affected.** Both marks'
+  `input.points` are unchanged and correct regardless of objective.
+- **The frozen DNG's bytes and both recorded hashes are NOT
+  affected.** Reconfirmed above, not assumed: file sha256 and
+  green-plane `pixel_sha256` both still match `cc50933`'s record
+  exactly.
+- **Reference B's conversion data is NOT affected.**
+  `native_point_from_preview_click`'s inputs/outputs
+  (`cc50933`'s own table) are sensor-mode crop geometry — a function
+  of `disp_rect`/`preview_crop`/`still_crop`/`GREEN_PLANE_RES`, none
+  of which reads an objective or a calibration entry at all. Scale and
+  geometry are independent axes; only scale was wrong here.
+- **Stage 3's verification at `887f9e7` is NOT invalidated.** That
+  verification compared the same frozen bytes' own dimension/collapse/
+  round-trip behavior before and after Stage 3's sequences — both
+  sides of every comparison it ran applied the same (wrong) scale to
+  the same bytes, or applied no scale at all (the geometry checks).
+  Stated explicitly, since a later reader would otherwise reasonably
+  assume the whole verification is void given its own reference was
+  captured under the wrong objective: **it still answers the question
+  it was built to answer — whether the software chain changed a
+  value between two states of the same input — because that question
+  never depended on which objective produced the input, only on
+  whether the input and the code path stayed comparable across the
+  before/after split. They did.**
+
+**Out of scope, per instruction, not started**: frame_average's
+clipped-sample exclusion (already a separate, closed sequence —
+unrelated); `hdr_merge.py` consumption, `sat_frac` collapse,
+merge-weighting policy; correcting the `62100` white level;
+re-measuring either mark or capturing a new reference; any
+modification to `calibration.json` or `annotations.json`; the standing
+parked list generally.
+
+**Verification, stated plainly**: every figure in this entry is
+*observed* — read directly from the real, live stores and the real
+frozen file on this Pi, this session, commands and output pasted
+verbatim above. Nothing here is *confirmed* on hardware in the
+on-rig-GUI sense — no camera was used. The objective identification
+itself is explicitly *the operator's own claim*, reported as such, not
+independently verified by this session (there is no software path that
+could confirm which physical objective was on the nosepiece at a past
+capture time).
+
+Working tree left clean apart from untracked `calib/` and
+`profile.json`'s own live-rig drift (never committed, as always).
+
 ### Record build: frame_average excludes clipped samples from the average
 
 Build, own commit, code only (`a53b6fc`), against `3bff10b`'s own
