@@ -7,6 +7,192 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-08
 
+### Record build: hdr_merge saturation-mask consumption, sequence 1 — mask consumption verified against real data, prediction confirmed
+
+Build, own commit (`bbc2bad`), against `bd18fd2`'s own intent. This
+entry records what was built, checked against that intent, plus
+verification against `362b0a0`'s own known real cases — required by
+the hard sequencing constraint before sequence 2 (`sat_frac` removal)
+or sequence 3 (white level) may begin.
+
+**Built as designed, no deviation**: `load_clean_fraction()` reads
+`c75ab94`'s own `<master_stem>_excluded_count.tif` sibling plus
+`precision.frames_averaged` from the master's own embedded provenance,
+returns `(clean_fraction, mask_used, note)`. `merge()`'s own `w_valid`
+is now `4*p*(1-p) * clean_fraction` (mask available) or `4*p*(1-p)`
+unchanged (no mask — logged, flagged, never silently clean, never a
+`sat_frac`-threshold fallback). `sat_frac` accepted but functionally
+inert this sequence — `info`/`prov` both carry an explicit
+`sat_frac_note` saying so, rather than silently continuing to record
+it as if it still governed anything. `sat_all`'s own fallback tracking
+now derives from `clean_fraction <= 0` (mask available) or `vn >= 1.0`
+(no mask) — the same "looks fully saturated" role `vn >= sat_frac`
+played, generalised to the new source of truth. `render_check` gained
+position-exact, NUMERIC (not just structural) coverage for both the
+1-of-8-clipped and 8-of-8-clipped cases and the missing-mask path
+(stdout capture + structural flag both checked). `SWEEP_CHECKS.md` row
+added; `FUNCTION_INDEX.md` regenerated (`load_clean_fraction` is new).
+
+```
+$ python3 hdr_merge.py --render-check
+  ...
+mask-consumption check PASS: a 1-of-8-clipped photosite is weighted by
+its own clean_fraction (0.875), not discarded; an 8-of-8-clipped
+photosite collapses exactly to the other exposure's own estimate (zero
+weight, confirmed numerically, not just structurally); a bracket with
+no excluded-count sibling merges without exclusion, logged once per
+exposure ... verified against the pure hat-function formula
+exit: 0
+```
+
+---
+
+**Verification against `362b0a0`'s own known real cases — the gate
+before sequence 2/3 may begin.** All three of this sequence's own
+stop conditions checked explicitly against real data, none triggered.
+
+**Stop condition (a) — does `wl=65520` still find zero at level 5?
+No.** Ran the new mask-consuming `merge()` against
+`2026-08-03_050600`'s own current (post-`c75ab94`) masters at
+`~/hdr_merge_reference_v2/` (their `_excluded_count.tif` siblings
+already present from that landing), output to
+`~/hdr_merge_reference_v3/` (new location, nothing pre-existing
+overwritten):
+
+```
+$ python3 hdr_merge.py -e master_1_v2.tif 0.01249 ... -e master_5_v2.tif 0.199852 \
+    --white-level 65520 -o hdr_linear_050600_wl65520_maskconsuming.tif
+  [0] master_1_v2.tif  t=0.01249s   0 fully-clipped px, 0 partially-clipped px (mask)
+  [1] master_2_v2.tif  t=0.024981s  0 fully-clipped px, 0 partially-clipped px (mask)
+  [2] master_3_v2.tif  t=0.049963s  0 fully-clipped px, 0 partially-clipped px (mask)
+  [3] master_4_v2.tif  t=0.099926s  0 fully-clipped px, 39 partially-clipped px (mask)
+  [4] master_5_v2.tif  t=0.199852s  2811392 fully-clipped px, 416574 partially-clipped px (mask)
+exit: 0
+```
+
+Level 5's own total (`2811392 + 416574 = 3227966`) matches `362b0a0`'s
+own mask-any figure (`3227966 / 12330240 = 26.179263%`) exactly, and
+the fully/partially split matches `c75ab94`'s own already-recorded
+figures exactly (`fully_clipped_photosites=2811392`,
+`partially_clipped_photosites=416574`). Level 4's `39` matches too.
+**In stark contrast to the OLD threshold-based merge's own `0` at this
+same white level, on these same masters (`f04439c`'s own recorded
+figure, reproduced again here as the direct before/after pairing)** —
+the mask, not the white level, is what gives the merge real detection
+power. The counts are IDENTICAL at `wl=62100` (re-run, confirmed) —
+correct and expected: `clean_fraction` is derived purely from the
+mask/frame-count, with no dependency on white_level at all; only the
+mid-tone hat weighting (`p`, `w_hat`) depends on white_level, not the
+exclusion mechanism itself.
+
+**Stop condition (b) — does a real 1-of-8-clipped photosite get
+reduced-but-nonzero weight, not zero?** Yes, checked at a real
+position, not only the synthetic check. `(0, 443)`, level 5,
+`excluded_count=1/8`, `clean_fraction=0.875`:
+
+```
+master_5_v2[0,443] = 59590
+  wl=62100: vn=0.959581 -- OLD threshold (vn>=0.95) says CLIPPED  (zero weight, old code)
+  wl=65520: vn=0.909493 -- OLD threshold (vn>=0.95) says NOT clipped (full weight, old code -- MISSED)
+
+merged value at (0,443):
+  OLD (sat_frac) wl62100: 0.6082662    NEW (mask) wl62100: 0.6075428
+  OLD (sat_frac) wl65520: 0.67033905   NEW (mask) wl65520: 0.60681796
+```
+
+At `wl=65520` this is exactly the mask-only failure mode `362b0a0`
+named: the old threshold test never flags this photosite (its
+diluted-but-still-partially-clipped master value sits below `0.95`),
+so the old merge gave level 5 FULL weight there despite one real raw
+sample having clipped. The new merge correctly reduces that
+contribution (`clean_fraction=0.875`, not `1.0` and not `0.0`) — the
+merged value moves accordingly, a real, measured effect, not a
+rounding artefact. At `wl=62100` the old test flags it TOO AGGRESSIVELY
+(binary — zero weight for a photosite that was 7/8 clean), and the new
+value differs there too, in the other direction: less exclusion than
+the old binary test applied, matching the actual design requirement
+("one clipped sample in eight should not discard the photosite").
+
+**Stop condition (c) — does a real 8-of-8-clipped photosite get
+EXACTLY zero weight, not approximately?** Yes, confirmed two ways.
+`(0, 499)`, level 5, `excluded_count=8/8`:
+
+```
+master_5_v2[0,499] = 61366 (sentinel-derived)
+  OLD (sat_frac) wl65520: 0.7216712   NEW (mask) wl65520: 0.66308236
+```
+
+The old threshold missed this one too (`vn=61366/65520=0.9366 <
+0.95`), giving it full weight despite genuine full-photosite
+saturation. Definitive proof the new merge gives it EXACTLY zero
+weight, not merely a reduced one: a second merge run using ONLY levels
+1-4 (level 5 entirely absent) produces a bit-identical value at this
+position:
+
+```
+$ python3 hdr_merge.py -e master_1_v2.tif ... -e master_4_v2.tif ... --white-level 65520 \
+    -o hdr_linear_050600_wl65520_levels1to4only.tif
+5-level mask-consuming merge at (0,499): 0.66308236
+levels-1-4-only merge (no level 5 at all) at (0,499): 0.66308236
+exact match: True
+```
+
+**Missing-mask handling, confirmed against a REAL production
+bracket, not only the synthetic check** — `2026-08-03_230856`, whose
+masters (`version 2.1`, confirmed from their own embedded provenance)
+predate `c75ab94` and have never been rebuilt, so genuinely carry no
+`_excluded_count.tif` sibling on disk:
+
+```
+$ python3 hdr_merge.py -e ~/captures/2026-08-03_230856/master_1.tif 0.01249 ... \
+    --white-level 65520 -o ~/hdr_merge_reference_v3/hdr_linear_230856_wl65520_nomask.tif
+  [0] master_1.tif  t=0.01249s  NO SATURATION MASK -- merged WITHOUT exclusion (no excluded-count sibling found at master_1_excluded_count.tif)
+  [1] master_2.tif  ... (same, per exposure, all 5)
+exit: 0
+```
+
+Structural flag confirmed in the written output's own embedded
+provenance (`exclusion.mask_used: false` for all 5 exposures, with the
+same note recorded in each). **Real production directory confirmed
+untouched**: `ls ~/captures/2026-08-03_230856/master_1_excluded_count.
+tif` → no such file, both before and after this run — nothing written
+there, output went only to `~/hdr_merge_reference_v3/`.
+
+---
+
+**Prediction, stated in `bd18fd2`'s own intent entry, checked
+against the results above: CONFIRMED.** All three named stop
+conditions were checked explicitly against real data and none
+triggered. The mask-consuming merge detects real clipping at the
+profile-derived white level where the old threshold structurally
+could not (stop condition (a), refuted); a partially-clipped photosite
+is down-weighted, not discarded (stop condition (b), refuted); a
+fully-clipped photosite gets exactly zero weight, proven by an exact
+match against a level-5-absent merge (stop condition (c), refuted).
+**Sequence 1's own gate is satisfied — sequence 2 (`sat_frac` removal)
+may now begin.**
+
+**Out of scope this sequence, per instruction, not started**: `sat_frac`
+removal (own later sequence); the `62100` white-level correction
+(own later sequence, scope still being clarified against real
+production data before any action is taken there); masks for
+`2026-08-03_230856`/`2026-08-04_013732` (verified their absence is
+handled correctly; no masks generated for either).
+
+**Verification, stated plainly**: every figure above is *observed* —
+real command output, pasted verbatim, computed on this Pi, this
+session, against real masters and one real production bracket. The
+self-check (`--render-check`) proves internal consistency on synthetic
+data; the real-bracket runs above are a SEPARATE, additional
+confirmation against actual capture data — both kinds of verification
+are reported, neither substituted for the other. Nothing here is
+*confirmed* on hardware in the on-rig-GUI sense — no camera was used.
+Neither `frame_average.py` nor any file other than `hdr_merge.py`
+(plus its own doc/SWEEP_CHECKS/FUNCTION_INDEX companions) was touched.
+
+Working tree left clean apart from untracked `calib/` and
+`profile.json`'s own live-rig drift (never committed, as always).
+
 ### Record intent: hdr_merge saturation-mask consumption, sequence 1 — read the mask, replace sat_frac's hard threshold with per-pixel clean-fraction weighting
 
 Intent, own commit, nothing else touched. Branch `main`, HEAD `f04439c`.
