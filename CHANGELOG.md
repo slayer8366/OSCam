@@ -7,6 +7,255 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-08
 
+### Record: how closely hdr_merge's inference agrees with the mask — measured, not assumed
+
+Work-is-the-outcome form, no intent phase: a comparison, not a designed
+change with a plan to diverge from. Supersedes nothing. Branch `main`,
+HEAD `2991189` throughout — read-only, no source file touched, no mask
+regenerated, no mask for another bracket generated. Bracket
+`2026-08-03_050600`, the only one with masks.
+
+**HEADLINE: it depends entirely on which white level is in force, and
+at the white level the profile now derives (`65520`), the existing
+inference agrees with the mask NOT AT ALL — zero overlap, at every
+level, on this bracket.** At the white level the real August merge
+actually used (`62100`, known wrong for unrelated reasons), agreement
+is broad at level 5 (99.83% of the mask's own clipped population is
+also caught) but not exact, and the two disagreement directions are
+very different sizes. This is not a stable property of "the
+inference" as a mechanism — it is a direct, structural consequence of
+which number gets passed to it, established below, not assumed.
+
+---
+
+**1 — the discrepancy, resolved.** `6b9a57c` (the saturation-mask
+intent entry `24a07c6`'s own sequence carries its baseline in) states
+its own command verbatim: `--white-level 65520`, explicit — read
+directly from the committed text, not recalled:
+
+```
+$ git show 6b9a57c:CHANGELOG.md | grep -n "white-level\|white_level" | head -3
+39:    -o baseline_merge_for_masksession.tif --white-level 65520 --out-bits 32
+50:`"white_level": 65520.0`, `"sat_frac": 0.95`. **Zero clipping reported
+```
+
+`2991189`'s own reference used `--white-level 62100`, explicit, the
+real August value. **Re-ran the `65520` invocation fresh, at this
+session's own HEAD, to confirm rather than trust the record:**
+
+```
+$ python3 hdr_merge.py -e master_1.tif 0.01249 -e master_2.tif 0.024981 \
+    -e master_3.tif 0.049963 -e master_4.tif 0.099926 -e master_5.tif 0.199852 \
+    --white-level 65520 -o ~/scratch/mask_vs_inference/merge_wl65520.tif
+  [0] master_1.tif  t=0.01249s   clipped px=0
+  [1] master_2.tif  t=0.024981s  clipped px=0
+  [2] master_3.tif  t=0.049963s  clipped px=0
+  [3] master_4.tif  t=0.099926s  clipped px=0
+  [4] master_5.tif  t=0.199852s  clipped px=0
+exit: 0
+```
+
+Reproduces `6b9a57c`'s own figures exactly. **Different white levels
+used, fully explaining the discrepancy — not the more serious "same
+input, different answer" finding the task named as the alternative.**
+Cutoffs (`sat_frac × white_level`, `sat_frac=0.95` default), confirmed
+by direct computation: `0.95 × 62100 = 58995.0`; `0.95 × 65520 =
+62244.0` — matching the task's own stated figures exactly.
+
+---
+
+**2 — the arithmetic, stated before comparing anything.**
+
+`hdr_merge`'s own clipping test (`hdr_merge.py:236`, `merge()`):
+operates on a LEVEL'S OWN MASTER — `frame_average.py`'s output, the
+MEAN of that level's 8 raw frames, never a raw frame itself. Array
+shape `(3040, 4056, 1)` — the WHOLE mosaic, all four CFA positions
+(R, G, G, B) mixed into one array, never split by channel. Test:
+`vn = master_value / white_level; clipped = vn >= sat_frac`. One
+"pixel" in the reported count is one `(row, col)` mosaic position in
+the AVERAGED master, for ONE level — evaluated once, per level.
+
+The mask's own record (`frame_average.py`'s `clipped_mask_for_frame`,
+`24a07c6`): operates on ONE RAW FRAME — 8 separate frames per level,
+each gets its own mask, never averaged. Same whole-mosaic shape,
+`(3040, 4056, 1)`, but per FRAME, 8 masks per level. Test: `clipped =
+raw_value >= white_level` — a hard ceiling, no `sat_frac`, no
+fractional slack. One "pixel" in a mask is one `(row, col)` mosaic
+position in ONE SPECIFIC RAW FRAME.
+
+**The recorded `52.183185%` figure was G@(0,1) only — ONE of FOUR CFA
+positions, a quarter of the mosaic's own pixel count — clipped-in-ANY
+(logical OR) across the 8-frame burst. `hdr_merge`'s `3308734` is a
+whole-mosaic, single-master, per-level count. Not the same basis.**
+
+**The conversion, computed rather than asserted**: to compare against
+`hdr_merge`'s own scope, the mask side becomes **clipped-in-ANY
+(OR across the level's 8 raw frames), WHOLE MOSAIC (all four CFA
+positions, not sliced to green)** — the mask's own "did any raw
+sample at this position ever hit the ceiling" verdict, on the exact
+same `(row, col)` index space `hdr_merge`'s own per-position test
+uses. `clipped-in-ANY` (not `-in-ALL`) because `hdr_merge`'s own
+concern, stated in this project's own WHY, is exactly whether
+averaging hides a real single-frame clip — `-in-ANY` is the mask's own
+answer to "did a real clip happen here, in at least one sample."
+
+The mask's own threshold is fixed at `65520` (`camera_backend.
+white_level_for_bit_depth(camera_backend.BIT_DEPTH)`, no `sat_frac`,
+no CLI override — `frame_average.py`'s mask writer has no flag to
+point it at a different white level without touching its source,
+confirmed by reading it, not assumed) — it does not vary across this
+comparison's own two `hdr_merge` runs; only `hdr_merge`'s own
+threshold does.
+
+---
+
+**3 — the comparison, level 5 first, common basis, both directions
+reported separately:**
+
+```
+mask clipped-in-ANY (whole mosaic, level 5): 3227966 / 12330240 = 26.179263%
+
+--- white_level=62100 (sat cutoff=58995.0) ---
+merge clipped count:  3308734 (26.834303%)
+mask   clipped count:  3227966 (26.179263%)
+agreement (both):      3222559
+mask-only (missed by inference):        5407
+merge-only (flagged, mask says clean): 86175
+
+--- white_level=65520 (sat cutoff=62244.0) ---
+merge clipped count:  0 (0.000000%)
+mask   clipped count:  3227966 (26.179263%)
+agreement (both):      0
+mask-only (missed by inference):       3227966
+merge-only (flagged, mask says clean): 0
+```
+
+**Then every level, both white levels:**
+
+```
+wl=62100:
+level 1: merge=0    mask_any=0  both=0  mask_only=0  merge_only=0
+level 2: merge=0    mask_any=0  both=0  mask_only=0  merge_only=0
+level 3: merge=0    mask_any=0  both=0  mask_only=0  merge_only=0
+level 4: merge=79   mask_any=39 both=24 mask_only=15 merge_only=55
+level 5: merge=3308734 mask_any=3227966 both=3222559 mask_only=5407 merge_only=86175
+
+wl=65520:
+level 1: merge=0 mask_any=0       both=0 mask_only=0       merge_only=0
+level 2: merge=0 mask_any=0       both=0 mask_only=0       merge_only=0
+level 3: merge=0 mask_any=0       both=0 mask_only=0       merge_only=0
+level 4: merge=0 mask_any=39      both=0 mask_only=39      merge_only=0
+level 5: merge=0 mask_any=3227966 both=0 mask_only=3227966 merge_only=0
+```
+
+**The two disagreement directions are not symmetric, at either white
+level.** At `62100`/level 5: `mask_only` (missed) is small (5407,
+0.17% of the mask's own clipped population); `merge_only`
+(over-flagged) is an order of magnitude larger (86175, 2.6% of
+`hdr_merge`'s own count) — the inference over-flags more than it
+misses, at this white level. At `65520`: `merge_only` is zero
+everywhere (the inference never flags anything at all, so it cannot
+over-flag); `mask_only` equals the mask's ENTIRE clipped population —
+the inference misses everything, unconditionally.
+
+---
+
+**4 — sampled disagreements, both directions, explained from real
+per-raw-frame values, not asserted:**
+
+**`merge_only` (level 5, wl=62100), position `(0, 441)`** — master
+`59056` (`vn=0.9510`, just over the `0.95` cutoff), flagged by
+`hdr_merge`, clean per the mask. Its own 8 raw frames:
+
+```
+frame 0: 63232   frame 1: 64128   frame 2: 62848   frame 3: 61824
+frame 4: 63232   frame 5: 63360   frame 6: 63488   frame 7: 63744
+(none >= 65520)
+```
+
+Every raw sample is genuinely high, none reaches the mask's own hard
+ceiling. Explicable: `sat_frac=0.95` is a soft, fractional "near white"
+test on the AVERAGE, not a hard-ceiling test on any individual sample
+— it is answering a different question than the mask does, by
+construction, and this is exactly that difference showing up on a
+real pixel.
+
+**`mask_only` (level 5, wl=62100), position `(1, 1556)`** — master
+`58798` (`vn=0.9468`, just under the `0.95` cutoff — missed), clipped
+per the mask. Its own 8 raw frames:
+
+```
+frame 0: 61440   frame 1: 63232   frame 2: 63616   frame 3: 65535 <- CLIPPED
+frame 4: 61440   frame 5: 63488   frame 6: 62336   frame 7: 62080
+```
+
+Frame 3 genuinely hit `65535`, the container's own ceiling. The
+average of all 8 (`58798`) is diluted well below even this session's
+own `62100`-based cutoff by the seven unclipped frames. **This is the
+project's own WHY, confirmed on a real pixel, not merely asserted**:
+one real raw sample clipped; the merged inference, built from an
+average, never sees it.
+
+---
+
+**5 — the threshold's own effect, isolated.** Already shown inline
+above (both white levels reported together per level and per
+direction, not confounded): moving `hdr_merge`'s own white level from
+`62100` to `65520`, with nothing else changed, moves agreement from
+"mostly overlapping, asymmetric disagreement" to "zero overlap,
+total miss." The mechanism itself (a fractional threshold on an
+averaged master) did not change between the two runs; only the number
+handed to it did. **Why the `65520` run finds nothing, explained,
+not left as a bare fact**: `master_5`'s own maximum value is `61781`
+—
+
+```
+$ python3 -c "... master5.max() ..."
+master_5 min/max: 260 61781
+count >= 62244 (wl=65520 cutoff): 0
+count >= 58995 (wl=62100 cutoff): 3308734
+count == 65535 (full ceiling): 0
+```
+
+— which never reaches `62244` (the `65520`-derived cutoff), because
+averaging 8 frames dilutes even a majority-clipped position below any
+single frame's own peak. At `65520`, the inference is not merely
+imprecise on this bracket — it is structurally incapable of ever
+finding a clipped pixel here, at any level, regardless of how much
+real raw-domain saturation exists, for as long as it operates on the
+averaged master rather than the raw frames the mask already reads.
+
+---
+
+**SEPARATE, report only, not acted on**: nothing new here beyond
+`2991189`'s own already-recorded fact — only `2026-08-03_050600` has
+masks; `2026-08-03_230856` and `2026-08-04_013732` have none, and this
+entry's own comparison could not be run against them.
+
+**Scope note, since this changes what the next sequence is decided
+against**: at the white level the profile now derives (`65520`),
+consumption is not an enrichment on this bracket — the existing
+inference has zero power there today, so any real clipping the merge
+ever accounts for at that white level would come entirely from
+whatever the consumption sequence builds, not from a mechanism already
+finding most of it. At `62100`, consumption would mostly refine an
+already-broadly-working inference with a real, measured, and
+asymmetric error. Which of these describes the sequence's actual
+future is not decided here — this entry reports the measured gap at
+both, so that decision has real numbers under it either way.
+
+**Verification**: every figure above is *observed* — computed directly
+from real files (`master_N.tif`, the real `.dng` raw frames, the real
+`.satmask.npz` masks already on disk) on this Pi, this session, pasted
+verbatim. Nothing here is *confirmed* in the fixed/confirmed sense;
+nothing was built. Neither mechanism was adjusted to agree with the
+other — the gap is measured, not closed, per instruction. Branch
+`main`, working tree left exactly as found (`profile.json`/`calib/`
+excluded as always, no source file touched, no camera used, the
+reference merged output at `~/hdr_merge_reference/` and the real
+production `hdr_linear.tif` both untouched — this session's own new
+merge output written to `~/scratch/mask_vs_inference/` instead).
+
 ### Record: before-reference — merged output ahead of saturation-mask consumption
 
 Work-is-the-outcome form, no intent phase: a captured reading, not a
