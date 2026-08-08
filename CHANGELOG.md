@@ -7,6 +7,174 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-07
 
+### Record intent: white level behind the sensor profile
+
+Baseline, measured before any other file is touched. Branch `main`,
+HEAD `887f9e7`.
+
+**What this closes**: the same category of defect Stage 3 closed for
+sensor dimensions, for a different constant. Stage 3's own dimension
+scan was deliberately scoped to dimensions plus their halves, so every
+literal `12` and `2` in the tree would not fire — correct for that
+task, and it left bit depth and white level untouched and invisible.
+The sensor profile (`imx477.py`) exposes exactly three names today:
+`FULL_ARRAY_SIZE`, `_CROP_TABLE`, `crop_for_size`. Meanwhile
+`hdr_from_session.py` carries a hardcoded `MERGE_WHITE_LEVEL_DEFAULT`
+of `65520`, and `hdr_merge.merge`'s own `white_level=None` fallback
+calls `dtype_max(in_dtype)` — container width outright, zero reference
+to the sensor. `PHILOSOPHY.md` is explicit: white level derives from
+bit depth in the profile, never from container width.
+
+**Bit depth, confirmed from the driver, not assumed — observed, with
+the inference stated as inference.** `Picamera2().sensor_modes` reports
+every mode at three format options (`SRGGB8`/`SRGGB10`/`SRGGB12_CSI2P`,
+`bit_depth` 8/10/12 respectively) — bit depth is genuinely NOT a single
+value the sensor reports; it is a property of which FORMAT gets
+selected, and the task brief's own concern (stop before guessing if
+this isn't fixed) applies squarely here. What is directly checkable is
+which format THIS project's own code actually requests. Observed
+directly, with no explicit format override anywhere in `camera_backend
+.py` (`grep` for `SRGGB`/`CSI2P`/an explicit raw `format=` key found
+none):
+
+```
+cam._still_cfg['raw']   -> {'format': 'SRGGB12_CSI2P', 'size': (4056, 3040)}
+```
+
+— `create_still_configuration()`'s own unmutated return value, before
+any hardware negotiation, for `Picamera2Camera`'s real still-capture
+config exactly as constructed today. 12-bit, deterministically, for
+every mode size (confirmed during construction's own capability sweep,
+which cycles every format at every size — the 12-bit pass reported
+`SBGGR12_1X12` at all five modes, not just the configured one).
+
+Inferred, not separately measured bit-for-bit: the frozen reference
+DNG's own `BitsPerSample` tag reads 16 (container width, confirmed via
+`tifffile` — the well-known "container width, not sensor fact" trap
+this whole task exists to close, restated here as the wrong number to
+have picked, not the right one). `65520 == (2**12 - 1) << 4` exactly —
+a 12-bit max value left-justified into a 16-bit container is exactly
+today's existing default. This is strong converging evidence (the
+requested format, the arithmetic match to an already-empirically-tuned
+constant) that the real capture pipeline's raw payload represents
+12-bit sensor data stored in a 16-bit container — not independently
+proven by decoding the PiSP `COMP1` transport compression byte-for-byte,
+which is out of reach without Raspberry Pi's own undocumented codec
+internals. Stated as inference, not observation, for exactly that
+reason. `BIT_DEPTH = 12` proceeds on this evidence; if it turns out
+wrong, the check this session builds is exactly what would catch a
+future contradiction (a real capture whose observed ceiling disagrees
+with the profile's own derived white level), not a proof against ever
+being wrong today.
+
+**Hand baseline — every site in the tree carrying a white level or bit
+depth, `grep` plus direct reading of each hit, before the scan that
+will supersede this count exists:**
+
+Real hits, to be relocated this sequence:
+1. `hdr_from_session.py:63` — `MERGE_WHITE_LEVEL_DEFAULT = 65520` — a
+   hardcoded literal in a session-processing module. The comment
+   directly above it already names the defect: "a container-range
+   assumption... not a measured sensor value."
+2. `hdr_merge.py:212` — `wl = float(white_level) if white_level is not
+   None else dtype_max(in_dtype)` — the `None`-fallback path, container
+   width outright.
+3. `qt_shell.py:6281` — `ap.add_argument("--wl", default=
+   (_hdr_from_session.MERGE_WHITE_LEVEL_DEFAULT if _hdr_from_session
+   else 65520), ...)` — a SECOND hardcoded copy of the same constant,
+   reached only if `hdr_from_session` itself fails to import (the exact
+   shape of the `FULL_RES` `ImportError`-fallback Stage 3 sequence 1
+   already fixed once, for a different constant).
+
+Reviewed, not hits (false candidates ruled out by direct reading, not
+filtered silently by any tool — recorded here per instruction):
+4. `hdr_merge.py:108-115` (`dtype_max`) — a generic dtype-driven
+   utility, not itself a hardcoded constant. Exactly one call site in
+   this file (line 212, above) — becomes unused there once fixed. Left
+   in place, not deleted: removing a working, independently-named
+   function is beyond a relocation's minimal scope, and nothing in this
+   task asks for it.
+5. `debayer.py:580-583` (`wl = float(args.assume_linear)`) — a
+   CLI-supplied value (`--assume-linear`), never a hardcoded constant.
+   Unrelated to profile derivation.
+6. `frame_average.py:113-118` (`dtype_max`, its own separate copy) —
+   used once, at line 234, purely to normalise the streaming-average
+   accumulator into `[0, 1]` — arithmetic convenience, not a claim
+   about where the sensor saturates. Not named in the task's own WHY
+   section. Out of scope.
+7. `frame_average.py`'s `in_bits` (six sites: 235, 253, 407, 408, 410,
+   489, 516) — a per-file, per-load property of the array actually on
+   disk (`8 if in_dtype == np.uint8 else 16`), reported for provenance
+   ("Frame geometry: ... N-bit input") and an effective-bits estimate.
+   Describes the loaded TIFF's own container, which can genuinely vary
+   file to file in this project's pipeline (a green-plane extraction
+   can be uint8 or uint16) — a different, legitimate concept from the
+   sensor's own ADC depth. Out of scope.
+
+**13 (the check number from Stage 3's own scan) does not apply here —
+this is a fresh count.** 3 real hits, 4 reviewed-and-dismissed
+candidates, both counted separately per the format the last sequence's
+own baseline used.
+
+**The check to build, before the fix, watched failing first:**
+substitutes a synthetic profile bit depth via `camera_backend.BIT_DEPTH`
+module-attribute reassignment (not a frozen `from` import — the same
+reasoning `preview_click_from_native_point`'s own check used: nothing
+in this chain caches a value at any "construction" moment the way
+`Picamera2Camera`'s mode-crop table does, so there is no equivalent
+too-late hazard to guard against for THIS consumer, stated rather than
+assumed away), asserts the derived white level follows the substitution
+THROUGH `hdr_merge.merge`'s own real call path (`white_level=None`,
+the fallback under test) — not a direct read of `camera_backend
+.BIT_DEPTH` or `white_level_for_bit_depth` in isolation. Also asserts,
+separately, that the REAL profile's own derived value is exactly
+`65520` — the relocation-not-correction claim, checkable, not just
+stated. `hdr_merge.py` gains its first `render_check()`/`--render-check`
+flag (it has none today — confirmed, `grep` for `render_check`/`if
+__name__` found only `main()`'s own dispatch) to hold it, matching
+every other file's own convention in this project.
+
+**The scan to add**: a sibling to `assert_no_hardcoded_sensor_dimension
+_above_driver_layer`, same infrastructure
+(`_production_region_source`/`_sensor_profile_module_names`, tokenize
+not grep), different shape — single `NUMBER` tokens, not adjacent
+pairs, against a forbidden set derived live from the profile
+(`{BIT_DEPTH} ∪ {white_level_for_bit_depth(BIT_DEPTH)}`, i.e. today
+`{12, 65520}`), scanning every non-driver file's production region.
+Prototyped before this entry to see real hit volume rather than guess
+at it: 4 hits, 2 real (`hdr_from_session.py:63`, `qt_shell.py:6281` —
+both already counted above), 2 false positives —
+`annotations.py:148` (`pixel_sha256[:12]`, a string-slice index) and
+`ca_measure.py:101` (`N_RADIAL_BINS = 12`, a chromatic-aberration
+curve-fitting parameter) — both self-evidently unrelated to bit depth
+by direct reading, recorded here rather than silently filtered by the
+scanner itself, no exclusion-rule mechanism added for either (unlike
+Stage 3's self-check-region exclusion, a two-item, obviously-benign set
+doesn't warrant one).
+
+**Scope for this sequence, checkable against the build entry**: touches
+`imx477.py` (`BIT_DEPTH`), `camera_backend.py`
+(`BIT_DEPTH`, `white_level_for_bit_depth`, the new scan, wiring into
+`if __name__`), `hdr_merge.py` (the fix at line 212, the new
+`render_check()`), `hdr_from_session.py` (the constant's derivation),
+`qt_shell.py` (the one `ImportError`-fallback literal, its import line
+gaining two names), and `SWEEP_CHECKS.md` (one new row, under
+"Measurement correctness" — this is a photometric-correctness question,
+not a geometry one, so it does not join the "Geometry derivation"
+table Stage 3's own rows live in). Does not touch `frame_average.py`,
+`debayer.py`, `annotations.py`, `ca_measure.py`, or any file named only
+in the "reviewed, not hits" list above. Does not start the saturation
+mask work, does not touch `sat_frac`, does not correct the August 2026
+bracket's `62100` value — all explicitly out of scope, recorded if
+this session's own work makes the wrong value more visible, not fixed.
+
+**Verification planned, stated here so the build entry can be checked
+against it**: `hdr_from_session.py` (or `hdr_merge.py` directly) run
+against an existing real session, before this sequence's changes and
+after, output compared byte-identical. Self-check passing is not
+confirmation of this — relocations are exactly where a silently changed
+value hides.
+
 ### Verification: Stage 3 against the Step 0 before-reference — no drift, file path and live path
 
 Work-is-the-outcome form, no intent phase: a comparison against an
