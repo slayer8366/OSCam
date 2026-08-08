@@ -36,12 +36,23 @@ import sys
 import tarfile
 from pathlib import Path
 
+try:
+    import camera_backend
+except ImportError:
+    camera_backend = None
+
 SCRIPTS = Path(__file__).resolve().parent
 __version__ = "1.0"
 
 # Default --wl (sensor white level) for THIS merge path (frame_average ->
-# hdr_merge -> debayer): a container-range assumption (near the full
-# 16-bit ceiling), not a measured sensor value. qt_shell.py imports this
+# hdr_merge -> debayer). White-level relocation: derives from
+# camera_backend.BIT_DEPTH (the sensor profile's own fact, confirmed from
+# the driver -- see camera_backend.py/imx477.py) rather than a hardcoded
+# literal sitting in this session-processing module -- the exact defect
+# Stage 3 already closed once for sensor dimensions. Still not a measured
+# sensor value in the sense of "where THIS bracket actually saturates";
+# it is the sensor's own bit-depth ceiling, left-justified into this
+# project's uint16 raw-storage convention. qt_shell.py imports this
 # constant rather than keeping its own copy -- the two used to be
 # independently hardcoded and had already drifted into two different
 # Python types (str default here, int default there) despite agreeing
@@ -59,8 +70,18 @@ __version__ = "1.0"
 # This default stays 65520, NOT 61000 -- that number is only valid at
 # this bracket's confirmed gain, and hardcoding it here as a new blanket
 # default would repeat the exact mistake this constant's own history is
-# already one instance of.
-MERGE_WHITE_LEVEL_DEFAULT = 65520
+# already one instance of. That 62100 value is known wrong (unrelated to
+# this relocation) and is deliberately not corrected here -- its own
+# change, its own evidence, its own entry.
+if camera_backend is not None:
+    MERGE_WHITE_LEVEL_DEFAULT = camera_backend.white_level_for_bit_depth(
+        camera_backend.BIT_DEPTH)
+else:
+    # No fabricated fallback (same reasoning as Stage 3 sequence 1's own
+    # FULL_RES fallback fix): camera_backend.py not being importable at
+    # all is a real, rare failure this file cannot paper over with a
+    # plausible-looking number.
+    MERGE_WHITE_LEVEL_DEFAULT = None
 
 
 def run_tool(name, args, cwd):

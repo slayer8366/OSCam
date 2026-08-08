@@ -95,6 +95,11 @@ from pathlib import Path
 import numpy as np
 import tifffile
 
+try:
+    import camera_backend
+except ImportError:
+    camera_backend = None
+
 __version__ = "1.1"
 
 
@@ -209,7 +214,24 @@ def merge(exposures, white_level, black, sat_frac, norm_percentile, hash_inputs,
     first = load_frame(exposures[0]["path"])
     H, W, C = first.shape
     in_dtype = first.dtype
-    wl = float(white_level) if white_level is not None else dtype_max(in_dtype)
+    if white_level is not None:
+        wl = float(white_level)
+    else:
+        # White level derives from the sensor profile's own bit depth,
+        # never from container width (PHILOSOPHY.md, verbatim) -- this
+        # used to be dtype_max(in_dtype), container width outright, zero
+        # reference to the sensor. camera_backend.BIT_DEPTH is read via
+        # module-attribute access, not a frozen `from` import, so a check
+        # can substitute a different profile before calling merge() and
+        # have this fallback actually follow it.
+        if camera_backend is None:
+            raise RuntimeError(
+                "camera_backend.py could not be imported; needed to derive "
+                "white_level from the sensor profile when --white-level is "
+                "not given")
+        container_bits = np.dtype(in_dtype).itemsize * 8
+        wl = float(camera_backend.white_level_for_bit_depth(
+            camera_backend.BIT_DEPTH, container_bits))
     denom_span = max(1.0 - black, 1e-9)
 
     acc_num = np.zeros((H, W, C), dtype=np.float64)
@@ -309,7 +331,91 @@ def _assert_single_description_tag(path):
     return len(tags270)
 
 
+def render_check():
+    """This file's first self-check (none existed before -- confirmed,
+    `grep` for `render_check`/`if __name__` found only main()'s own
+    dispatch). Scoped narrowly to the one thing this session's own work
+    touches: white_level derives from the sensor profile's own bit
+    depth, in POSITIVE form (a substitution, not an absence check --
+    absence passes on dead code), reached through merge()'s own real
+    call path, not a direct read of camera_backend.BIT_DEPTH or
+    white_level_for_bit_depth in isolation."""
+    import shutil
+    import tempfile
+
+    tmp_dir = Path(tempfile.mkdtemp(prefix="zynergy_hdr_merge_render_check_"))
+    try:
+        h, w = 4, 4
+        frame0 = (np.arange(h * w, dtype=np.uint16).reshape(h, w) + 1000)
+        frame1 = frame0 + 500
+        p0, p1 = tmp_dir / "e0.tif", tmp_dir / "e1.tif"
+        tifffile.imwrite(str(p0), frame0)
+        tifffile.imwrite(str(p1), frame1)
+        exposures = [{"path": p0, "t": 1.0, "t_source": "explicit"},
+                    {"path": p1, "t": 2.0, "t_source": "explicit"}]
+
+        # Real profile: the None-fallback, reached through merge()'s own
+        # real call path, must equal what white_level_for_bit_depth
+        # derives for the REAL camera_backend.BIT_DEPTH -- and that must
+        # still be exactly 65520, the relocation-not-correction claim,
+        # checked, not just stated.
+        assert camera_backend is not None, "camera_backend.py must be importable"
+        _, info_real = merge(exposures, None, 0.0, 0.95, 99.5, False)
+        expected_real = camera_backend.white_level_for_bit_depth(camera_backend.BIT_DEPTH)
+        assert info_real["white_level"] == expected_real, (
+            "merge()'s None-fallback white_level {!r} does not match "
+            "white_level_for_bit_depth(BIT_DEPTH={!r}) = {!r}".format(
+                info_real["white_level"], camera_backend.BIT_DEPTH, expected_real))
+        assert info_real["white_level"] == 65520.0, (
+            "the real profile's derived white level must still be exactly "
+            "65520.0 today -- this is a relocation, not a correction; "
+            "got {!r}".format(info_real["white_level"]))
+
+        # Substitute a synthetic profile bit depth BEFORE calling merge()
+        # -- module-attribute reassignment, not a frozen `from` import,
+        # so this reaches merge()'s own fresh attribute lookup at call
+        # time. Unlike Picamera2Camera's own mode-crop table (Stage 3's
+        # own finding), nothing in this chain caches BIT_DEPTH at any
+        # "construction" moment -- there is no camera object here at
+        # all -- so there is no equivalent too-late hazard to guard
+        # against for this consumer; stated rather than assumed away.
+        real_bit_depth = camera_backend.BIT_DEPTH
+        try:
+            camera_backend.BIT_DEPTH = 10   # a real IMX477 mode option, genuinely different
+            _, info_synth = merge(exposures, None, 0.0, 0.95, 99.5, False)
+            expected_synth = camera_backend.white_level_for_bit_depth(10)
+            assert expected_synth != expected_real, \
+                "test setup: the substituted bit depth must derive a DIFFERENT white level"
+            assert info_synth["white_level"] == expected_synth, (
+                "merge()'s None-fallback white_level did not follow the "
+                "substituted BIT_DEPTH=10, reached through merge()'s own "
+                "real call path -- got {!r}, expected {!r} (still the "
+                "real profile's own BIT_DEPTH={!r} value {!r} would be a "
+                "failure to substitute)".format(
+                    info_synth["white_level"], expected_synth,
+                    real_bit_depth, expected_real))
+        finally:
+            camera_backend.BIT_DEPTH = real_bit_depth
+
+        # An explicit --white-level must always win outright, profile or not.
+        _, info_explicit = merge(exposures, 62100.0, 0.0, 0.95, 99.5, False)
+        assert info_explicit["white_level"] == 62100.0
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    print("white-level-follows-profile-bit-depth check PASS: merge()'s own "
+          "None-fallback derives white_level from camera_backend.BIT_DEPTH, "
+          "reached through merge()'s real call path (not a direct attribute "
+          "read); reproduces today's real value (65520.0) exactly; follows "
+          "a substituted BIT_DEPTH=10 to a genuinely different value when "
+          "the profile is swapped before this consumer runs; an explicit "
+          "--white-level still overrides either way")
+
+
 def main():
+    if "--render-check" in sys.argv:
+        render_check()
+        return
     ap = argparse.ArgumentParser(
         description="Merge a bracketed exposure series into a linear HDR image.")
     ap.add_argument("-e", "--exposure", nargs=2, action="append", required=True,

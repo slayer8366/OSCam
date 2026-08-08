@@ -49,6 +49,19 @@ moment real hardware is available.
 
 FULL_ARRAY_SIZE = (4056, 3040)
 
+# White-level relocation: confirmed from Picamera2Camera's own real still-
+# capture config request (camera_backend.py's create_still_configuration
+# call, no explicit raw format anywhere in that file) -- cam._still_cfg
+# ['raw'] reads {'format': 'SRGGB12_CSI2P', 'size': FULL_ARRAY_SIZE},
+# 12-bit, unmutated, before any hardware negotiation. The sensor genuinely
+# supports 8/10/12-bit readout (Picamera2().sensor_modes reports all
+# three at every mode size) -- this is NOT "the" IMX477 bit depth in some
+# absolute sense, it is the bit depth THIS PROJECT'S OWN capture code
+# actually requests, today, confirmed rather than assumed. If that
+# request ever changes, this must change with it, the same way FULL_
+# ARRAY_SIZE would if the sensor mode table changed.
+BIT_DEPTH = 12
+
 # (x, y, w, h), all in full-sensor-array pixel units -- see the module
 # docstring for provenance/confidence on each entry.
 _CROP_TABLE = {

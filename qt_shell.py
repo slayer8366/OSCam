@@ -303,10 +303,12 @@ if sys.platform.startswith("linux"):
 import numpy as np
 
 try:
-    from .camera_backend import FakeCamera, LORES_RES, FULL_RES, PREVIEW_RES
+    from .camera_backend import (FakeCamera, LORES_RES, FULL_RES, PREVIEW_RES,
+                                 BIT_DEPTH, white_level_for_bit_depth)
     from .focus import FocusMeter, FocusBox, FocusState, BarState, score_capture_sharpness
 except ImportError:                 # run directly as a script, not as a package module
-    from camera_backend import FakeCamera, LORES_RES, FULL_RES, PREVIEW_RES
+    from camera_backend import (FakeCamera, LORES_RES, FULL_RES, PREVIEW_RES,
+                                BIT_DEPTH, white_level_for_bit_depth)
     from focus import FocusMeter, FocusBox, FocusState, BarState, score_capture_sharpness
 
 # provenance.py: session creation, per-capture sidecar writing, and the
@@ -6278,7 +6280,8 @@ def main(argv=None):
     # Display-processing flags, forwarded to hdr_from_session.py on a
     # process offer via build_display_flags.
     ap.add_argument("--wl", default=(_hdr_from_session.MERGE_WHITE_LEVEL_DEFAULT
-                                     if _hdr_from_session else 65520),
+                                     if _hdr_from_session
+                                     else white_level_for_bit_depth(BIT_DEPTH)),
                     help="sensor white level for processing")
     ap.add_argument("--lw", default=2.2, help="Reinhard white point for the HDR path")
     ap.add_argument("--gains", nargs=2, metavar=("RED", "BLUE"), default=None,

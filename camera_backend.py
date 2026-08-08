@@ -70,6 +70,38 @@ GREEN_PLANE_RES = (FULL_RES[0] // 2, FULL_RES[1] // 2)
 PREVIEW_RES = (1332, 990)
 LORES_RES = (640, 480)     # small enough for real-time scoring, 4:3 like the sensor
 
+# BIT_DEPTH: same collapse as FULL_RES above, same deliberate stand-in
+# reference, extended to a third constant. White level derives from THIS,
+# never from a container's own dtype -- see white_level_for_bit_depth
+# below, and PHILOSOPHY.md's own rule in these exact words.
+BIT_DEPTH = _imx477.BIT_DEPTH
+
+
+def white_level_for_bit_depth(bit_depth, container_bits=16):
+    """The full-scale value a `bit_depth`-deep sensor reading produces once
+    left-justified into a `container_bits`-wide storage element -- e.g. a
+    12-bit ADC value stored in this project's own uint16 TIFF/DNG
+    convention (container_bits=16, the default and, today, the only width
+    this project's raw-storage pipeline actually writes) lands at
+    ((2**12) - 1) << (16 - 12) = 65520, not 4095 (the unshifted 12-bit
+    max) and not 65535 (the container's own max, dtype_max(uint16)'s
+    answer regardless of what the sensor actually reports).
+
+    This is "white level derives from bit depth in the profile, never
+    from container width" (PHILOSOPHY.md, verbatim) in formula form:
+    bit_depth is the sensor fact and is what this function is FOR;
+    container_bits only expresses that fact in whatever storage
+    convention the caller's own array actually uses -- it never supplies
+    the value's magnitude on its own the way dtype_max(in_dtype) does.
+    Returns a plain int (matching a literal white-level constant's own
+    type, never silently widening to float -- callers that need a float
+    convert at their own call site, the same way they would a literal)."""
+    if bit_depth > container_bits:
+        raise ValueError(
+            "bit_depth {!r} cannot fit in a {!r}-bit container".format(
+                bit_depth, container_bits))
+    return ((1 << bit_depth) - 1) << (container_bits - bit_depth)
+
 
 def derive_lores_res(preview_res, target_pixels=LORES_RES[0] * LORES_RES[1]):
     """The lores stream size to pair against a given preview_res: same
@@ -1733,6 +1765,91 @@ def assert_no_hardcoded_sensor_dimension_above_driver_layer():
         .format(hits))
 
 
+def _bit_depth_and_white_level_literals(project_dir):
+    """Forbidden single-number values derived from the loaded profile,
+    never a maintained list: each discovered profile module's own
+    BIT_DEPTH, plus the white level that bit depth derives for this
+    project's own uint16 raw-storage convention (white_level_for_bit_
+    depth's default container_bits=16). A profile with no BIT_DEPTH
+    attribute contributes nothing -- absence here means "not yet given
+    this treatment," not an error, so a future profile module can still
+    satisfy the shape predicate the other structural checks use without
+    also having this attribute from day one."""
+    names = _sensor_profile_module_names(project_dir)
+    forbidden = set()
+    for name in sorted(names):
+        module = importlib.import_module(name)
+        bit_depth = getattr(module, "BIT_DEPTH", None)
+        if bit_depth is None:
+            continue
+        forbidden.add(int(bit_depth))
+        forbidden.add(white_level_for_bit_depth(int(bit_depth)))
+    return forbidden
+
+
+def assert_no_hardcoded_bit_depth_or_white_level_above_driver_layer():
+    """A sibling to assert_no_hardcoded_sensor_dimension_above_driver_
+    layer, same infrastructure (_production_region_source, tokenize not
+    grep), different shape: single NUMBER tokens, not adjacent pairs,
+    against a forbidden set derived live from the profile's own BIT_
+    DEPTH and its derived white level (today, {12, 65520}).
+
+    Covers: a literal bit-depth or white-level number sitting in a
+    non-driver file's production code. Does NOT cover: a value computed
+    through a DIFFERENT formula that happens to land on a number outside
+    this forbidden set (e.g. a hypothetical wrong derivation that still
+    produced some other number would pass this scan silently -- this
+    scan catches hardcoding, not incorrect derivation; the substitution
+    check in hdr_merge.py's own render_check covers correctness of the
+    derivation itself).
+
+    Expect false positives on small integers (BIT_DEPTH today is 12, a
+    number that appears throughout any nontrivial codebase for unrelated
+    reasons) -- this scan's own first run found exactly two,
+    _KNOWN_FALSE_POSITIVES below, both reviewed by direct reading (not
+    filtered silently -- recorded, with the reasoning, at the point they
+    were found: CHANGELOG.md's own intent entry for this work) and
+    excluded here as a documented (file, value) pair, the same shape
+    assert_only_camera_backend_imports_picamera2's own `exceptions` set
+    already uses for a different kind of exception. Not a maintained
+    list of GOOD code, only of the specific coincidental collisions
+    already found and reviewed -- a NEW hit, on a different file or a
+    different value, still fails loudly."""
+    _KNOWN_FALSE_POSITIVES = {
+        ("annotations.py", 12),   # pixel_sha256[:12], a string-slice index
+        ("ca_measure.py", 12),    # N_RADIAL_BINS = 12, a CA curve-fit parameter
+    }
+    project_dir = Path(__file__).resolve().parent
+    profile_names = _sensor_profile_module_names(project_dir)
+    forbidden = _bit_depth_and_white_level_literals(project_dir)
+    exempt = {"camera_backend.py"} | {name + ".py" for name in profile_names}
+    skip_types = {tokenize.COMMENT, tokenize.STRING, tokenize.NL,
+                 tokenize.NEWLINE, tokenize.INDENT, tokenize.DEDENT,
+                 tokenize.ENCODING, tokenize.ENDMARKER}
+    hits = []
+    for path in sorted(project_dir.glob("*.py")):
+        if path.name in exempt:
+            continue
+        src = _production_region_source(path)
+        try:
+            toks = tokenize.generate_tokens(io.StringIO(src).readline)
+            for t in toks:
+                if t.type != tokenize.NUMBER:
+                    continue
+                try:
+                    v = int(t.string)
+                except ValueError:
+                    continue
+                if v in forbidden and (path.name, v) not in _KNOWN_FALSE_POSITIVES:
+                    hits.append("{}:{} {!r}".format(path.name, t.start[0], v))
+        except tokenize.TokenizeError:
+            continue
+    assert not hits, (
+        "hardcoded bit-depth or white-level literal(s) found above the "
+        "driver layer, production region only (see "
+        "_production_region_source): {}".format(hits))
+
+
 if __name__ == "__main__":
     # Self-check with no hardware: sweep the fake through focus, exercise the
     # exposure surface, the async capture path, and the two burst primitives.
@@ -2101,6 +2218,12 @@ if __name__ == "__main__":
               "no non-driver .py file's own production region contains a "
               "literal matching a profile-derived sensor dimension (or its "
               "half), in either axis order")
+
+        assert_no_hardcoded_bit_depth_or_white_level_above_driver_layer()
+        print("assert_no_hardcoded_bit_depth_or_white_level_above_driver_layer "
+              "PASS: no non-driver .py file's own production region contains "
+              "a literal matching the profile's own BIT_DEPTH or its derived "
+              "white level")
 
         # Sensor crop geometry (PRIORITY_click_mapping_fix.md): FakeCamera's
         # own contract, general across arbitrary preview/full resolutions,
