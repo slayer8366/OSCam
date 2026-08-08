@@ -7,6 +7,196 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-07
 
+### Record build: white level behind the sensor profile
+
+Built to the intent above. Touches exactly the files named there:
+`imx477.py`, `camera_backend.py`, `hdr_merge.py`, `hdr_from_session.py`,
+`qt_shell.py`, `SWEEP_CHECKS.md`. Does not touch `frame_average.py`,
+`debayer.py`, `annotations.py`, `ca_measure.py`, `sat_frac`, or the
+August 2026 bracket's `62100` value, as declared. Does not start the
+saturation mask work.
+
+**The scan, watched failing first, real output, foreground, exit code
+pasted — before either real hit was fixed:**
+
+```
+$ python3 camera_backend.py
+[... every other self-check block PASSES first, unchanged ...]
+assert_no_hardcoded_sensor_dimension_above_driver_layer PASS: ...
+Traceback (most recent call last):
+  File "/home/bwann83/imx/camera_backend.py", line 2208, in <module>
+    assert_no_hardcoded_bit_depth_or_white_level_above_driver_layer()
+  File "/home/bwann83/imx/camera_backend.py", line 1833, in assert_no_hardcoded_bit_depth_or_white_level_above_driver_layer
+    assert not hits, (
+AssertionError: hardcoded bit-depth or white-level literal(s) found above the driver layer, production region only (see _production_region_source): ['annotations.py:148 12', 'ca_measure.py:101 12', 'hdr_from_session.py:63 65520', 'qt_shell.py:6281 65520']
+exit: 1
+```
+
+Four hits, exactly the count predicted before this entry: 2 real
+(`hdr_from_session.py:63`, `qt_shell.py:6281` — both named in the
+intent's own hand baseline), 2 false positives
+(`annotations.py:148` = `pixel_sha256[:12]`, a string-slice index;
+`ca_measure.py:101` = `N_RADIAL_BINS = 12`, a chromatic-aberration
+curve-fit parameter — both reviewed by direct reading, both
+coincidental collisions with `12`, neither related to bit depth).
+
+**The `hdr_merge.merge` substitution check, watched failing first,
+independently of the scan above** — this is the positive-form
+requirement (substitute, don't test by absence) and it needed its own
+failure, not just the scan's. Built `render_check()` and the fix
+together the first time through by mistake; caught before recording
+anything, so the fix was reverted (one hunk, the `wl = ...` line only —
+`render_check()` itself untouched) and the check re-run against the
+unfixed `merge()` for real, then the fix restored:
+
+```
+$ python3 hdr_merge.py --render-check     # fix line reverted, render_check() in place
+  [0] e0.tif                           t=1s  clipped px=0
+  [1] e1.tif                           t=2s  clipped px=0
+Traceback (most recent call last):
+  File "/home/bwann83/imx/hdr_merge.py", line 576, in <module>
+    main()
+  File "/home/bwann83/imx/hdr_merge.py", line 400, in main
+    render_check()
+  File "/home/bwann83/imx/hdr_merge.py", line 348, in render_check
+    assert info_real["white_level"] == expected_real, (
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: merge()'s None-fallback white_level 65535.0 does not match white_level_for_bit_depth(BIT_DEPTH=12) = 65520
+exit: 1
+```
+
+`65535.0` is `dtype_max(np.uint16)` exactly — the container-width-
+outright answer, reached for real, through `merge()`'s own real call
+path, not asserted about in the abstract.
+
+**Fixes.** `hdr_merge.py`'s `wl = float(white_level) if white_level is
+not None else dtype_max(in_dtype)` becomes an explicit `if`/`else`:
+the `None` branch now calls `camera_backend.white_level_for_bit_depth
+(camera_backend.BIT_DEPTH, container_bits)` via module-attribute access
+(`import camera_backend`, not `from camera_backend import BIT_DEPTH`)
+so a test's reassignment of `camera_backend.BIT_DEPTH` reaches this
+line fresh at call time. `hdr_from_session.py`'s
+`MERGE_WHITE_LEVEL_DEFAULT` and `qt_shell.py`'s `ImportError`-fallback
+copy both now call `camera_backend.white_level_for_bit_depth
+(camera_backend.BIT_DEPTH)` instead of hardcoding `65520`
+independently.
+
+**Watched everything pass, real output, foreground, exit codes pasted:**
+
+```
+$ python3 camera_backend.py
+[... unchanged PASSES ...]
+assert_no_hardcoded_bit_depth_or_white_level_above_driver_layer PASS: no non-driver .py file's own production region contains a literal matching the profile's own BIT_DEPTH or its derived white level
+[... unchanged PASSES continue ...]
+camera_backend self-check PASS
+exit: 0
+
+$ python3 hdr_merge.py --render-check
+  [0] e0.tif  t=1s  clipped px=0
+  [1] e1.tif  t=2s  clipped px=0
+  [0] e0.tif  t=1s  clipped px=0
+  [1] e1.tif  t=2s  clipped px=0
+white-level-follows-profile-bit-depth check PASS: merge()'s own None-fallback derives white_level from camera_backend.BIT_DEPTH, reached through merge()'s real call path (not a direct attribute read); reproduces today's real value (65520.0) exactly; follows a substituted BIT_DEPTH=10 to a genuinely different value when the profile is swapped before this consumer runs; an explicit --white-level still overrides either way
+exit: 0
+```
+
+`hdr_from_session.MERGE_WHITE_LEVEL_DEFAULT` checked directly, not just
+through the scan: `65520`, `int`, exact match and exact type against
+today's literal — the relocation-not-correction claim, checked.
+
+**Full sweep, every file this build touched, foreground, real output,
+all clean:**
+
+```
+$ python3 camera_backend.py             -> exit 0
+$ python3 imx477.py                     -> exit 0
+$ python3 hdr_merge.py --render-check   -> exit 0
+$ python3 qt_shell.py --render-check    -> exit 0 (50 PASS lines, full suite)
+```
+`hdr_from_session.py` has no `render_check` of its own (confirmed,
+`grep` for `render_check`/`if __name__` found only its own dispatch) —
+verified by direct constant inspection instead, above, matching this
+file's own narrower scope (the intent entry did not plan a new
+self-check for it).
+
+**Byte-identical verification — the real requirement, run against a
+real, existing bracket's own real master files
+(`~/captures/2026-08-03_050600/master_1.tif`..`master_5.tif`), never
+touching `~/provenance`/`~/captures` themselves (output written to
+`~/scratch`, read-only against the real masters).**
+
+Two BEFORE runs, captured before any code file was touched, both via
+`hdr_merge.py` directly against the same 5 real masters and exposure
+times (`0.01249s`/`0.024981s`/`0.049963s`/`0.099926s`/`0.199852s`,
+read from each level's own real capture sidecar's `ExposureTime`):
+
+1. **Primary claim — the real production path.** `--white-level 65520`
+   passed explicitly, matching exactly what `hdr_from_session.py`'s own
+   real call into `hdr_merge.py` always does (its `--wl` argument is
+   never omitted — `MERGE_WHITE_LEVEL_DEFAULT` is its default, but a
+   default is still an explicit value once parsed). This is what "run
+   hdr_from_session against an existing session" means for this
+   verification: the same masters, the same value hdr_from_session.py
+   would actually forward, without touching the real session directory
+   to do it.
+2. **Secondary — the bare-invocation fallback**, `--white-level`
+   omitted entirely, exercising `merge()`'s own internal `None` branch
+   directly (a path `hdr_from_session.py` itself never reaches, since
+   it never omits `--wl`).
+
+Same two runs repeated AFTER the fixes landed. Compared:
+
+```
+Primary (--white-level 65520 both times):
+  pixel array_equal:        True
+  pixel bytes identical:    True
+  provenance JSON identical except created_utc (real timestamp, both
+    runs) and output.path (this verification's own two distinct output
+    filenames) -- every other field identical, including white_level
+    itself (65520.0 both before and after -- unaffected by this build,
+    since 65520 was passed explicitly in both runs): dtype, clipped,
+    above_norm_point_px (61651, both), compression, value_range, all
+    exact.
+
+Secondary (--white-level omitted both times):
+  before -> white_level = 65535.0   (dtype_max(uint16), the old bug)
+  after  -> white_level = 65520.0   (profile-derived, the fix)
+```
+
+The primary claim holds exactly: **no merged output, no recorded
+value, no default reachable through `hdr_from_session.py`'s own real
+call path changed.** The secondary comparison shows exactly the
+intended, in-scope behavior change — `merge()`'s own bare-invocation
+fallback moving from the container-width-outright `65535` to the
+profile-derived `65520` — for an invocation shape
+(`hdr_merge.py` run directly, `--white-level` omitted, not through
+`hdr_from_session.py`) that the "byte-identical real session"
+requirement was never about, and that fixing `dtype_max`'s own
+container-width-outright behavior cannot help but change, by
+definition of what fixing it means. Stated plainly here rather than
+folded silently into the primary claim, per instruction: if this
+session's own work makes a wrong value more visible, record that and
+leave it — this is that record.
+
+**DISCOVERED**, worth a line for a later reader: `hdr_merge.py`'s own
+`dtype_max` function has exactly one call site in the file (the line
+just fixed) and becomes unused there once fixed. Left in place, not
+deleted — a relocation's minimal scope, not a cleanup pass, and nothing
+in this task asked for it. `frame_average.py` carries a separate,
+near-identical copy of `dtype_max`, used for a genuinely different
+purpose (streaming-average `[0, 1]` normalisation, not a saturation
+claim) — untouched, out of this session's own stated scope, and not
+the same defect (the intent entry's own "reviewed, not hits" list
+already covers this in full).
+
+**Verification**: `--render-check`/bare-`python3` is *fixed*, run
+directly in the foreground, exit codes pasted above. The byte-identical
+comparison against real master files is *confirmed* — real sensor data,
+watched, on this Pi, this session; nothing about it is a self-check.
+Branch `main`, working tree otherwise unchanged (`profile.json`/
+`calib/` excluded as always — no camera touched this session at all,
+matching the task's own "needs no camera" framing).
+
 ### Record intent: white level behind the sensor profile
 
 Baseline, measured before any other file is touched. Branch `main`,
