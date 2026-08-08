@@ -7,6 +7,59 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-08
 
+### Record build: hdr_merge saturation-mask consumption, sequence 2 — sat_frac removed, verified as a pure removal
+
+Build, own commit (`7263487`), against `8a14c4f`'s own intent.
+
+**Built exactly as scoped, no deviation**: the parameter dropped from
+`merge()`'s signature; `--sat` gone from the CLI entirely (not
+deprecated-and-kept); `info["sat_frac"]`/`info["sat_frac_note"]` and
+their `prov` mirrors gone; every comment referencing `sat_frac` by
+name rewritten to describe the mask mechanism directly; all 6
+`merge()` call sites (`main()` plus 5 in `render_check()`) updated to
+drop the now-nonexistent positional argument.
+
+```
+$ grep -n "sat_frac\|--sat\b\|args\.sat\b" hdr_merge.py
+(no output)
+```
+
+**Confirmed a pure removal, not just asserted**: the real
+`2026-08-03_050600` bracket re-merged at `wl=65520` against the exact
+same `~/hdr_merge_reference_v2/` masters sequence 1 already verified,
+compared pixel-for-pixel against sequence 1's own output:
+
+```
+array_equal (pixel data, before vs after sat_frac removal): True
+```
+
+`--render-check` re-run clean (exit 0), including the mask-consumption
+coverage sequence 1 added — untouched by this sequence's own changes,
+still passing on the same synthetic cases.
+
+`FUNCTION_INDEX.md` regenerated (`merge()`'s parameter list actually
+changed this time, unlike sequence 1's return-arity-only change) and
+confirmed current. `HANDOFF.md` item 13 (saturation-detection rework)
+updated in place — it named `sat_frac` explicitly as "scaffolding...
+still live and unchanged today," which stopped being true the moment
+sequence 1 landed and is now doubly wrong with the parameter gone
+outright; rewritten to state the rework is closed, citing every
+landing commit in order.
+
+**Out of scope, per instruction, not started**: the `62100`
+white-level correction (sequence 3 — its own scope is being clarified
+against real production data, since no hardcoded `62100` constant
+exists anywhere in this repo to "correct" in the code sense; full
+reasoning in that sequence's own intent entry when it lands).
+
+**Verification, stated plainly**: the grep sweep and the `array_equal`
+comparison are both *observed* — real commands, real output, this
+session, this Pi. `--render-check` passing is *fixed*, not
+*confirmed* on hardware — no camera used, file-based only throughout.
+
+Working tree left clean apart from untracked `calib/` and
+`profile.json`'s own live-rig drift (never committed, as always).
+
 ### Record intent: hdr_merge saturation-mask consumption, sequence 2 — remove sat_frac entirely
 
 Intent, own commit, nothing else touched. Branch `main`, HEAD `9265386`.
