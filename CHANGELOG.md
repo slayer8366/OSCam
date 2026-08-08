@@ -7,6 +7,165 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-08
 
+### Record: before-reference — merged output ahead of saturation-mask consumption
+
+Work-is-the-outcome form, no intent phase: a captured reading, not a
+designed change with a plan to diverge from. Supersedes nothing, adds
+a reference. Branch `main`, HEAD `24a07c6` throughout — read-only,
+nothing built; the only writes this session are the file recorded
+below (outside the repo) and this entry's own commit.
+
+**Why**: the next sequence makes `hdr_merge.py` consume the saturation
+masks `24a07c6` wrote, which will legitimately change merged pixel
+values. The clipped-fraction before-figure already exists (zero at
+every level, that same commit). The merged pixels themselves did not
+exist as a recorded reading anywhere. Once consumption lands, this
+reading cannot be taken.
+
+**The exact command, verbatim, as production builds it**
+(`hdr_from_session.py`'s own `hm = [...]` construction for an `hdr`
+capture: `-e <master> <actual_s>` per level from `session.json`'s own
+recorded `actual_s` values, `--white-level` explicit, never omitted —
+reconstructed here rather than run through `hdr_from_session.py`
+itself, since that tool writes its output into the real capture
+directory by relative path and a real `hdr_linear.tif` already sits
+there from the actual August run, dated `Aug 3 05:07` — confirmed
+before touching anything, not overwritten):
+
+```
+$ python3 /home/bwann83/imx/hdr_merge.py \
+    -e /home/bwann83/captures/2026-08-03_050600/master_1.tif 0.01249 \
+    -e /home/bwann83/captures/2026-08-03_050600/master_2.tif 0.024981 \
+    -e /home/bwann83/captures/2026-08-03_050600/master_3.tif 0.049963 \
+    -e /home/bwann83/captures/2026-08-03_050600/master_4.tif 0.099926 \
+    -e /home/bwann83/captures/2026-08-03_050600/master_5.tif 0.199852 \
+    --white-level 62100 \
+    -o /home/bwann83/hdr_merge_reference/hdr_linear_050600_wl62100.tif
+```
+
+`0.01249`/`0.024981`/`0.049963`/`0.099926`/`0.199852` are `session.json`'s
+own recorded `actual_s` per level, re-read directly from the real file
+before this run, not recalled from memory. `--white-level 62100` is
+the real August 2026 merge's own value — known wrong for reasons
+unrelated to this work, not corrected here; the point of this
+reference is today's actual behaviour, not today's ideal behaviour.
+
+```
+Merging 5 exposures (0.01249s .. 0.199852s):
+  [0] master_1.tif  t=0.01249s   clipped px=0
+  [1] master_2.tif  t=0.024981s  clipped px=0
+  [2] master_3.tif  t=0.049963s  clipped px=0
+  [3] master_4.tif  t=0.099926s  clipped px=79
+  [4] master_5.tif  t=0.199852s  clipped px=3308734
+exit: 0
+```
+
+**Storage**: `/home/bwann83/hdr_merge_reference/
+hdr_linear_050600_wl62100.tif` — outside the repo, not `~/scratch`,
+confirmed on the NVMe by `df`, not by assertion:
+
+```
+$ df -h ~/hdr_merge_reference | tail -1
+/dev/nvme0n1p2  234G   34G  188G  16% /
+```
+
+Same partition `/`/`~` are already on. One bracket only, per
+instruction — the other two brackets (`2026-08-03_230856`,
+`2026-08-04_013732`) were not referenced this session; cheap to add if
+wanted (each run took under a minute), but more references is not
+obviously better and each is another thing to keep, so this entry does
+not add them, per instruction to ask rather than do.
+
+**The file itself**:
+
+```
+sha256: 1bf317997266e7f939e3694c6941e72188894a888e97a9b0b0923a28f9cc51d5
+```
+
+Green plane derived from it, through `measure.py`'s own real
+`load_measurement_plane` (the merged linear master is a valid
+measurement substrate under `PHILOSOPHY.md`'s own rule — "linear
+master" is named explicitly as the second of the two, alongside the
+green plane itself — so this ran the real provenance-guarded path, not
+a bypass):
+
+```
+shape: (1520, 2028)  dtype: float32
+green-plane pixel_sha256: e9ed32561642ccbc8bf35d6d1ae332fb18338684e2e76e82d89db73a43e1921b
+```
+
+**Whole-array statistics** (the full `(3040, 4056)` merged array, not
+just the green plane):
+
+```
+min:  0.002838960150256753
+max:  1.2238121032714844
+mean: 0.41363319754600525
+std:  0.2438313215970993
+```
+
+**Named pixel values — the part a whole-array statistic can hide**, at
+four positions chosen from the real masks `24a07c6` wrote (row, col in
+the mosaic's own coordinate space, same as the merged array's own
+indexing): two positions the level-5 masks mark clipped in ALL 8 raw
+frames of that level (unambiguous, not a borderline single-frame
+call), two positions marked clean in EVERY one of the 40 masks across
+every level. Chosen near the frame's own centre (`(1520, 2028)`,
+within a few pixels) rather than at an edge:
+
+```
+clipped_1 (1519, 2028) -> 0.8702734112739563   (clipped in all 8 level-5 frames)
+clipped_2 (1521, 2028) -> 0.8983816504478455   (clipped in all 8 level-5 frames)
+clean_1   (1520, 2028) -> 0.3908250033855438   (clean in all 40 masks, every level)
+clean_2   (1519, 2027) -> 0.354765385389328    (clean in all 40 masks, every level)
+```
+
+**White level, as resolved, not as passed** — read back from the
+output's own embedded provenance, not assumed equal to the CLI
+argument:
+
+```
+"white_level": 62100.0
+```
+
+Matches the passed `62100` exactly (float-cast, no rounding). Full
+embedded provenance also carries, for completeness against a future
+comparison: `"fallback_counts": {"saturated_in_all_px": 0,
+"black_in_all_px": 0, "zero_weight_mid_fallback_px": 0}`,
+`"sat_frac": 0.95`, `"black": 0.0`,
+`"normalisation": {"divisor": 7.9555095891045156, ...}`,
+`"output": {"value_range": [0.002838960150256753,
+1.2238121032714844], "above_norm_point_px": 61652}`.
+
+---
+
+**SEPARATE, report only, not acted on: mask coverage across all three
+brackets, checked directly, not assumed:**
+
+```
+$ for B in 2026-08-03_050600 2026-08-03_230856 2026-08-04_013732; do
+    find ~/provenance/$B -maxdepth 1 -name "*.satmask.npz" | wc -l
+  done
+2026-08-03_050600: 40 mask files
+2026-08-03_230856: 0 mask files
+2026-08-04_013732: 0 mask files
+```
+
+**Only `2026-08-03_050600` has masks.** `2026-08-03_230856` and
+`2026-08-04_013732` have none — stated plainly so a later reader does
+not read absent masks on those two brackets as absent saturation. They
+were never generated for either; nothing about their own raw data was
+examined this session.
+
+**Verification**: this entry's own numbers are *observed* — every
+figure above was read directly off a real command's real output or a
+real file's own bytes, on this Pi, this session, pasted verbatim, not
+recalled or estimated. Nothing here is *confirmed* in the fixed/
+confirmed sense, because nothing was built to confirm — this is a
+reading, not a change. Branch `main`, working tree left exactly as
+found (`profile.json`/`calib/` excluded as always, no source file
+touched, no camera used).
+
 ### Record build: saturation mask, write side only
 
 Built to the intent above. Touches exactly the files named there:
