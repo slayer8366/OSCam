@@ -155,13 +155,17 @@ facts worth reading in full.
 - `def collect_inputs(inputs):`
 - `def load_frame(path):`
 - `def dtype_max(dtype):`
+- `def clipped_mask_for_frame(arr):`
+- `def write_clipped_mask(arr, mask_path):`
+- `def load_clipped_mask(mask_path):`
 - `def sha256_file(path, _buf=1 << 20):`
 - `def read_sidecar_meta(sidecar_dir, frame_path):`
 - `def aggregate_capture_field(sidecars, raw_key, caster=lambda v: v):`
 - `def capture_meta_for_science(sci_files, sidecar_dir):`
 - `def _checked_load(path, want_shape, want_dtype):`
-- `def average_burst(files, sigma_clip=None, report_deviation=False, label='frames', gamma=None):`
+- `def average_burst(files, sigma_clip=None, report_deviation=False, label='frames', gamma=None, mask_dir=None):`
 - `def flat_field(sci01, flat01, dark01):`
+- `def render_check():`
 - `def main():`
 
 ## function_index.py
