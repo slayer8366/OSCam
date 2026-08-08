@@ -7,6 +7,152 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-08
 
+### Record intent: frame_average excludes clipped samples from the average
+
+Intent, own commit, nothing else touched. Branch `main`, HEAD `362b0a0`.
+Does not start hdr_merge consumption; does not touch `hdr_merge.py` at
+all. One sequence, one three-phase landing, in `frame_average.py` only.
+
+**Why**: `average_burst` currently sums every raw sample unconditionally,
+including samples at the sensor ceiling. `362b0a0`'s own comparison
+showed the mechanism this creates: at `frame_average.py`'s own
+photosite `(1, 1556)`, level 5, one of eight raw samples hit `65535`
+while the other seven sat far below it — the resulting average
+(`58798`) reads as an unremarkable mid-bright pixel, and nothing
+downstream can tell it was built from a genuinely clipped sample. The
+mask that would catch this (`24a07c6`) is already written; nothing
+consumes it. This sequence makes `average_burst` itself exclude a
+clipped raw sample from its own accumulator, per photosite, instead of
+recording the fact and using it nowhere.
+
+**Design decision, stated before building against it**: exclusion is
+computed **live**, in the same per-file streaming loop `average_burst`
+already runs (the one `write_clipped_mask` already reads from), not by
+loading `24a07c6`'s persisted `.satmask.npz` files back off disk.
+Reasoning: `average_burst` is never imported anywhere else in this
+repo (`grep` confirmed) — `hdr_from_session.py` calls `frame_average.py`
+exactly once per burst, as a subprocess. A design that required
+pre-written mask files as input would force two invocations per real
+capture to get an excluded average at all; nothing in the pipeline does
+that today, and `hdr_from_session.py` is out of scope this session. The
+clip decision at a given raw sample is a pure function of that sample
+and the sensor's white level — computing it in the same pass that is
+already reading the sample is exactly equivalent to loading a persisted
+file, at no extra I/O cost. `--mask-dir` (the existing write-side
+persistence flag, `24a07c6`) is untouched and stays fully independent;
+exclusion does not require it and does not change what it does.
+
+**"Masks are required input," resolved under this design**: the
+sensor-profile resolver (`camera_backend`, which supplies white level)
+must be importable — this is already `clipped_mask_for_frame`'s own
+existing hard failure mode (`RuntimeError` when `camera_backend is
+None`), today reached only when `--mask-dir` is given. Exclusion makes
+this reachable unconditionally, on every `average_burst` call. Decision:
+**refuse** (`sys.exit`), not fall back to the old unconditional sum,
+when `camera_backend` is not importable — matching the existing
+precedent, and because a fallback here would silently reproduce the old
+wrong number under the new code's name, which is the exact failure this
+sequence exists to remove. `camera_backend` is always importable in
+this project's real environment (the Pi); this refusal is a defensive
+guard against a broken environment, not an expected production path.
+
+**What will be built**:
+- `average_burst` excludes, per photosite, per channel, any raw sample
+  `>= white_level` from its own accumulator, dividing by the count of
+  samples actually included there — not by the frame count `n`.
+  Applies uniformly to every burst it processes (science, dark, flat),
+  not science-only, matching this file's own "one uniform path" pattern
+  elsewhere.
+- An all-clipped photosite (every sample in the burst excluded) takes a
+  defined path: no clean sample exists to average, so the master holds
+  `white_level` itself there — the tightest true statement available
+  ("this pixel's real value is unknown but was at least white_level in
+  every sample"), never `0` (indistinguishable from a legitimately dark
+  pixel) and never the container ceiling `65535` (indistinguishable
+  from a real bright pixel). Stated plainly, not glossed over: this
+  sentinel alone, read without the exclusion-count record below, is
+  *not* distinguishable from a genuine photosite whose raw value
+  happened to be exactly `white_level` in every sample — the exclusion
+  count is the only thing that disambiguates it, and is why it is not
+  optional.
+- A per-photosite excluded-sample count, full resolution, written
+  alongside the master as its own sibling TIFF
+  (`<output_stem>_excluded_count.tif`) for the burst that becomes the
+  actual output master — the "user-facing half." Dark/flat bursts get
+  exclusion applied (uniform path, above) but have no independent `-o`
+  path today, so no sibling file for them; their exclusion stats still
+  print and still embed in provenance.
+- A stage-summary print, one line per burst, immediately after that
+  burst's `average_burst` call (same place `--sigma-clip`'s own
+  rejection line already prints): white_level used, the
+  partially-clipped photosite count and the fully-clipped photosite
+  count **reported separately** (not combined — a combined number hides
+  the one that matters), total excluded raw samples over total samples.
+- `sigma_clip`'s own two extra passes are untouched — they already read
+  `mean` from pass 1 and compare fresh reads against it, so they
+  automatically compare against the new, exclusion-corrected mean with
+  no code change of their own. Stated explicitly rather than left
+  implicit: sigma-clip's own rejection criterion is not made
+  saturation-aware by this change: it is a separate, pre-existing,
+  purely statistical outlier test, and stays that way.
+
+**Baseline — current (unmodified) `average_burst` output for
+`2026-08-03_050600`, the only bracket with masks**, measured directly
+against the real files on disk, not recalled:
+
+```
+level 1: shape=(3040, 4056) dtype=uint16 min=0     max=7812  mean=2544.286118  std=1508.547184
+  sha256: 77469a92fa0671dbe4c0d7b855fac8cad82561e9d2740f8a13f9531422eddd80
+level 2: shape=(3040, 4056) dtype=uint16 min=0     max=15192 mean=5096.747075  std=3009.674970
+  sha256: b50ce1ba923665953c74c00d4811009a4372bf86802849f6be2fd78d922a6dd5
+level 3: shape=(3040, 4056) dtype=uint16 min=0     max=30280 mean=10202.877711 std=6017.952040
+  sha256: 7924401537aa162fc943e98dcec53a9acc76a39eaf9dff12ab23fbd77aeab965
+level 4: shape=(3040, 4056) dtype=uint16 min=32    max=60688 mean=20421.211627 std=12045.624579
+  sha256: 09cca72a02a4ad4240f5a45a21b788d5823fb3e027c68ed6eeae868979193ea7
+level 5: shape=(3040, 4056) dtype=uint16 min=260   max=61781 mean=37582.540047 std=19204.893172
+  sha256: 7b00c01f792ca8623495a9d82920867364544bd6579e455bcbe49e1b0b1c6a1b
+```
+
+All five were produced at `frame_average.py` version `2.1`, dark-
+subtraction-only correction, linear domain (no `--gamma`), no
+`--sigma-clip`, no `--mask-dir` (the flag postdates them) — read back
+from each file's own embedded provenance, not assumed. Levels 1-3
+have zero clipped samples at both white levels tested in `362b0a0`
+(`62100` and `65520`) — the "no saturation at all" case the
+verification below needs. Levels 4-5 have real clipping (`362b0a0`'s
+own mask-any figures: level 4 = 39, level 5 = 3227966, whole mosaic,
+clipped-in-any across the 8-frame burst, at `65520`).
+
+**What the build will compare against this baseline**: per-level
+max/mean/std of the new master, direction-explained (a clipped
+photosite's value should rise relative to today, since the diluting
+low samples are the ones being removed); level 1's new master compared
+pixel-array-identical (not whole-file — the embedded provenance JSON
+legitimately differs by version string, timestamp, and new fields
+added since version `2.1`) against the existing `master_1.tif`; the
+four named pixel positions from `2991189`'s own reference
+(`clipped_1`/`clipped_2`/`clean_1`/`clean_2`, the exact `(row,col)`
+positions already recorded there) reported again under the new code
+where the master they come from is derived from raw samples, not the
+merged HDR output — a different array, named here so the two are never
+conflated.
+
+**Out of scope, per instruction, findings recorded not fixed**:
+`hdr_merge.py` (untouched, its inference stays exactly as measured in
+`362b0a0`); `sat_frac` collapse; merge-weighting policy; correcting the
+`62100` white level; masks for `2026-08-03_230856`/
+`2026-08-04_013732` (neither bracket gets exclusion-averaging run
+against it this session — only `2026-08-03_050600`, the bracket this
+entry's own baseline is measured against).
+
+**Conventions**: three-phase commit, this entry its own commit before
+any other file is touched. Check built and watched failing against
+today's unmodified `average_burst` before the fix lands. `SWEEP_CHECKS.md`
+gets a new row. `FUNCTION_INDEX.md` regenerated in the same landing
+(`average_burst`'s return signature changes — see the build entry).
+Push after the landing; if blocked by the permission classifier, say so
+and stop rather than working around it.
+
 ### Record: how closely hdr_merge's inference agrees with the mask — measured, not assumed
 
 Work-is-the-outcome form, no intent phase: a comparison, not a designed
