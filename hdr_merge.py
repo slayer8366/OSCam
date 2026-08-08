@@ -16,15 +16,24 @@ The physics it relies on (and why linear RAW matters):
         E_i = (value_i - black) / t_i
 
     These estimates are combined with a per-pixel weight that trusts mid-tones,
-    distrusts pixels near the noise floor, and HARD-EXCLUDES pixels at or above
-    saturation (a clipped pixel carries no recoverable value, and the mean of a
-    clipped value is still clipped). Longer exposures additionally carry more
-    weight where they are still valid, because their estimate of E is less
-    noise-dominated. The merge is therefore close to a physical calculation
-    rather than a cosmetic blend — but ONLY if the inputs are genuinely linear.
-    If your masters were gamma/ISP-encoded, linearise them first
-    (frame_average.py --gamma ... --linear-out); merging encoded data is the
-    same category error as flat-fielding encoded data.
+    distrusts pixels near the noise floor, and scales down toward zero as more
+    of a photosite's own RAW SAMPLES were saturated (a fully clipped pixel
+    carries no recoverable value; a pixel clipped in one sample out of eight
+    still carries most of its real signal, and is weighted accordingly rather
+    than discarded outright). This exclusion is per-pixel, continuous, and
+    comes from frame_average.py's own per-frame saturation record (its
+    excluded-count sibling beside each master) — not a threshold test on this
+    tool's own averaged input, which cannot see individual clipped raw samples
+    that dilution has already hidden inside an average. A bracket whose
+    masters carry no such record merges without saturation exclusion for that
+    bracket, logged plainly rather than silently assumed clean. Longer
+    exposures additionally carry more weight where they are still valid,
+    because their estimate of E is less noise-dominated. The merge is
+    therefore close to a physical calculation rather than a cosmetic blend —
+    but ONLY if the inputs are genuinely linear. If your masters were
+    gamma/ISP-encoded, linearise them first (frame_average.py --gamma ...
+    --linear-out); merging encoded data is the same category error as
+    flat-fielding encoded data.
 
 What it does NOT do:
     - It does not tone-map. The output is the linear irradiance map. Tone
@@ -62,10 +71,17 @@ Output & precision notes:
     - 16-bit output is offered for convenience but clips everything above the
       normalisation point and requantises; the clip count is recorded so the
       loss is never silent.
-    - Saturation handling is the usual HDR footgun. --sat is a fraction of the
-      white level; pixels at/above it are given zero weight. If your white level
-      is not the container's dtype max (e.g. 12-bit data in a 16-bit file), set
-      --white-level or the saturation test will be meaningless.
+    - Saturation handling is the usual HDR footgun. This tool no longer infers
+      it from a threshold on its own averaged input (that test cannot see a
+      raw sample clipped in one frame out of eight once averaging has diluted
+      it below any threshold) — it reads frame_average.py's own per-photosite
+      clean-sample fraction instead, when a master carries one. A bracket with
+      no such record merges without saturation exclusion, logged plainly.
+      --sat is still accepted (removal is a separate, later piece of work)
+      but no longer affects the merge in any way. If your white level is not
+      the container's dtype max (e.g. 12-bit data in a 16-bit file), still set
+      --white-level — it governs the irradiance estimate itself, independent
+      of saturation exclusion.
 
 Provenance completeness note:
     A handful of fields below are only as good as what the caller tells
@@ -162,6 +178,62 @@ def try_read_embedded_capture_meta(path):
     return {k: meta.get(k) for k in keys}
 
 
+def load_clean_fraction(master_path, expected_shape):
+    """Per-photosite clean-sample fraction for one master, derived from
+    frame_average.py's own excluded-count sibling (c75ab94) -- NOT a
+    re-read of 24a07c6's raw per-frame .satmask.npz masks. The sibling IS
+    their numerically exact aggregate (excluded_count > 0 at a photosite
+    exactly where the raw masks show clipped-in-at-least-one-frame,
+    excluded_count == n exactly where they show clipped-in-every-frame),
+    already computed once by average_burst during averaging -- reading it
+    here does not lose information the per-frame masks carried and does
+    not re-derive something frame_average.py already got right.
+
+    Returns (clean_fraction, mask_used, note):
+      - sibling absent: (None, False, why) -- the bracket has no mask
+        data (2026-08-03_230856/2026-08-04_013732 today, or any master
+        predating c75ab94). Never a fabricated all-ones array standing
+        in for "not measured" -- a caller must not be able to mistake
+        "no data" for "measured and found clean."
+      - sibling present but unusable (no frames_averaged in the master's
+        own provenance, or a shape mismatch): (None, False, why) -- same
+        contract, refuse rather than guess.
+      - sibling present and usable: (array in [0, 1], True, note).
+        clean_fraction = (n - excluded_count) / n, clipped to [0, 1] only
+        to guard against a corrupt excluded_count > n; n itself is never
+        assumed, always read from the master's own precision.
+        frames_averaged field.
+    """
+    master_path = Path(master_path)
+    excl_path = master_path.with_name(master_path.stem + "_excluded_count.tif")
+    if not excl_path.is_file():
+        return None, False, f"no excluded-count sibling found at {excl_path.name}"
+    try:
+        with tifffile.TiffFile(str(master_path)) as tf:
+            desc = tf.pages[0].description
+        meta = json.loads(desc)
+        n = meta.get("precision", {}).get("frames_averaged")
+    except Exception as exc:
+        return None, False, (
+            f"{excl_path.name} exists but {master_path.name}'s own provenance "
+            f"could not be read ({exc}); refusing to use an excluded-count "
+            f"sibling with no known frame count")
+    if not n:
+        return None, False, (
+            f"{excl_path.name} exists but {master_path.name}'s own provenance "
+            f"has no precision.frames_averaged to normalise it against")
+    excl = tifffile.imread(str(excl_path)).astype(np.float64)
+    if excl.ndim == 2:
+        excl = excl[:, :, None]
+    if excl.shape != expected_shape:
+        return None, False, (
+            f"{excl_path.name} shape {excl.shape} != master shape "
+            f"{expected_shape}; refusing a mismatched mask rather than "
+            f"guessing how to reconcile it")
+    clean_fraction = np.clip((n - excl) / n, 0.0, 1.0)
+    return clean_fraction, True, f"loaded from {excl_path.name}, n={n}"
+
+
 def parse_exposures(raw_pairs):
     """raw_pairs: list of (path_str, seconds_str). Returns list of dicts sorted
     ascending by exposure time. Fails loudly on bad or non-positive times."""
@@ -196,18 +268,30 @@ def merge(exposures, white_level, black, sat_frac, norm_percentile, hash_inputs,
     """Stream the bracket set into a linear irradiance estimate.
 
     One pass over the files; memory is bounded to a few full frames regardless
-    of how many brackets there are. Per pixel:
+    of how many brackets there are. Per pixel, per exposure:
 
-        E_i      = (value_i/white - black) / t_i          # irradiance estimate
-        p_i      = clip((value_i/white - black)/(1-black), 0, 1)
-        w_valid  = 4*p_i*(1-p_i)                           # mid-tone hat (0 at ends)
-        w_valid  = 0  where value_i/white >= sat_frac      # hard clip exclusion
-                   or value_i/white <= black               # at/below black floor
-        w_i      = w_valid * t_i                           # favour longer valid exposures
-        E        = sum_i w_i E_i / sum_i w_i
+        E_i           = (value_i/white - black) / t_i     # irradiance estimate
+        p_i           = clip((value_i/white - black)/(1-black), 0, 1)
+        w_hat         = 4*p_i*(1-p_i)                      # mid-tone hat (0 at ends)
+        clean_i       = load_clean_fraction(...)            # frame_average.py's own
+                                                              # per-photosite record, in
+                                                              # [0,1]; 1.0 (i.e. no-op)
+                                                              # ONLY when no mask exists
+                                                              # for this bracket, logged
+        w_valid       = w_hat * clean_i
+        w_valid       = 0  where value_i/white <= black    # at/below black floor
+        w_i           = w_valid * t_i                       # favour longer valid exposures
+        E             = sum_i w_i E_i / sum_i w_i
 
-    Pixels with zero total weight (clipped or black in every frame) fall back:
-    saturated-everywhere -> estimate from the SHORTEST exposure (least clipped);
+    sat_frac is accepted but no longer used -- see load_clean_fraction and
+    this module's own docstring for why a threshold on the AVERAGED value
+    cannot see a raw sample clipped in one frame out of eight, and why this
+    is now a per-pixel fraction rather than a binary any-clipped test: that
+    binary form would discard the very case (a photosite genuinely clipped
+    in a minority of its raw samples) this replacement exists to keep.
+
+    Pixels with zero total weight (fully clipped or black in every frame) fall
+    back: saturated-everywhere -> estimate from the SHORTEST exposure (least clipped);
     black-everywhere -> 0; any other zero-weight pixel -> the per-pixel estimate
     from the frame nearest mid-tone. All three are counted in the provenance.
     """
@@ -255,9 +339,40 @@ def merge(exposures, white_level, black, sat_frac, norm_percentile, hash_inputs,
         E_i = signal / t
         p = np.clip((vn - black) / denom_span, 0.0, 1.0)
         w_valid = 4.0 * p * (1.0 - p)
-        clipped = vn >= sat_frac
+
+        # Saturation exclusion: per-pixel clean-sample FRACTION from
+        # frame_average.py's own mask-derived record, not a binary
+        # threshold on this exposure's own averaged value. One clipped
+        # raw sample out of eight (clean_fraction=0.875) reduces this
+        # exposure's weight there, it does not zero it -- sat_frac's old
+        # `vn >= sat_frac` hard cutoff is gone from this computation
+        # entirely, replaced, not supplemented (the parameter itself is
+        # still accepted for CLI/signature compatibility this sequence;
+        # it is no longer read below -- its removal is sequence 2's own
+        # three-phase landing).
+        clean_fraction, mask_used, mask_note = load_clean_fraction(ex["path"], (H, W, C))
+        if mask_used:
+            w_valid = w_valid * clean_fraction
+            fully_clipped = clean_fraction <= 0.0
+            n_partial = int(((clean_fraction > 0.0) & (clean_fraction < 1.0)).sum())
+            n_full = int(fully_clipped.sum())
+            clipped_report = f"{n_full} fully-clipped px, {n_partial} partially-clipped px (mask)"
+        else:
+            # No mask for this bracket: merge WITHOUT exclusion -- the
+            # mid-tone hat function alone governs weight here, same as
+            # every exposure's weight worked before this sequence
+            # existed. Never silently treated as "no saturation" (that
+            # would misrepresent absence-of-data as a measurement) and
+            # never falling back to the old sat_frac threshold test
+            # either (that mechanism is being replaced, not kept as a
+            # shadow path) -- logged so the output is traceably
+            # unexcluded, not indistinguishable from a clean merge.
+            fully_clipped = vn >= 1.0   # the only signal available with no mask
+            n_full = int(fully_clipped.sum())
+            clipped_report = f"NO SATURATION MASK -- merged WITHOUT exclusion ({mask_note})"
+
         belowblk = vn <= black
-        w_valid = np.where(clipped | belowblk, 0.0, w_valid)
+        w_valid = np.where(belowblk, 0.0, w_valid)
         w = w_valid * t
 
         acc_num += w * E_i
@@ -270,16 +385,17 @@ def merge(exposures, white_level, black, sat_frac, norm_percentile, hash_inputs,
         if idx == 0:
             E_short = E_i                       # shortest exposure (sorted)
 
-        sat_all &= clipped
+        sat_all &= fully_clipped
         blk_all &= belowblk
 
         rec = {"name": ex["path"].name, "exposure_s": t, "t_source": ex["t_source"],
-               "capture": try_read_embedded_capture_meta(ex["path"])}
+               "capture": try_read_embedded_capture_meta(ex["path"]),
+               "exclusion": {"mask_used": mask_used, "note": mask_note,
+                             "fully_clipped_px": n_full}}
         if hash_inputs:
             rec["sha256"] = sha256_file(ex["path"])
         records.append(rec)
-        print(f"  [{idx}] {ex['path'].name:32s} t={t:g}s  "
-              f"clipped px={int(clipped.sum())}")
+        print(f"  [{idx}] {ex['path'].name:32s} t={t:g}s  {clipped_report}")
 
     good = acc_den > 0
     E = np.where(good, acc_num / np.where(good, acc_den, 1.0), 0.0)
@@ -306,6 +422,13 @@ def merge(exposures, white_level, black, sat_frac, norm_percentile, hash_inputs,
         "white_level": wl,
         "black": black,
         "sat_frac": sat_frac,
+        "sat_frac_note": ("accepted for CLI/signature compatibility only -- no "
+                          "longer applied to any weighting decision as of this "
+                          "sequence; saturation exclusion now comes from the "
+                          "per-exposure mask-derived clean_fraction recorded "
+                          "under each exposure's own 'exclusion' record. "
+                          "Removal of this parameter itself is a separate, "
+                          "later sequence."),
         "n_exposures": len(exposures),
         "saturated_in_all_px": int(sat_all.sum()),
         "black_in_all_px": int(blk_all.sum()),
@@ -400,6 +523,132 @@ def render_check():
         # An explicit --white-level must always win outright, profile or not.
         _, info_explicit = merge(exposures, 62100.0, 0.0, 0.95, 99.5, False)
         assert info_explicit["white_level"] == 62100.0
+
+        # -------------------------------------------------------------
+        # Mask consumption: per-pixel clean-fraction weighting, not a
+        # binary any-clipped test -- the actual design requirement this
+        # sequence exists to satisfy. wl=1000.0 explicit, chosen for
+        # hand-checkable arithmetic, not the real sensor's own value.
+        # -------------------------------------------------------------
+        def write_master(path, native_row, n_frames):
+            arr = np.array([native_row], dtype=np.uint16)   # shape (1, W)
+            prov = {"software": "frame_average.py", "version": "2.3",
+                    "precision": {"frames_averaged": n_frames}}
+            tifffile.imwrite(str(path), arr, description=json.dumps(prov))
+
+        def write_excluded_count(master_path, excluded_row):
+            p = Path(master_path).with_name(Path(master_path).stem + "_excluded_count.tif")
+            tifffile.imwrite(str(p), np.array([excluded_row], dtype=np.uint16))
+
+        wl = 1000.0
+        # position 0: clean (0/8 excluded); position 1: 1-of-8 clipped
+        # (clean_fraction=0.875 -- the 5,407-pixel case's own shape);
+        # position 2: 8-of-8 clipped (clean_fraction=0.0); position 3:
+        # clean, a second unaffected position, not adjacent to the others.
+        e0_dir = tmp_dir / "mask_case_a"
+        e0_dir.mkdir()
+        p_short = e0_dir / "short.tif"
+        p_long = e0_dir / "long.tif"
+        write_master(p_short, [400, 400, 400, 400], n_frames=8)
+        write_excluded_count(p_short, [0, 0, 0, 0])          # fully clean
+        write_master(p_long, [500, 900, 999, 300], n_frames=8)
+        write_excluded_count(p_long, [0, 1, 8, 0])           # 0/1/8/0 of 8 excluded
+
+        exposures_a = [{"path": p_short, "t": 1.0, "t_source": "explicit"},
+                      {"path": p_long, "t": 2.0, "t_source": "explicit"}]
+        E_a, info_a = merge(exposures_a, wl, 0.0, 0.95, 99.5, False)
+
+        assert info_a["exposures"][0]["exclusion"]["mask_used"] is True
+        assert info_a["exposures"][1]["exclusion"]["mask_used"] is True
+        # Stop condition (c): the fully-clipped position (8/8) must get
+        # ZERO weight from the long exposure -- confirmed structurally
+        # (fully_clipped_px counts it) AND numerically (E there collapses
+        # to EXACTLY the short exposure's own E_i, proving the long
+        # exposure contributed nothing).
+        assert info_a["exposures"][1]["exclusion"]["fully_clipped_px"] == 1, (
+            "expected exactly 1 fully-clipped photosite (position 2), got {}"
+            .format(info_a["exposures"][1]["exclusion"]["fully_clipped_px"]))
+        E_i_short_at_all = (400.0 / wl - 0.0) / 1.0    # short exposure alone, any position
+        assert E_a[0, 2, 0] == E_i_short_at_all, (
+            "fully-clipped position must collapse to exactly the short "
+            "exposure's own estimate (long exposure contributed zero "
+            "weight there) -- got {!r}, expected {!r}"
+            .format(E_a[0, 2, 0], E_i_short_at_all))
+
+        # Stop condition (b): the partially-clipped position (1/8) must
+        # get a REDUCED but NONZERO weight from the long exposure -- not
+        # discarded. Verified by hand-computing the exact merge formula
+        # for BOTH the true (0.875 clean_fraction) case and the WRONG
+        # (binary-excluded, clean_fraction forced to 0) case, and
+        # confirming the real output matches the former, not the latter.
+        def hand_merge_position(native_short, native_long, t_short, t_long, clean_frac_long):
+            vn_s, vn_l = native_short / wl, native_long / wl
+            p_s, p_l = np.clip(vn_s, 0, 1), np.clip(vn_l, 0, 1)
+            w_s = 4 * p_s * (1 - p_s) * 1.0 * t_short        # short exposure always clean here
+            w_l = 4 * p_l * (1 - p_l) * clean_frac_long * t_long
+            Ei_s, Ei_l = vn_s / t_short, vn_l / t_long
+            return (w_s * Ei_s + w_l * Ei_l) / (w_s + w_l)
+
+        expected_partial = hand_merge_position(400, 900, 1.0, 2.0, 0.875)
+        expected_if_wrongly_binary = hand_merge_position(400, 900, 1.0, 2.0, 0.0)
+        assert expected_partial != expected_if_wrongly_binary, (
+            "test setup: the two hand-computed expectations must differ, "
+            "or this check cannot distinguish correct from wrong behaviour")
+        assert E_a[0, 1, 0] == expected_partial, (
+            "partially-clipped position (1 of 8 excluded, clean_fraction="
+            "0.875) must be weighted by that fraction, not discarded -- "
+            "got {!r}, expected {!r} (the binary-exclusion wrong answer "
+            "would have been {!r})".format(
+                E_a[0, 1, 0], expected_partial, expected_if_wrongly_binary))
+
+        # Fully-clean position, unaffected -- sanity check the machinery
+        # isn't perturbing positions the mask says nothing about.
+        expected_clean = hand_merge_position(400, 500, 1.0, 2.0, 1.0)
+        assert E_a[0, 0, 0] == expected_clean
+
+        # -------------------------------------------------------------
+        # Missing mask: a bracket with NO excluded-count sibling at all
+        # merges WITHOUT exclusion -- never silently treated as clean,
+        # never falling back to the old sat_frac threshold. Both the
+        # returned structure (mask_used=False) and the printed log line
+        # are checked -- structure because that's what a caller can act
+        # on, the log because the instruction asks for it explicitly.
+        # -------------------------------------------------------------
+        import io
+        import contextlib
+
+        e0_dir_b = tmp_dir / "mask_case_b_no_mask"
+        e0_dir_b.mkdir()
+        p_short_b = e0_dir_b / "short.tif"
+        p_long_b = e0_dir_b / "long.tif"
+        write_master(p_short_b, [400, 400, 400, 400], n_frames=8)
+        write_master(p_long_b, [500, 900, 999, 300], n_frames=8)
+        # deliberately no write_excluded_count() calls -- no sibling exists
+
+        exposures_b = [{"path": p_short_b, "t": 1.0, "t_source": "explicit"},
+                      {"path": p_long_b, "t": 2.0, "t_source": "explicit"}]
+        captured = io.StringIO()
+        with contextlib.redirect_stdout(captured):
+            E_b, info_b = merge(exposures_b, wl, 0.0, 0.95, 99.5, False)
+        log_text = captured.getvalue()
+
+        assert info_b["exposures"][0]["exclusion"]["mask_used"] is False
+        assert info_b["exposures"][1]["exclusion"]["mask_used"] is False
+        assert "no excluded-count sibling found" in info_b["exposures"][0]["exclusion"]["note"]
+        assert log_text.count("NO SATURATION MASK") == 2, (
+            "expected the missing-mask log line once per exposure (2 "
+            "exposures, neither has a mask) -- got {} occurrence(s) in:\n{}"
+            .format(log_text.count("NO SATURATION MASK"), log_text))
+
+        # Numerically: with no mask, weighting must equal the pure
+        # mid-tone hat function alone -- the SAME formula every exposure
+        # used before this sequence existed, at every position including
+        # the one that would have been down-weighted had a mask existed.
+        expected_no_mask_pos1 = hand_merge_position(400, 900, 1.0, 2.0, 1.0)
+        assert E_b[0, 1, 0] == expected_no_mask_pos1, (
+            "with no mask, position 1 must use hat-function-only weighting "
+            "(clean_fraction=1.0, i.e. no exclusion applied at all) -- got "
+            "{!r}, expected {!r}".format(E_b[0, 1, 0], expected_no_mask_pos1))
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
@@ -410,6 +659,14 @@ def render_check():
           "a substituted BIT_DEPTH=10 to a genuinely different value when "
           "the profile is swapped before this consumer runs; an explicit "
           "--white-level still overrides either way")
+    print("mask-consumption check PASS: a 1-of-8-clipped photosite is "
+          "weighted by its own clean_fraction (0.875), not discarded; an "
+          "8-of-8-clipped photosite collapses exactly to the other "
+          "exposure's own estimate (zero weight, confirmed numerically, "
+          "not just structurally); a bracket with no excluded-count "
+          "sibling merges without exclusion, logged once per exposure "
+          "(not silently clean, not falling back to the old sat_frac "
+          "threshold), verified against the pure hat-function formula")
 
 
 def main():
@@ -434,8 +691,13 @@ def main():
                          "before merging (default 0.0; masters from a dark-"
                          "corrected average are already near zero).")
     ap.add_argument("--sat", type=float, default=0.95, metavar="F",
-                    help="saturation cutoff as a fraction of white level; pixels "
-                         "at/above this are given zero weight (default 0.95).")
+                    help="DEPRECATED, no longer applied to any weighting "
+                         "decision: saturation exclusion now comes from "
+                         "frame_average.py's own per-photosite clean-sample "
+                         "record (its excluded-count sibling beside each "
+                         "master), read automatically, not this threshold. "
+                         "Still accepted and recorded for CLI compatibility; "
+                         "removal is a separate, later piece of work.")
     ap.add_argument("--norm-percentile", type=float, default=99.5, metavar="P",
                     help="percentile of the merged irradiance mapped to 1.0 in "
                          "the output (default 99.5; robust to a few hot pixels).")
@@ -507,14 +769,19 @@ def main():
         "version": __version__,
         "created_utc": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
         "merge": ("E = sum_i w_i*(v_i/white - black)/t_i / sum_i w_i ; "
-                  "w_i = 4p(1-p)*t_i with p the black-to-white position, "
-                  "zero weight where v_i/white >= sat or <= black"),
+                  "w_i = 4p(1-p)*clean_fraction_i*t_i with p the black-to-white "
+                  "position and clean_fraction_i this exposure's own per-photosite "
+                  "clean-sample fraction from frame_average.py's excluded-count "
+                  "record (1.0 -- no exclusion -- where no such record exists "
+                  "for this bracket, logged per exposure); zero weight where "
+                  "v_i/white <= black"),
         "domain": "linear, scene-referred (NOT tone-mapped)",
         "white_level": info["white_level"],
         "white_level_source": args.white_level_source,
         "black": info["black"],
         "black_note": args.black_note,
         "sat_frac": info["sat_frac"],
+        "sat_frac_note": info["sat_frac_note"],
         "analogue_gain": args.analogue_gain,
         "white_level_gain_dependency": (
             "white_level is only valid for the analogue gain this bracket "

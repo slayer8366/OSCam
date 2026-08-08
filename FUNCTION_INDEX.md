@@ -218,6 +218,7 @@ facts worth reading in full.
 - `def sha256_file(path, _buf=1 << 20):`
 - `def try_read_embedded_exposure(path):`
 - `def try_read_embedded_capture_meta(path):`
+- `def load_clean_fraction(master_path, expected_shape):`
 - `def parse_exposures(raw_pairs):`
 - `def merge(exposures, white_level, black, sat_frac, norm_percentile, hash_inputs, channel_layout=None, cfa_pattern=None):`
 - `def _assert_single_description_tag(path):`
