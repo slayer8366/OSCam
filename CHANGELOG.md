@@ -7,6 +7,86 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-08
 
+### Record: 2026-08-03_050600 production merge promoted — operator confirmed, downstream-consumption check preceded it
+
+Work-is-the-outcome form, no intent phase: an operator-directed action
+on real capture data, not a code change. No source file touched.
+Supersedes the promotion status of `ece3370`'s own entry (that entry's
+own text stays unedited — `"promoted": false` there is now a
+historical statement of what was true at the time it was written, not
+a live field this entry reaches back and changes).
+
+**Preceded by a real check, not a rubber stamp**: before promotion was
+requested, this session verified — against the real stores, not
+inferred — that nothing downstream had consumed the old
+`hdr_linear.tif`. `measure.py`'s own `pixel_sha256` for the old file
+(`958f38e2...`) matched none of the 9 hashes in
+`~/.zynergy/annotations.json`; no `results.json` (export.py) or
+publish manifest exists anywhere outside the repo for any capture;
+`final_display.tif`'s own embedded provenance is tagged
+`"kind": "display-referred derivative (NOT a measurement)"` and
+`final.tif` isn't even a valid shape for `measure.py`'s own loader —
+both structurally excluded from ever being measured on. Two other
+pre-existing files in the same directory
+(`hdr_wl62100.tif`/`merge_v1.1_wl62100.tif`, both dated 2026-08-04,
+predating this session, sharing `2991189`'s own reference hash) were
+also checked and also have zero annotation-store matches. **Named
+limit, not glossed over**: whether the operator manually used
+`final_display.jpg`/`.png` outside this software's own tracking (a
+report, a slide) cannot be checked from here — every check above is
+about this software's own record, not what left it.
+
+**The promotion itself, real commands, real output**:
+
+```
+$ cd ~/captures/2026-08-03_050600
+$ sha256sum hdr_linear.tif                          # before
+9efe591fd06fb499d072a09fe826c83f7cccbc91c34448b5b0b5b695019594d7
+
+$ cp -p hdr_linear.tif hdr_linear_wl62100_superseded.tif   # preserve, not delete
+$ sha256sum hdr_linear_wl62100_superseded.tif
+9efe591fd06fb499d072a09fe826c83f7cccbc91c34448b5b0b5b695019594d7   # exact copy, confirmed
+
+$ cp -p ~/hdr_merge_reference_v2/hdr_linear_050600_production_reprocess_wl65520.tif hdr_linear.tif
+
+$ sha256sum hdr_linear.tif                          # after
+c54ce0618615a72d861c516a91763557d9424587f8a45e256bb3ddaeb75b544e   # matches the reprocessed file exactly
+```
+
+The old bytes are not deleted, not lost — `hdr_linear_wl62100_
+superseded.tif`, same directory, byte-identical to what `hdr_linear.tif`
+held before this entry, sha256-confirmed. `~/hdr_merge_reference_v2/
+hdr_linear_050600_wl_supersession_record.json` (the standalone record
+`ece3370` wrote) updated in place with `"promoted": true`, a
+`promoted_at_utc` timestamp, the operator's own instruction quoted as
+the reason, and the superseded-backup path/hash — this record was
+always meant to carry live promotion status (it is not a `CHANGELOG.md`
+entry, and this project's append-only rule applies to `CHANGELOG.md`
+specifically, not to every JSON sidecar); the append-only discipline
+for THIS entry's own claims is enforced the normal way, by this being
+a new entry rather than an edit to `ece3370`'s.
+
+**Named, not fixed — a real consequence of promoting only the linear
+master**: `final.tif`/`final_display.{tif,png,jpg}` in this same
+capture directory were generated from the OLD `hdr_linear.tif`
+(`debayer.py`, at original capture time, `display_flags` in
+`session.json`) and are now stale relative to the promoted
+`hdr_linear.tif` — they reflect the `wl=62100` merge, not the
+`wl=65520` one. Regenerating them was not asked for and is not done
+here; surfaced so a later reader browsing this directory doesn't
+assume the display derivatives already reflect the promoted master.
+
+**Verification**: every hash and command above is *observed* —
+pasted verbatim, this session, this Pi. The promotion itself is
+*confirmed done* (the file at `hdr_linear.tif` now genuinely holds the
+reprocessed bytes, checked by hash, not assumed from the `cp` exit
+code alone). Whether the promoted output is *better* remains the
+operator's own judgment, made before this entry, not re-litigated
+here.
+
+Working tree left clean apart from untracked `calib/` and
+`profile.json`'s own live-rig drift (never committed, as always).
+
 ### Record: 2026-08-03_050600 production merge reprocessed at the corrected white level — not promoted, operator's decision
 
 Work-is-the-outcome form, no intent phase: a data correction, not a
