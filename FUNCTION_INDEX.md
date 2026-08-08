@@ -220,7 +220,7 @@ facts worth reading in full.
 - `def try_read_embedded_capture_meta(path):`
 - `def load_clean_fraction(master_path, expected_shape):`
 - `def parse_exposures(raw_pairs):`
-- `def merge(exposures, white_level, black, sat_frac, norm_percentile, hash_inputs, channel_layout=None, cfa_pattern=None):`
+- `def merge(exposures, white_level, black, norm_percentile, hash_inputs, channel_layout=None, cfa_pattern=None):`
 - `def _assert_single_description_tag(path):`
 - `def render_check():`
 - `def main():`

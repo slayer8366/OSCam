@@ -77,8 +77,8 @@ Output & precision notes:
       it below any threshold) — it reads frame_average.py's own per-photosite
       clean-sample fraction instead, when a master carries one. A bracket with
       no such record merges without saturation exclusion, logged plainly.
-      --sat is still accepted (removal is a separate, later piece of work)
-      but no longer affects the merge in any way. If your white level is not
+      There is no threshold flag to set for this — it is not a tunable, it
+      is a per-photosite fact read from the mask. If your white level is not
       the container's dtype max (e.g. 12-bit data in a 16-bit file), still set
       --white-level — it governs the irradiance estimate itself, independent
       of saturation exclusion.
@@ -263,7 +263,7 @@ def parse_exposures(raw_pairs):
     return items
 
 
-def merge(exposures, white_level, black, sat_frac, norm_percentile, hash_inputs,
+def merge(exposures, white_level, black, norm_percentile, hash_inputs,
           channel_layout=None, cfa_pattern=None):
     """Stream the bracket set into a linear irradiance estimate.
 
@@ -283,12 +283,13 @@ def merge(exposures, white_level, black, sat_frac, norm_percentile, hash_inputs,
         w_i           = w_valid * t_i                       # favour longer valid exposures
         E             = sum_i w_i E_i / sum_i w_i
 
-    sat_frac is accepted but no longer used -- see load_clean_fraction and
-    this module's own docstring for why a threshold on the AVERAGED value
-    cannot see a raw sample clipped in one frame out of eight, and why this
-    is now a per-pixel fraction rather than a binary any-clipped test: that
-    binary form would discard the very case (a photosite genuinely clipped
-    in a minority of its raw samples) this replacement exists to keep.
+    There is no threshold parameter for saturation exclusion — see
+    load_clean_fraction and this module's own docstring for why a threshold
+    on the AVERAGED value cannot see a raw sample clipped in one frame out
+    of eight, and why this is a per-pixel fraction rather than a binary
+    any-clipped test: that binary form would discard the very case (a
+    photosite genuinely clipped in a minority of its raw samples) this
+    mechanism exists to keep.
 
     Pixels with zero total weight (fully clipped or black in every frame) fall
     back: saturated-everywhere -> estimate from the SHORTEST exposure (least clipped);
@@ -344,12 +345,7 @@ def merge(exposures, white_level, black, sat_frac, norm_percentile, hash_inputs,
         # frame_average.py's own mask-derived record, not a binary
         # threshold on this exposure's own averaged value. One clipped
         # raw sample out of eight (clean_fraction=0.875) reduces this
-        # exposure's weight there, it does not zero it -- sat_frac's old
-        # `vn >= sat_frac` hard cutoff is gone from this computation
-        # entirely, replaced, not supplemented (the parameter itself is
-        # still accepted for CLI/signature compatibility this sequence;
-        # it is no longer read below -- its removal is sequence 2's own
-        # three-phase landing).
+        # exposure's weight there, it does not zero it.
         clean_fraction, mask_used, mask_note = load_clean_fraction(ex["path"], (H, W, C))
         if mask_used:
             w_valid = w_valid * clean_fraction
@@ -362,11 +358,9 @@ def merge(exposures, white_level, black, sat_frac, norm_percentile, hash_inputs,
             # mid-tone hat function alone governs weight here, same as
             # every exposure's weight worked before this sequence
             # existed. Never silently treated as "no saturation" (that
-            # would misrepresent absence-of-data as a measurement) and
-            # never falling back to the old sat_frac threshold test
-            # either (that mechanism is being replaced, not kept as a
-            # shadow path) -- logged so the output is traceably
-            # unexcluded, not indistinguishable from a clean merge.
+            # would misrepresent absence-of-data as a measurement) --
+            # logged so the output is traceably unexcluded, not
+            # indistinguishable from a clean merge.
             fully_clipped = vn >= 1.0   # the only signal available with no mask
             n_full = int(fully_clipped.sum())
             clipped_report = f"NO SATURATION MASK -- merged WITHOUT exclusion ({mask_note})"
@@ -421,14 +415,6 @@ def merge(exposures, white_level, black, sat_frac, norm_percentile, hash_inputs,
                      "cfa_pattern": geom_cfa_pattern},
         "white_level": wl,
         "black": black,
-        "sat_frac": sat_frac,
-        "sat_frac_note": ("accepted for CLI/signature compatibility only -- no "
-                          "longer applied to any weighting decision as of this "
-                          "sequence; saturation exclusion now comes from the "
-                          "per-exposure mask-derived clean_fraction recorded "
-                          "under each exposure's own 'exclusion' record. "
-                          "Removal of this parameter itself is a separate, "
-                          "later sequence."),
         "n_exposures": len(exposures),
         "saturated_in_all_px": int(sat_all.sum()),
         "black_in_all_px": int(blk_all.sum()),
@@ -483,7 +469,7 @@ def render_check():
         # still be exactly 65520, the relocation-not-correction claim,
         # checked, not just stated.
         assert camera_backend is not None, "camera_backend.py must be importable"
-        _, info_real = merge(exposures, None, 0.0, 0.95, 99.5, False)
+        _, info_real = merge(exposures, None, 0.0, 99.5, False)
         expected_real = camera_backend.white_level_for_bit_depth(camera_backend.BIT_DEPTH)
         assert info_real["white_level"] == expected_real, (
             "merge()'s None-fallback white_level {!r} does not match "
@@ -505,7 +491,7 @@ def render_check():
         real_bit_depth = camera_backend.BIT_DEPTH
         try:
             camera_backend.BIT_DEPTH = 10   # a real IMX477 mode option, genuinely different
-            _, info_synth = merge(exposures, None, 0.0, 0.95, 99.5, False)
+            _, info_synth = merge(exposures, None, 0.0, 99.5, False)
             expected_synth = camera_backend.white_level_for_bit_depth(10)
             assert expected_synth != expected_real, \
                 "test setup: the substituted bit depth must derive a DIFFERENT white level"
@@ -521,7 +507,7 @@ def render_check():
             camera_backend.BIT_DEPTH = real_bit_depth
 
         # An explicit --white-level must always win outright, profile or not.
-        _, info_explicit = merge(exposures, 62100.0, 0.0, 0.95, 99.5, False)
+        _, info_explicit = merge(exposures, 62100.0, 0.0, 99.5, False)
         assert info_explicit["white_level"] == 62100.0
 
         # -------------------------------------------------------------
@@ -556,7 +542,7 @@ def render_check():
 
         exposures_a = [{"path": p_short, "t": 1.0, "t_source": "explicit"},
                       {"path": p_long, "t": 2.0, "t_source": "explicit"}]
-        E_a, info_a = merge(exposures_a, wl, 0.0, 0.95, 99.5, False)
+        E_a, info_a = merge(exposures_a, wl, 0.0, 99.5, False)
 
         assert info_a["exposures"][0]["exclusion"]["mask_used"] is True
         assert info_a["exposures"][1]["exclusion"]["mask_used"] is True
@@ -608,11 +594,11 @@ def render_check():
 
         # -------------------------------------------------------------
         # Missing mask: a bracket with NO excluded-count sibling at all
-        # merges WITHOUT exclusion -- never silently treated as clean,
-        # never falling back to the old sat_frac threshold. Both the
-        # returned structure (mask_used=False) and the printed log line
-        # are checked -- structure because that's what a caller can act
-        # on, the log because the instruction asks for it explicitly.
+        # merges WITHOUT exclusion -- never silently treated as clean.
+        # Both the returned structure (mask_used=False) and the printed
+        # log line are checked -- structure because that's what a
+        # caller can act on, the log because the instruction asks for
+        # it explicitly.
         # -------------------------------------------------------------
         import io
         import contextlib
@@ -629,7 +615,7 @@ def render_check():
                       {"path": p_long_b, "t": 2.0, "t_source": "explicit"}]
         captured = io.StringIO()
         with contextlib.redirect_stdout(captured):
-            E_b, info_b = merge(exposures_b, wl, 0.0, 0.95, 99.5, False)
+            E_b, info_b = merge(exposures_b, wl, 0.0, 99.5, False)
         log_text = captured.getvalue()
 
         assert info_b["exposures"][0]["exclusion"]["mask_used"] is False
@@ -665,8 +651,8 @@ def render_check():
           "exposure's own estimate (zero weight, confirmed numerically, "
           "not just structurally); a bracket with no excluded-count "
           "sibling merges without exclusion, logged once per exposure "
-          "(not silently clean, not falling back to the old sat_frac "
-          "threshold), verified against the pure hat-function formula")
+          "(not silently clean), verified against the pure hat-function "
+          "formula")
 
 
 def main():
@@ -690,14 +676,6 @@ def main():
                     help="black level as a fraction of white level to subtract "
                          "before merging (default 0.0; masters from a dark-"
                          "corrected average are already near zero).")
-    ap.add_argument("--sat", type=float, default=0.95, metavar="F",
-                    help="DEPRECATED, no longer applied to any weighting "
-                         "decision: saturation exclusion now comes from "
-                         "frame_average.py's own per-photosite clean-sample "
-                         "record (its excluded-count sibling beside each "
-                         "master), read automatically, not this threshold. "
-                         "Still accepted and recorded for CLI compatibility; "
-                         "removal is a separate, later piece of work.")
     ap.add_argument("--norm-percentile", type=float, default=99.5, metavar="P",
                     help="percentile of the merged irradiance mapped to 1.0 in "
                          "the output (default 99.5; robust to a few hot pixels).")
@@ -738,14 +716,12 @@ def main():
 
     if not (0.0 <= args.black < 1.0):
         sys.exit("--black must be in [0, 1).")
-    if not (0.0 < args.sat <= 1.0):
-        sys.exit("--sat must be in (0, 1].")
 
     exposures = parse_exposures(args.exposures)
     print(f"Merging {len(exposures)} exposures "
           f"({exposures[0]['t']:g}s .. {exposures[-1]['t']:g}s):")
 
-    E, info = merge(exposures, args.white_level, args.black, args.sat,
+    E, info = merge(exposures, args.white_level, args.black,
                     args.norm_percentile, args.hash,
                     channel_layout=args.channel_layout, cfa_pattern=args.cfa_pattern)
 
@@ -780,8 +756,6 @@ def main():
         "white_level_source": args.white_level_source,
         "black": info["black"],
         "black_note": args.black_note,
-        "sat_frac": info["sat_frac"],
-        "sat_frac_note": info["sat_frac_note"],
         "analogue_gain": args.analogue_gain,
         "white_level_gain_dependency": (
             "white_level is only valid for the analogue gain this bracket "

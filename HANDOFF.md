@@ -276,30 +276,36 @@ What's actually open, none of it written down anywhere until now:
     (an error message on empty-selection OK? disable/gray those tiles?
     the gallery race guard in item 3 above, once built, may be the more
     natural place to fix this from) — not guessed at here.
-13. **Saturation-detection rework: scoped (2026-08-06), three decisions
-    accepted, nothing built in `frame_average.py`/`hdr_merge.py` yet.**
-    Full investigation (Q1-Q6, cost/provenance analysis, a proposal) and
-    the decisions below: `CHANGELOG.md`'s 2026-08-06 "Investigation and
+13. **Saturation-detection rework: CLOSED.** Scoped 2026-08-06; built
+    and landed 2026-08-08. Full investigation (Q1-Q6, cost/provenance
+    analysis, a proposal): `CHANGELOG.md`'s 2026-08-06 "Investigation and
     design proposal" and "Record intent: saturation-mask design
-    decisions" entries.
+    decisions" entries. The build itself, in landing order: `24a07c6`
+    (per-frame mask, write side), `c75ab94` (`frame_average.py` excludes
+    clipped raw samples per photosite, writes an excluded-count sibling
+    beside each master), then `hdr_merge.py` saturation-mask consumption
+    (three sequences, 2026-08-08): sequence 1 (`bbc2bad`/`9265386`) reads
+    that excluded-count sibling as a per-pixel clean-sample FRACTION —
+    not a binary any-clipped test — and weights the mid-tone hat function
+    by it; a bracket with no such record merges without exclusion, logged
+    per exposure, never silently treated as clean. Verified against real
+    data, not just synthetic: at the profile-derived white level (`65520`),
+    `2026-08-03_050600`'s own level 5 now detects `3,227,966` clipped
+    photosites where the old threshold test found `0` (`362b0a0`'s own
+    central finding, now closed) — full detail, including the specific
+    real-position checks for both the down-weighted-not-discarded case
+    and the fully-excluded case, in `9265386`'s own build-record entry.
+    Sequence 2 removes `sat_frac` entirely (parameter, CLI flag,
+    provenance keys, every reference — not just its callers).
     - **The mask is retained unconditionally, independent of Keep RAW
-      Images**, once it exists. A packed per-frame mask costs ≤3.2% of
-      one bracket's own raw-DNG storage; discarding it saves a trivial
-      amount of disk and permanently forecloses the only unambiguous
-      saturation record, since averaging is irreversible. Keep RAW
-      Images governs raws; it does not govern a record derived from
-      them.
+      Images.** A packed per-frame mask costs ≤3.2% of one bracket's own
+      raw-DNG storage; discarding it saves a trivial amount of disk and
+      permanently forecloses the only unambiguous saturation record,
+      since averaging is irreversible. Keep RAW Images governs raws; it
+      does not govern a record derived from them.
     - **The merge-weighting policy for the partially-clipped population
-      (clipped in *some* but not all raw frames at a given level) is
-      deliberately deferred**, not decided. Building the raw-domain
-      record and deciding what `hdr_merge.py` does with it at merge
-      time are separate jobs; the policy is meant to be chosen against
-      real masks, not fixed ahead of having any.
-    - **`sat_frac` is scaffolding with no recorded reasoning**, unchanged
-      since the initial commit, never overridden by any caller in this
-      repo's history. Scheduled for collapse once the raw-domain record
-      exists to replace what it currently approximates — still live and
-      unchanged today.
+      is now built**: a continuous clean-sample fraction weight, not a
+      binary threshold — see sequence 1 above.
     - **Backfill validation data exists for the three brackets this
       investigation has been using** (`2026-08-03_050600`,
       `2026-08-03_230856`, `2026-08-04_013732`) — packed per-frame,
