@@ -7,6 +7,66 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-08
 
+### Record intent: hdr_merge saturation-mask consumption, sequence 2 — remove sat_frac entirely
+
+Intent, own commit, nothing else touched. Branch `main`, HEAD `9265386`.
+Sequence 2 of the three-sequence landing — gated on sequence 1's own
+verification passing, which it did (`9265386`'s own build-record entry:
+all three stop conditions checked against real data, none triggered).
+`sat_frac` has been functionally inert since sequence 1 landed; this
+sequence removes the parameter itself, not just its callers, per
+instruction — "a dead default left behind is a trap for the next
+reader."
+
+**Measured baseline — every `sat_frac`/`--sat` reference in
+`hdr_merge.py`, counted directly, not estimated:**
+
+```
+$ grep -n "sat_frac\|--sat\b\|args\.sat\b" hdr_merge.py
+80:      --sat is still accepted (removal is a separate, later piece of work)
+266:def merge(exposures, white_level, black, sat_frac, norm_percentile, hash_inputs,
+286:    sat_frac is accepted but no longer used -- see load_clean_fraction and
+347:        # exposure's weight there, it does not zero it -- sat_frac's old
+348:        # `vn >= sat_frac` hard cutoff is gone from this computation
+366:            # never falling back to the old sat_frac threshold test
+424:        "sat_frac": sat_frac,
+425:        "sat_frac_note": ("accepted for CLI/signature compatibility only -- no "
+612:        # never falling back to the old sat_frac threshold. Both the
+668:          "(not silently clean, not falling back to the old sat_frac "
+693:    ap.add_argument("--sat", type=float, default=0.95, metavar="F",
+741:    if not (0.0 < args.sat <= 1.0):
+742:        sys.exit("--sat must be in (0, 1].")
+748:    E, info = merge(exposures, args.white_level, args.black, args.sat,
+783:        "sat_frac": info["sat_frac"],
+784:        "sat_frac_note": info["sat_frac_note"],
+```
+
+Plus 6 call sites passing `sat_frac` positionally into `merge()` (the
+CLI's own `main()` call at line 748, and 5 `render_check()` calls at
+lines 486/508/524/559/632, all currently passing a literal `0.95`
+regardless of what it means, since it does nothing).
+
+**What removal covers, checked against the task's own instruction to
+look beyond callers**: the `sat_frac` parameter itself from `merge()`'s
+signature; the `--sat` CLI flag entirely (not deprecated-and-kept —
+actually gone, since a flag that parses but silently does nothing is
+worse than no flag at all); `info["sat_frac"]`/`info["sat_frac_note"]`
+and their `prov` mirrors; every comment referencing `sat_frac` by name
+gets rewritten to describe the mask-based mechanism directly rather
+than as a historical contrast; all 6 `merge()` call sites drop the now-
+nonexistent positional argument. The `--black`/`--norm-percentile`
+validation block stays untouched (unrelated parameters).
+
+**What this sequence does NOT change**: the actual weighting
+arithmetic (`w_valid = 4*p*(1-p) * clean_fraction`) — that already
+landed in sequence 1 and is verified. This sequence is a removal, not
+a behavior change; the merge's own numeric output must be identical
+before and after, since `sat_frac` already had zero effect on it.
+
+**Out of scope, per instruction**: the `62100` white-level correction
+(sequence 3, its own scope still being clarified against real
+production data); everything else on the standing parked list.
+
 ### Record build: hdr_merge saturation-mask consumption, sequence 1 — mask consumption verified against real data, prediction confirmed
 
 Build, own commit (`bbc2bad`), against `bd18fd2`'s own intent. This
