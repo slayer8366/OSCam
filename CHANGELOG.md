@@ -7,6 +7,170 @@ this file is the historical record of what happened and why.
 
 ## 2026-08-07
 
+### Record: `# CAVEAT:` on `imx477.BIT_DEPTH` — correct by configuration, not by hardware
+
+Work-is-the-outcome form, no intent phase: one comment, verified against
+the real code before being written, not a designed change with a plan
+to diverge from. Branch `main`, HEAD `739d2e1` throughout — no other
+file touched beyond the comment and the index regeneration it triggers.
+
+**Every claim in the caveat verified against the real code first, not
+assumed from the task's own framing:**
+
+`get_capabilities()`'s real, live-hardware answer — checked directly on
+this Pi, not recalled from a prior session:
+
+```
+$ python3 -c "... cam.get_capabilities()['capture_formats'] ..."
+capture_formats: ['SRGGB10', 'SRGGB12', 'SRGGB8']
+exit: 0
+```
+
+Three formats, matching the task's own claim exactly (order aside).
+
+`PreferencesDialog` builds `_capture_fmt_combo` from that exact
+capability set — `qt_shell.py:2188-2189`,
+`caps.get("capture_formats", [])` — and an existing, already-passing
+`render_check` assertion (`qt_shell.py:7495`) already states this as a
+checked contract: `"capture format combo must be built from
+get_capabilities()"`.
+
+**One nuance the task's own framing did not state, found by verifying
+rather than assuming, and the reason the caveat says "not yet applied"
+rather than implying an active risk**: `grep -n
+'"capture_format"' qt_shell.py camera_backend.py` finds exactly two
+sites — `load_pref` (populating the combo's initial selection) and
+`save_pref` (on dialog accept). Nothing else in the tree reads this
+preference; the combo's tooltip already says as much in its own words
+("Persisted, not yet applied to captures — camera_backend.py has no
+format-selection hook for a still capture yet"). Selecting a non-
+default format in Preferences today does nothing to any real capture —
+the caveat states the risk as latent (activates the moment that hook
+gets built), not live, because that is what the code actually shows.
+
+**The comment**, `imx477.py`, immediately above `BIT_DEPTH = 12`:
+states 12 is correct by current configuration, not by hardware; names
+the three real formats `get_capabilities()` reports; names the
+Preferences selector built from that same set; states the selector's
+value is persisted but not yet wired to any real capture, so the risk
+is latent, not active, today; states what silently wrong would look
+like (`white_level_for_bit_depth` keeps deriving from the frozen `12`,
+nothing recomputes, nothing raises, merged numbers just shift); states
+the real fix (derive bit depth from the configured mode, the way
+`preview_crop`/`still_crop` already derive from `preview_res`/
+`still_res` rather than a constant) and that it is deliberately not
+done here. No change to `BIT_DEPTH`'s value, its derivation, or any
+consumer — confirmed by the diff itself (a comment-only insertion) and
+by re-running every affected self-check below.
+
+**`FUNCTION_INDEX.md` regenerated in the same landing**, per
+instruction, after confirming the trigger actually applies: `# CAVEAT:`
+comments are harvested by `function_index.py` and attached to the
+nearest enclosing `def`/`class` (`_owner_for_line`, matched against
+`ast`-discovered top-level nodes) — or, for a comment above a plain
+module-level statement like `BIT_DEPTH = 12` (not a `def`/`class`, so
+no owning node contains its line), filed under the module's own
+"module-level" bucket instead, rendered at the top of that module's
+`FUNCTION_INDEX.md` section. Confirmed by running the self-check BEFORE
+regenerating and reading the new comment's own line directly out of the
+failure diff:
+
+```
+$ python3 function_index.py --render-check
+[... large diff ...]
+ ## imx477.py
++
++> CAVEAT: 12 is correct by CURRENT CONFIGURATION, not by hardware -- ...
+[... diff continues ...]
+exit: 1
+```
+
+**DISCOVERED**, not caused by this session: the diff above was not
+limited to `imx477.py`. `FUNCTION_INDEX.md` was already stale before
+this session touched anything — every function Stage 3 and the white-
+level relocation session added (`preview_click_from_native_point`,
+`assert_round_trip_preview_to_native_and_back`,
+`assert_live_measure_freeze_uses_camera_configured_green_plane_res`,
+`white_level_for_bit_depth`, `assert_no_hardcoded_sensor_dimension_
+above_driver_layer`, `assert_no_hardcoded_bit_depth_or_white_level_
+above_driver_layer`, and others) was present in the real modules but
+absent from the committed index. Exactly the failure mode `HANDOFF.md`
+item 7 and `SWEEP_CHECKS.md`'s own meta-level section already name:
+the trigger ("regenerate when a module's top-level functions or
+`# CAVEAT:` comments change, same landing") is real and documented, but
+nothing enforces it automatically, so three sessions' worth of drift
+had already accumulated silently before this one's own regeneration
+picked all of it up at once. Not investigated further or attributed to
+a specific prior session — recorded because this session's own
+regeneration is what surfaced it, not because this session caused it.
+
+```
+$ python3 function_index.py
+wrote FUNCTION_INDEX.md (405 lines, 24 modules)
+exit: 0
+
+$ python3 function_index.py --render-check
+module coverage check PASS: all 24 modules appear as their own heading
+caveat harvesting check PASS: camera_backend.py's binding-fix CAVEAT found and merged across its continuation lines
+nested-def exclusion check PASS: only Module.body-direct defs are indexed
+assert_function_index_current PASS: committed FUNCTION_INDEX.md matches a fresh regeneration
+function_index self-check PASS
+exit: 0
+```
+
+**Full sweep, every self-check touching the changed files, foreground,
+real output, all clean and unaffected (a comment carries no behavior,
+confirmed rather than assumed):**
+
+```
+$ python3 imx477.py                     -> exit 0 (imx477 self-check PASS)
+$ python3 camera_backend.py             -> exit 0 (both dimension/bit-
+    depth scans still PASS, unaffected -- a comment is not a NUMBER
+    token either scanner tokenizes)
+$ python3 hdr_merge.py --render-check   -> exit 0 (white-level-follows-
+    profile-bit-depth check still PASS, still 65520.0 exactly)
+```
+
+---
+
+**SEPARATE ITEM, report only — the bare-invocation `hdr_merge.py`
+fallback path, neither changed nor acted on this session.**
+
+**Reachable from any CLI a person could type: yes.** `hdr_merge.py:428`,
+`ap.add_argument("--white-level", type=float, default=None, ...)` — not
+`required`. `python3 hdr_merge.py -e a.tif 1.0 -e b.tif 2.0 -o out.tif`,
+omitting `--white-level` entirely, is a complete, valid invocation
+(exercised directly, for real, in the previous session's own
+verification work) — no special flag, no hidden trigger, just an
+ordinary optional argument left out.
+
+**Does a caller reaching it get the value stated in the output record,
+or is it applied silently: both, in different senses, stated precisely
+rather than collapsed into one answer.** `grep` for `white` across
+`main()`'s own `print(...)` calls found none — the resolved
+`white_level` is never echoed to the console during a run; a person
+watching the terminal sees frame geometry, clipped-pixel counts, the
+norm divisor, and the output path, never the white level used.
+It IS recorded, in exactly one place: `prov["white_level"] =
+info["white_level"]` (`hdr_merge.py`, the `main()` tail), embedded in
+the output file's own `ImageDescription` TIFF tag — recoverable, but
+only by opening the output file's own metadata after the fact, never
+surfaced at the point the value was actually chosen. Not changed
+either way this session, per instruction.
+
+**Not started**: the saturation mask work, `sat_frac` collapse,
+merge-weighting policy, correcting the `62100` August-2026-bracket
+value, or deriving bit depth from the configured mode (the real fix
+this caveat itself describes and names as deliberately not this
+session's work).
+
+**Verification**: `--render-check`/bare-`python3` is *fixed*, run
+directly in the foreground, exit codes pasted above. Not *confirmed* —
+nothing here touches the rig; no camera was used this session
+(`profile.json` untouched, confirmed by `git status` showing no diff
+against it). Branch `main`, working tree otherwise unchanged (`calib/`
+excluded as always).
+
 ### Record build: white level behind the sensor profile
 
 Built to the intent above. Touches exactly the files named there:

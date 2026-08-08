@@ -75,6 +75,7 @@ facts worth reading in full.
 
 ## camera_backend.py
 
+- `def white_level_for_bit_depth(bit_depth, container_bits=16):`
 - `def derive_lores_res(preview_res, target_pixels=LORES_RES[0] * LORES_RES[1]):`
 - `@dataclass(frozen=True)`
   `class LoresFrame:`
@@ -91,6 +92,11 @@ facts worth reading in full.
 - `def assert_only_camera_backend_imports_picamera2():`
 - `def _sensor_profile_module_names(project_dir):`
 - `def assert_only_camera_backend_imports_sensor_profiles():`
+- `def _sensor_profile_dimension_pairs(project_dir):`
+- `def _production_region_source(path):`
+- `def assert_no_hardcoded_sensor_dimension_above_driver_layer():`
+- `def _bit_depth_and_white_level_literals(project_dir):`
+- `def assert_no_hardcoded_bit_depth_or_white_level_above_driver_layer():`
 
 ## debayer.py
 
@@ -211,9 +217,12 @@ facts worth reading in full.
 - `def parse_exposures(raw_pairs):`
 - `def merge(exposures, white_level, black, sat_frac, norm_percentile, hash_inputs, channel_layout=None, cfa_pattern=None):`
 - `def _assert_single_description_tag(path):`
+- `def render_check():`
 - `def main():`
 
 ## imx477.py
+
+> CAVEAT: 12 is correct by CURRENT CONFIGURATION, not by hardware -- the same shape as the frozen-GREEN_PLANE_RES-constant bug Stage 3 fixed in qt_shell.py, correct by coincidence, wrong the moment a setting moves. get_capabilities() reports three real formats on this sensor -- SRGGB8, SRGGB10, SRGGB12 (confirmed live, camera_backend.py's own sensor_modes sweep) -- and Preferences already exposes a capture- format selector built from that exact same capability set (qt_shell.py's PreferencesDialog._capture_fmt_combo; its own render_check asserts this). That selector's chosen value is persisted (save_pref("capture_format", ...)) but not yet applied to any real capture -- camera_backend.py has no format-selection hook for a still capture today (grep confirms "capture_format" is only ever saved and loaded, never read by anything that builds a still or preview config), so this constant is not silently wrong YET. It becomes silently wrong the moment that hook is built and a user picks 8-bit or 10-bit: white_level_for_bit_depth would keep deriving from this frozen 12, nothing would recompute, nothing would raise, and the merged numbers would just shift. Fixing this properly means deriving bit depth from the CONFIGURED mode (the same way preview_crop/ still_crop already derive from preview_res/still_res rather than a constant) instead of this constant -- deliberately not done here.
 
 - `def crop_for_size(size):`
 
@@ -222,7 +231,7 @@ facts worth reading in full.
 - `def _read_description_json(path):`
 - `def check_measurement_provenance(path):`
 - `def _raw_discard_reason(path):`
-- `def load_measurement_plane(path):`
+- `def load_measurement_plane(path, camera=None):`
 - `def current_um_per_px(objective):`
 - `def fit_ellipse(points):`
 - `def _conic_to_ellipse(a, b, c, d, e, f):`
@@ -306,6 +315,7 @@ facts worth reading in full.
 - `def move_box(box, dfx, dfy):`
 - `def opposite_corner(box, fx, fy, handle=HANDLE_FRAC):`
 - `def native_point_from_preview_click(px, py, disp_rect, preview_crop, still_crop, green_plane_res):`
+- `def preview_click_from_native_point(nx, ny, disp_rect, preview_crop, still_crop, green_plane_res):`
 - `def _live_measure_tool_hint(name):`
 - `def _live_measure_point_status(tool, n):`
 - `def dist_point_to_segment_px(p, a, b):`
@@ -320,6 +330,8 @@ facts worth reading in full.
 - `def live_measuring_result_text(mark):`
 - `def _source_without_docs_and_comments(obj):`
 - `def assert_live_measuring_has_no_calibration_dependency():`
+- `def assert_round_trip_preview_to_native_and_back():`
+- `def assert_live_measure_freeze_uses_camera_configured_green_plane_res():`
 - `def _paint(ov, rs, re, cs, ce, col, alpha=255):`
 - `def _rect_outline(ov, r0, r1, c0, c1, col, t):`
 - `def _draw_segment_into(ov, p0, p1, col, thickness=2):`

@@ -60,6 +60,28 @@ FULL_ARRAY_SIZE = (4056, 3040)
 # actually requests, today, confirmed rather than assumed. If that
 # request ever changes, this must change with it, the same way FULL_
 # ARRAY_SIZE would if the sensor mode table changed.
+#
+# CAVEAT: 12 is correct by CURRENT CONFIGURATION, not by hardware -- the
+# same shape as the frozen-GREEN_PLANE_RES-constant bug Stage 3 fixed in
+# qt_shell.py, correct by coincidence, wrong the moment a setting moves.
+# get_capabilities() reports three real formats on this sensor --
+# SRGGB8, SRGGB10, SRGGB12 (confirmed live, camera_backend.py's own
+# sensor_modes sweep) -- and Preferences already exposes a capture-
+# format selector built from that exact same capability set
+# (qt_shell.py's PreferencesDialog._capture_fmt_combo; its own
+# render_check asserts this). That selector's chosen value is
+# persisted (save_pref("capture_format", ...)) but not yet applied to
+# any real capture -- camera_backend.py has no format-selection hook
+# for a still capture today (grep confirms "capture_format" is only
+# ever saved and loaded, never read by anything that builds a still or
+# preview config), so this constant is not silently wrong YET. It
+# becomes silently wrong the moment that hook is built and a user picks
+# 8-bit or 10-bit: white_level_for_bit_depth would keep deriving from
+# this frozen 12, nothing would recompute, nothing would raise, and the
+# merged numbers would just shift. Fixing this properly means deriving
+# bit depth from the CONFIGURED mode (the same way preview_crop/
+# still_crop already derive from preview_res/still_res rather than a
+# constant) instead of this constant -- deliberately not done here.
 BIT_DEPTH = 12
 
 # (x, y, w, h), all in full-sensor-array pixel units -- see the module
