@@ -83,7 +83,7 @@ try:
 except ImportError:
     camera_backend = None
 
-__version__ = "2.2"
+__version__ = "2.3"
 IMG_EXT = {".tif", ".tiff"}
 
 
@@ -296,19 +296,54 @@ def average_burst(files, sigma_clip=None, report_deviation=False, label="frames"
     which is numerically stable and avoids the catastrophic cancellation of the
     sum-of-squares shortcut.
 
-    mask_dir (optional, write side only -- nothing reads these back yet):
-    when given, one packed saturation mask is written per RAW FRAME in this
-    burst, alongside the streaming mean below -- read once, in pass 1's own
-    loop, no second pass, no second read. Never touches `acc`, `to_work`, or
-    anything else feeding the average; see clipped_mask_for_frame/
-    write_clipped_mask for the read-only detection itself. Filenames match
-    provenance.py's own sidecar convention (`<raw_frame_stem>.satmask.npz`
-    inside `mask_dir`) so a mask shares its key with the raw it describes by
-    construction, the same way `<raw_frame_stem>.meta.json` already does --
-    no index or mapping table introduced to keep the two in sync.
+    mask_dir (optional, write side only): when given, one packed saturation
+    mask is ALSO written per RAW FRAME in this burst, alongside the
+    streaming mean below -- read once, in pass 1's own loop, no second pass,
+    no second read. Independent of exclusion below: whether or not mask_dir
+    is given, every raw sample this burst reads is tested against the same
+    per-frame clip detection; mask_dir only controls whether that per-frame
+    result is ALSO persisted to disk. Filenames match provenance.py's own
+    sidecar convention (`<raw_frame_stem>.satmask.npz` inside `mask_dir`) so
+    a mask shares its key with the raw it describes by construction, the
+    same way `<raw_frame_stem>.meta.json` already does -- no index or
+    mapping table introduced to keep the two in sync.
 
-    Returns (mean01, info).
+    Clipped-sample exclusion (unconditional, not gated behind mask_dir):
+    per photosite, per channel, any raw sample >= the sensor profile's own
+    white level is excluded from `acc` and from that position's own
+    divisor -- the average is acc / clean_count there, never acc / n. A
+    photosite with zero clean samples (every sample in the burst clipped)
+    has nothing to average; it holds white_level itself (in whichever
+    domain `mean` is already in -- native, or linearised under --gamma) --
+    never 0 (indistinguishable from a legitimately dark photosite) and
+    never the container ceiling 65535 (indistinguishable from a real
+    bright one). That sentinel is NOT self-disambiguating: a genuine
+    photosite whose raw value happened to equal white_level in every
+    sample would look identical. The per-photosite excluded-count this
+    function also returns is the only thing that tells the two apart --
+    excluded_count == n at that position is the actual, unambiguous
+    all-clipped signal, and is why that count is returned at full
+    resolution rather than only as an aggregate.
+
+    Requires camera_backend to be importable (it resolves the sensor
+    profile's own white level -- the same requirement
+    clipped_mask_for_frame already has). Refuses (sys.exit) rather than
+    silently falling back to summing every sample unconditionally, which
+    would reproduce the exact wrong behavior this function used to have,
+    under this version's name, with no record that it happened.
+
+    Returns (mean01, info, excluded_count) -- excluded_count is a full
+    (H, W, C) int64 array, same shape as mean01, the per-photosite record
+    "alongside the master" a caller can persist or inspect directly.
     """
+    if camera_backend is None:
+        sys.exit(
+            "camera_backend.py could not be imported; needed to resolve the "
+            "sensor profile's own white level for clipped-sample exclusion. "
+            "Refusing rather than falling back to the old unconditional "
+            "sum, which would silently reproduce the prior wrong behavior "
+            "under this version's name.")
+
     first = load_frame(files[0])
     H, W, C = first.shape
     in_dtype = first.dtype
@@ -326,21 +361,48 @@ def average_burst(files, sigma_clip=None, report_deviation=False, label="frames"
             return (a.astype(np.float64) / dmax) ** gamma
         final_scale = 1.0
 
-    # ---- pass 1: streaming mean (memory bounded to a few full frames)
+    # ---- pass 1: streaming mean (memory bounded to a few full frames),
+    # now excluding clipped raw samples per photosite as it streams.
     mask_clipped_fraction = {}
     mask_white_level = None
+    white_level = None
     acc = np.zeros((H, W, C), dtype=np.float64)
+    excluded_count = np.zeros((H, W, C), dtype=np.int64)
     for f in files:
         raw = _checked_load(f, (H, W, C), in_dtype)
-        acc += to_work(raw)
+        clipped, white_level = clipped_mask_for_frame(raw)
+        acc += np.where(clipped, 0.0, to_work(raw))
+        excluded_count += clipped.astype(np.int64)
         if mask_dir is not None:
             mask_path = Path(mask_dir) / (Path(f).stem + ".satmask.npz")
             mask_white_level = write_clipped_mask(raw, mask_path)
             mask_clipped_fraction[Path(f).stem] = round(
                 float(np.count_nonzero(raw >= mask_white_level)) / raw.size, 6)
-    mean = acc / n
+
+    clean_count = n - excluded_count
+    all_clipped = clean_count == 0
+    safe_clean = np.maximum(clean_count, 1)
+    sentinel = float(white_level) if gamma is None else (float(white_level) / dmax) ** gamma
+    mean = np.where(all_clipped, sentinel, acc / safe_clean)
+
+    partial_mask = (excluded_count > 0) & ~all_clipped
     info = {"n": n, "geometry": (W, H, C), "bits": in_bits,
             "domain": "linear" if gamma is None else f"linearised(gamma={gamma})"}
+    info["exclusion"] = {
+        "white_level": float(white_level),
+        "sentinel_value": sentinel,
+        "partially_clipped_photosites": int(partial_mask.sum()),
+        "fully_clipped_photosites": int(all_clipped.sum()),
+        "total_excluded_samples": int(excluded_count.sum()),
+        "total_samples": int(n * H * W * C),
+    }
+    print(f"clipped-sample exclusion ({label}): white_level={white_level:g}, "
+          f"{info['exclusion']['partially_clipped_photosites']} partially-clipped "
+          f"photosite(s), {info['exclusion']['fully_clipped_photosites']} "
+          f"fully-clipped photosite(s) (sentinel written there), "
+          f"{info['exclusion']['total_excluded_samples']} of "
+          f"{info['exclusion']['total_samples']} raw sample(s) excluded "
+          f"({100*info['exclusion']['total_excluded_samples']/info['exclusion']['total_samples']:.4f}%).")
     if mask_dir is not None:
         info["mask"] = {"dir": str(mask_dir), "white_level": mask_white_level,
                         "bit_depth": camera_backend.BIT_DEPTH,
@@ -381,7 +443,7 @@ def average_burst(files, sigma_clip=None, report_deviation=False, label="frames"
             dev = np.abs(to_work(_checked_load(f, (H, W, C), in_dtype)) - mean).mean()
             print(f"  {f.name:32s} {dev * scale:6.3f}")
 
-    return mean * final_scale, info
+    return mean * final_scale, info, excluded_count
 
 
 def flat_field(sci01, flat01, dark01):
@@ -523,6 +585,113 @@ def render_check():
             "under the real one, reached through write_clipped_mask's own "
             "real call path -- got synth_all={!r} real_any={!r}"
             .format(got_synth.all(), got_real.any()))
+
+        # -------------------------------------------------------------
+        # Exclusion-averaging: average_burst must exclude clipped raw
+        # samples per photosite, dividing by the count of samples
+        # actually included there -- not the frame count. Position-exact,
+        # not count-based: two positions with DIFFERENT clean counts (3
+        # vs 2), so a bug that applies one divisor to the whole frame
+        # cannot pass by using the same wrong divisor everywhere.
+        # -------------------------------------------------------------
+        dmax = 65535.0
+        n_burst = 4
+        # (0,0) clean in every frame; (0,1) clipped in 1 of 4 (frame 2);
+        # (0,2) clipped in every frame (all-clipped); (0,3) clipped in 2
+        # of 4 (frames 1 and 3) -- a DIFFERENT clean count than (0,1).
+        frames_native = [
+            [1000, 1000,       real_white,  1000],
+            [1000, 1100,       real_white,  real_white + 5],
+            [1000, real_white, real_white,  1050],
+            [1000, 1200,       real_white,  real_white + 10],
+        ]
+        expected_clipped = [
+            [False, False, True, False],
+            [False, False, True, True],
+            [False, True,  True, False],
+            [False, False, True, True],
+        ]
+        burst_dir = tmp_dir / "exclusion_burst"
+        burst_dir.mkdir()
+        burst_files = []
+        for i, row in enumerate(frames_native):
+            p = burst_dir / f"frame_{i:04d}.tif"
+            tifffile.imwrite(str(p), np.array([row], dtype=np.uint16))
+            burst_files.append(p)
+
+        mean01, exc_info, excluded = average_burst(burst_files, label="exclusion-check")
+
+        # excluded-count matches the mask at every position, not just a total
+        expected_excluded = np.array(expected_clipped, dtype=bool).sum(axis=0)
+        assert excluded.shape == (1, 4, 1), f"unexpected excluded shape {excluded.shape}"
+        for c in range(4):
+            assert int(excluded[0, c, 0]) == int(expected_excluded[c]), (
+                "position (0,{}) excluded count {} != expected {}".format(
+                    c, int(excluded[0, c, 0]), int(expected_excluded[c])))
+
+        # (0,0): clean in every frame -- bit-identical to today's
+        # unconditional average, computed in the SAME reciprocal-multiply
+        # order the code itself uses (not a fresh division -- SWEEP_
+        # CHECKS.md's own caution about float-tie divergence applies here
+        # exactly as it did to the earlier dark-subtraction re-derivation).
+        old_style_mean01_00 = (sum(row[0] for row in frames_native) / n_burst) * (1.0 / dmax)
+        assert mean01[0, 0, 0] == old_style_mean01_00, (
+            "clean photosite must be bit-identical to today's unconditional "
+            "average: got {!r}, expected {!r}".format(mean01[0, 0, 0], old_style_mean01_00))
+
+        # (0,1): clipped in 1 of 4 -- averages only the 3 clean samples,
+        # divides by 3, not 4.
+        expected_01 = ((1000 + 1100 + 1200) / 3) * (1.0 / dmax)
+        assert mean01[0, 1, 0] == expected_01, (
+            "partially-clipped photosite (0,1) must average only its clean "
+            "samples and divide by 3: got {!r}, expected {!r}".format(
+                mean01[0, 1, 0], expected_01))
+        naive_01 = ((1000 + 1100 + real_white + 1200) / n_burst) * (1.0 / dmax)
+        assert mean01[0, 1, 0] != naive_01, (
+            "test is not exercising exclusion: new result must differ from "
+            "today's unconditional (diluted) average at a clipped position")
+
+        # (0,3): clipped in 2 of 4 -- a DIFFERENT clean count than (0,1)
+        # (2 clean samples, not 3). A per-frame or per-plane uniform
+        # divisor bug would still pass (0,1) alone; this position is what
+        # catches it.
+        expected_03 = ((1000 + 1050) / 2) * (1.0 / dmax)
+        assert mean01[0, 3, 0] == expected_03, (
+            "partially-clipped photosite (0,3) (different clean count than "
+            "(0,1)) must divide by its own count of 2: got {!r}, expected {!r}"
+            .format(mean01[0, 3, 0], expected_03))
+
+        # (0,2): clipped in every frame -- takes the defined all-clipped
+        # path. Sentinel = white_level itself (native domain here, since
+        # this call uses gamma=None) -- never 0 (indistinguishable from a
+        # legitimately dark pixel), never the container ceiling 65535
+        # (indistinguishable from a real bright pixel). Detectable as such
+        # via the excluded-count record: that is the ONLY thing that
+        # disambiguates it from a genuine photosite whose raw value
+        # happened to be exactly white_level in every sample.
+        expected_02 = float(real_white) * (1.0 / dmax)
+        assert mean01[0, 2, 0] == expected_02, (
+            "all-clipped photosite must hold the white_level sentinel: "
+            "got {!r}, expected {!r}".format(mean01[0, 2, 0], expected_02))
+        assert int(excluded[0, 2, 0]) == n_burst, \
+            "all-clipped photosite's excluded count must equal the frame count"
+        assert mean01[0, 2, 0] != 65535.0 * (1.0 / dmax), \
+            "all-clipped sentinel must not be the container ceiling"
+        assert mean01[0, 2, 0] != 0.0, \
+            "all-clipped sentinel must not be silently zero"
+
+        assert "exclusion" in exc_info, "average_burst must report exclusion stats in info"
+        exc = exc_info["exclusion"]
+        assert exc["white_level"] == real_white
+        assert exc["partially_clipped_photosites"] == 2, (  # (0,1) and (0,3)
+            "expected 2 partially-clipped photosites, got {}".format(
+                exc["partially_clipped_photosites"]))
+        assert exc["fully_clipped_photosites"] == 1, (  # (0,2)
+            "expected 1 fully-clipped photosite, got {}".format(
+                exc["fully_clipped_photosites"]))
+        assert exc["total_excluded_samples"] == int(expected_excluded.sum()), (
+            "info['exclusion']['total_excluded_samples'] must match the "
+            "excluded-count array's own total")
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
@@ -571,14 +740,14 @@ def main():
                          "own output provenance -- null per-field (never omitted) "
                          "wherever a value isn't available or the burst disagrees.")
     ap.add_argument("--mask-dir", default=None, metavar="DIR",
-                    help="write one packed saturation mask per science raw frame "
-                         "into this directory (<raw_frame_stem>.satmask.npz, same "
-                         "keying convention as --sidecar-dir's .meta.json files) -- "
-                         "typically a session's own provenance directory. Detection "
-                         "is raw-domain, per frame, against the sensor profile's own "
-                         "white level; nothing in this tree reads these back yet "
-                         "(write side only). Omitted: no masks written, average_burst "
-                         "behaves exactly as before this flag existed.")
+                    help="ALSO persist one packed saturation mask per science raw "
+                         "frame into this directory (<raw_frame_stem>.satmask.npz, "
+                         "same keying convention as --sidecar-dir's .meta.json files) "
+                         "-- typically a session's own provenance directory. "
+                         "Clipped-sample exclusion itself (see -o's own output and "
+                         "the printed per-burst summary) is unconditional and does "
+                         "NOT depend on this flag; omitting it only skips writing the "
+                         "per-frame mask files to disk.")
     args = ap.parse_args()
 
     if args.linear_out and args.gamma is None:
@@ -599,7 +768,7 @@ def main():
     # ---- science burst
     sci_files = collect_inputs(args.inputs)
     print(f"Found {len(sci_files)} science frame(s).")
-    sci01, sci_info = average_burst(sci_files, args.sigma_clip, report_deviation=True,
+    sci01, sci_info, sci_excluded = average_burst(sci_files, args.sigma_clip, report_deviation=True,
                                     label="science", gamma=args.gamma,
                                     mask_dir=args.mask_dir)
     W, H, C = sci_info["geometry"]
@@ -608,6 +777,7 @@ def main():
     prov["science"] = file_record(sci_files)
     prov["geometry"] = {"width": W, "height": H, "channels": C, "input_bits": in_bits}
     prov["domain_processed"] = sci_info["domain"]
+    prov["exclusion"] = sci_info["exclusion"]
     if "mask" in sci_info:
         prov["saturation_mask"] = sci_info["mask"]
         frac_str = ", ".join(f"{k}={v:.4%}" for k, v in
@@ -629,17 +799,19 @@ def main():
     if args.dark:
         dark_files = collect_inputs(args.dark)
         print(f"\nFound {len(dark_files)} dark frame(s).")
-        dark01, di = average_burst(dark_files, args.sigma_clip, label="dark", gamma=args.gamma)
+        dark01, di, _dark_excluded = average_burst(dark_files, args.sigma_clip, label="dark", gamma=args.gamma)
         if di["geometry"] != sci_info["geometry"]:
             sys.exit(f"Dark geometry {di['geometry']} != science {sci_info['geometry']}.")
         prov["dark"] = file_record(dark_files)
+        prov["dark_exclusion"] = di["exclusion"]
     if args.flat:
         flat_files = collect_inputs(args.flat)
         print(f"Found {len(flat_files)} flat frame(s).")
-        flat01, fi = average_burst(flat_files, args.sigma_clip, label="flat", gamma=args.gamma)
+        flat01, fi, _flat_excluded = average_burst(flat_files, args.sigma_clip, label="flat", gamma=args.gamma)
         if fi["geometry"] != sci_info["geometry"]:
             sys.exit(f"Flat geometry {fi['geometry']} != science {sci_info['geometry']}.")
         prov["flat"] = file_record(flat_files)
+        prov["flat_exclusion"] = fi["exclusion"]
 
     # ---- correction
     if flat01 is not None or dark01 is not None:
@@ -707,6 +879,30 @@ def main():
     else:
         photometric = "rgb"
     comp = None if args.no_compress else "deflate"
+
+    # ---- excluded-count sibling: the user-facing, full-resolution half of
+    # exclusion. Alongside the master, not only summarised in its
+    # provenance -- a photosite's own excluded-sample count is what
+    # actually disambiguates the all-clipped sentinel above from a
+    # genuine reading of exactly white_level. Science burst only: dark/
+    # flat are exclusion-corrected too (uniform path, see average_burst),
+    # but neither has an independent -o path of its own to hang a sibling
+    # off today.
+    excluded_out_path = str(Path(args.output).with_name(Path(args.output).stem + "_excluded_count.tif"))
+    excluded_write = sci_excluded[:, :, 0] if C == 1 else sci_excluded
+    excluded_desc = json.dumps({
+        "software": "frame_average.py", "version": __version__,
+        "paired_master": str(args.output),
+        "meaning": "count of raw science samples excluded (clipped, >= white_level) "
+                   "per photosite, out of n total -- n == frame count is the "
+                   "all-clipped case; the master's own value there is a sentinel "
+                   "(white_level), not a measured average",
+        "n": n, "white_level": sci_info["exclusion"]["white_level"],
+    }, separators=(",", ":"))
+    tifffile.imwrite(excluded_out_path, excluded_write.astype(np.uint16),
+                     photometric="minisblack", compression=comp, description=excluded_desc)
+    prov["excluded_count_output"] = excluded_out_path
+
     prov["output"] = {"path": str(args.output), "dtype": "uint16",
                       "compression": "deflate" if comp else "none",
                       "value_range": [int(out.min()), int(out.max())]}
@@ -720,6 +916,9 @@ def main():
     print(f"  averaged {n} frames -> noise reduced ~{noise_factor:.2f}x "
           f"(~{eff_bits:.1f} effective bits vs {in_bits}-bit source; upper bound)")
     print(f"  16-bit value range: {int(out.min())}..{int(out.max())}")
+    print(f"  excluded-sample count written to {excluded_out_path} "
+          f"({sci_info['exclusion']['partially_clipped_photosites']} partially-clipped, "
+          f"{sci_info['exclusion']['fully_clipped_photosites']} fully-clipped photosite(s))")
     print(f"  provenance JSON embedded in ImageDescription "
           f"({len(description)} bytes; read with tifffile.TiffFile(...).pages[0].description)")
 
